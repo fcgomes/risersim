@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>riserSim 3D Web Visualizer</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #1e1e2e; color: #cdd6f4; }
+        #header { background: #11111b; padding: 15px 25px; border-bottom: 2px solid #313244; display: flex; justify-content: space-between; align-items: center; }
+        h1 { margin: 0; font-size: 22px; color: #89b4fa; }
+        .badge { background: #313244; padding: 5px 12px; border-radius: 6px; font-size: 13px; color: #a6adc8; }
+        
+        #main-layout { display: flex; flex-direction: column; height: calc(100vh - 65px); }
+        #top-container { display: flex; flex: 1; min-height: 460px; }
+        #sidebar { width: 340px; background: #181825; padding: 20px; border-right: 2px solid #313244; box-sizing: border-box; overflow-y: auto; }
+        #plot { flex: 1; }
+
+        /* Excel Matrix Table Area at Bottom */
+        #table-container { height: 280px; background: #11111b; border-top: 2px solid #313244; padding: 15px 25px; box-sizing: border-box; overflow: auto; }
+        #table-container h3 { margin-top: 0; margin-bottom: 10px; color: #89b4fa; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
+
+        .control-group { background: #313244; padding: 12px 15px; border-radius: 8px; margin-bottom: 12px; }
+        .control-title { font-size: 12px; font-weight: bold; color: #89b4fa; margin-bottom: 8px; }
+        .stat-card { background: #11111b; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
+        .stat-title { font-size: 10px; color: #a6adc8; text-transform: uppercase; }
+        .stat-value { font-size: 16px; font-weight: bold; color: #a6e3a1; margin-top: 2px; }
+        
+        select, input[type="range"], input[type="file"] { width: 100%; padding: 8px; border-radius: 6px; background: #181825; border: 1px solid #45475a; color: #cdd6f4; box-sizing: border-box; }
+        
+        .btn-row { display: flex; gap: 6px; margin-top: 8px; }
+        .btn-icon { flex: 1; background: #45475a; color: #cdd6f4; border: none; padding: 8px 5px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px; text-align: center; }
+        .btn-icon:hover { background: #585b70; color: #ffffff; }
+        .btn-primary { background: #89b4fa; color: #11111b; }
+        .btn-primary:hover { background: #b4befe; }
+
+        /* Excel Table Styling */
+        table.excel-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: center; }
+        table.excel-table th, table.excel-table td { border: 1px solid #313244; padding: 7px 12px; white-space: nowrap; }
+        table.excel-table th { background: #181825; color: #89b4fa; font-weight: bold; position: sticky; top: 0; }
+        table.excel-table tr:nth-child(even) { background: #1e1e2e; }
+        table.excel-table tr:hover { background: #45475a; color: #a6e3a1; cursor: pointer; }
+        .tension-val { font-weight: bold; color: #a6e3a1; }
+        .status-buoy { background: #313244; color: #f9e2af; font-weight: bold; padding: 3px 8px; border-radius: 4px; }
+        .status-seabed { background: #313244; color: #fab387; font-weight: bold; padding: 3px 8px; border-radius: 4px; }
+        .status-water { background: #313244; color: #89b4fa; padding: 3px 8px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>🌊 riserSim 3D Catenary Visualizer</h1>
+        <span class="badge">Decoupled WebGL + Live Element Tension Table</span>
+    </div>
+
+    <div id="main-layout">
+        <div id="top-container">
+            <div id="sidebar">
+                <div class="control-group">
+                    <div class="control-title">🎬 CONTROLES DE ANIMAÇÃO DE CARGA</div>
+                    <label for="step-slider">Passo: <span id="step-label" style="font-weight:bold; color:#a6e3a1;">10/10 (100%)</span></label>
+                    <input type="range" id="step-slider" min="0" max="10" value="10" step="1">
+                    
+                    <div class="btn-row">
+                        <button class="btn-icon" id="prev-btn" title="Passo Anterior">⏮️ Voltar</button>
+                        <button class="btn-icon btn-primary" id="play-btn" title="Iniciar Animação">▶️ Play</button>
+                        <button class="btn-icon" id="pause-btn" title="Pausar Animação">⏸️ Pausa</button>
+                        <button class="btn-icon" id="next-btn" title="Próximo Passo">⏭️ Avançar</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">🎨 MAPA DE CORES (COLORMAP)</div>
+                    <select id="colormap-select">
+                        <option value="Jet" selected>Jet (Clássico Engineering)</option>
+                        <option value="Plasma">Plasma</option>
+                        <option value="Viridis">Viridis</option>
+                        <option value="Rainbow">Rainbow</option>
+                        <option value="Turbo">Turbo (Google High Contrast)</option>
+                        <option value="Coolwarm">Coolwarm (Azul -> Vermelho)</option>
+                        <option value="Cividis">Cividis</option>
+                        <option value="Inferno">Inferno</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">📊 MÉTRICAS DO PASSO ATUAL</div>
+                    <div class="stat-card">
+                        <div class="stat-title">Fator de Carga Gravitacional</div>
+                        <div class="stat-value" id="load-factor">100 %</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Tração Efetiva no Topo</div>
+                        <div class="stat-value" id="top-tension">906.96 kN</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Profundidade Mínima (Z)</div>
+                        <div class="stat-value" id="max-depth">-80.00 m</div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">📁 CARREGAR NOVO ARQUIVO JSON</div>
+                    <input type="file" id="json-input" accept=".json">
+                </div>
+            </div>
+            <div id="plot"></div>
+        </div>
+
+        <!-- Excel Table for Current Step Values -->
+        <div id="table-container">
+            <h3>
+                <span>📊 Tabela de Tensões e Geometria dos Elementos — <span id="table-step-title" style="color:#a6e3a1;">Passo 10 (100%)</span></span>
+                <span style="font-size: 11px; color: #a6adc8;">Valores em Tempo Real do Passo Ativo</span>
+            </h3>
+            <div id="matrix-table-wrapper">
+                <table class="excel-table" id="excel-table">
+                    <thead>
+                        <tr>
+                            <th>Elemento ID</th>
+                            <th>Nó de Origem</th>
+                            <th>Nó de Destino</th>
+                            <th>Coordenada Z Inicial (m)</th>
+                            <th>Coordenada Z Final (m)</th>
+                            <th>Status da Seção</th>
+                            <th>Tração Efetiva (kN)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="table-body">
+                        <!-- Populated dynamically per active step -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentDataset = null;
+        let isPlaying = false;
+        let animationTimer = null;
+
+        function loadJSON(url) {
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    currentDataset = data;
+                    setupSlider(data);
+                    renderStep(data.steps ? data.steps.length - 1 : 0);
+                })
+                .catch(err => console.error("Could not fetch JSON: ", err));
+        }
+
+        function setupSlider(data) {
+            const slider = document.getElementById("step-slider");
+            if (data.steps && data.steps.length > 0) {
+                slider.max = data.steps.length - 1;
+                slider.value = data.steps.length - 1;
+            } else {
+                slider.max = 0;
+                slider.value = 0;
+            }
+        }
+
+        function updateLiveTable(stepData, stepIdx, totalSteps) {
+            const tbody = document.getElementById("table-body");
+            const stepTitle = document.getElementById("table-step-title");
+
+            const pct = stepData.load_factor !== undefined ? (stepData.load_factor * 100).toFixed(0) : 100;
+            stepTitle.innerText = `Passo ${stepIdx}/${totalSteps} (${pct}% da Carga)`;
+
+            tbody.innerHTML = "";
+
+            const nodes = stepData.nodes;
+            const elements = stepData.elements;
+
+            elements.forEach((elem, idx) => {
+                const tr = document.createElement("tr");
+
+                const n1 = nodes[idx];
+                const n2 = nodes[idx + 1] || nodes[idx];
+
+                const z1 = n1.z.toFixed(2);
+                const z2 = n2.z.toFixed(2);
+                const tension = elem.tension_effective_kN.toFixed(2);
+
+                let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
+                if (idx >= 7 && idx <= 11) {
+                    statusBadge = `<span class="status-buoy">🎈 Flutuador (Lazy Wave)</span>`;
+                } else if (n2.z <= -79.9) {
+                    statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
+                }
+
+                tr.innerHTML = `
+                    <td style="font-weight:bold; color:#89b4fa;">Elemento ${elem.id || (idx + 1)}</td>
+                    <td>Nó ${idx + 1} (${n1.x.toFixed(1)}m)</td>
+                    <td>Nó ${idx + 2} (${n2.x.toFixed(1)}m)</td>
+                    <td>${z1} m</td>
+                    <td>${z2} m</td>
+                    <td>${statusBadge}</td>
+                    <td class="tension-val">${tension} kN</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderStep(stepIdx) {
+            if (!currentDataset) return;
+
+            let stepData;
+            let seabedDepth = currentDataset.seabed_depth || -80.0;
+            let totalSteps = currentDataset.steps ? currentDataset.steps.length - 1 : 0;
+
+            if (currentDataset.steps && currentDataset.steps.length > 0) {
+                stepData = currentDataset.steps[stepIdx];
+            } else {
+                stepData = currentDataset;
+            }
+
+            const x = stepData.nodes.map(n => n.x);
+            const y = stepData.nodes.map(n => n.y);
+            const z = stepData.nodes.map(n => n.z);
+            const tensions = [stepData.elements[0].tension_effective_kN, ...stepData.elements.map(e => e.tension_effective_kN)];
+
+            const loadFactorPct = stepData.load_factor !== undefined ? (stepData.load_factor * 100).toFixed(0) : 100;
+            const selectedColormap = document.getElementById("colormap-select").value;
+
+            document.getElementById("step-label").innerText = `${stepIdx}/${totalSteps} (${loadFactorPct}%)`;
+            document.getElementById("load-factor").innerText = `${loadFactorPct} %`;
+            document.getElementById("top-tension").innerText = `${stepData.elements[0].tension_effective_kN.toFixed(2)} kN`;
+            document.getElementById("max-depth").innerText = `${Math.min(...z).toFixed(2)} m`;
+
+            // Update live dynamic table for current active step
+            updateLiveTable(stepData, stepIdx, totalSteps);
+
+            const riserTrace = {
+                type: 'scatter3d',
+                mode: 'lines+markers',
+                x: x, y: y, z: z,
+                line: {
+                    width: 12,
+                    color: tensions,
+                    colorscale: selectedColormap,
+                    colorbar: { title: 'Tração Efetiva (kN)' }
+                },
+                marker: { size: 6, color: 'white' },
+                name: 'Riser Catenary'
+            };
+
+            const seabedTrace = {
+                type: 'mesh3d',
+                x: [-10, 110, 110, -10],
+                y: [-25, -25, 25, 25],
+                z: [seabedDepth, seabedDepth, seabedDepth, seabedDepth],
+                i: [0, 0],
+                j: [1, 2],
+                k: [2, 3],
+                color: '#d4a373',
+                opacity: 0.5,
+                name: 'Fundo do Mar (Seabed)'
+            };
+
+            const layout = {
+                paper_bgcolor: '#1e1e2e',
+                plot_bgcolor: '#1e1e2e',
+                scene: {
+                    xaxis: { title: 'X (m)', color: '#cdd6f4' },
+                    yaxis: { title: 'Y (m)', color: '#cdd6f4' },
+                    zaxis: { title: 'Profundidade Z (m)', color: '#cdd6f4' },
+                    camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } }
+                },
+                margin: { l: 0, r: 0, b: 0, t: 0 }
+            };
+
+            Plotly.react('plot', [riserTrace, seabedTrace], layout);
+        }
+
+        // Event Listeners for Controls
+        const slider = document.getElementById('step-slider');
+
+        slider.addEventListener('input', function(e) {
+            renderStep(parseInt(e.target.value));
+        });
+
+        document.getElementById('colormap-select').addEventListener('change', function() {
+            renderStep(parseInt(slider.value));
+        });
+
+        document.getElementById('prev-btn').addEventListener('click', function() {
+            let val = parseInt(slider.value) - 1;
+            if (val < 0) val = 0;
+            slider.value = val;
+            renderStep(val);
+        });
+
+        document.getElementById('next-btn').addEventListener('click', function() {
+            let val = parseInt(slider.value) + 1;
+            if (val > parseInt(slider.max)) val = parseInt(slider.max);
+            slider.value = val;
+            renderStep(val);
+        });
+
+        document.getElementById('play-btn').addEventListener('click', function() {
+            if (isPlaying) return;
+            isPlaying = true;
+            animationTimer = setInterval(() => {
+                let nextVal = parseInt(slider.value) + 1;
+                if (nextVal > parseInt(slider.max)) nextVal = 0;
+                slider.value = nextVal;
+                renderStep(nextVal);
+            }, 400);
+        });
+
+        document.getElementById('pause-btn').addEventListener('click', function() {
+            if (isPlaying) {
+                clearInterval(animationTimer);
+                isPlaying = false;
+            }
+        });
+
+        document.getElementById('json-input').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                currentDataset = JSON.parse(e.target.result);
+                setupSlider(currentDataset);
+                renderStep(currentDataset.steps ? currentDataset.steps.length - 1 : 0);
+            };
+            reader.readAsText(file);
+        });
+
+        // Load Initial Results
+        loadJSON('../../catenary_results.json');
+    </script>
+</body>
+</html>

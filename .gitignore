@@ -1,0 +1,25 @@
+# riserSim Build Artifacts & CMake Cache
+build/
+bin/
+obj/
+*.exe
+*.obj
+*.o
+*.lib
+*.dll
+*.pdb
+*.ilk
+*.suo
+*.user
+.vs/
+.idea/
+.vscode/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary logs
+*.log
+*.tmp

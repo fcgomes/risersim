@@ -1,0 +1,41 @@
+{
+  "simulation_type": "riserSim 3D Catenary Equilibrium with Subsurface Cross-Current",
+  "seabed_depth": -80.0,
+  "num_steps": 11,
+  "steps": [
+    {
+      "step": 0,
+      "load_factor": 0.0,
+      "nodes": [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0}, {"id": 2, "x": 5.0, "y": 0.0, "z": -4.0}, {"id": 3, "x": 10.0, "y": 0.0, "z": -8.0}, {"id": 4, "x": 15.0, "y": 0.0, "z": -12.0}, {"id": 5, "x": 20.0, "y": 0.0, "z": -16.0},
+        {"id": 6, "x": 25.0, "y": 0.0, "z": -20.0}, {"id": 7, "x": 30.0, "y": 0.0, "z": -24.0}, {"id": 8, "x": 35.0, "y": 0.0, "z": -28.0}, {"id": 9, "x": 40.0, "y": 0.0, "z": -32.0}, {"id": 10, "x": 45.0, "y": 0.0, "z": -36.0},
+        {"id": 11, "x": 50.0, "y": 0.0, "z": -40.0}, {"id": 12, "x": 55.0, "y": 0.0, "z": -44.0}, {"id": 13, "x": 60.0, "y": 0.0, "z": -48.0}, {"id": 14, "x": 65.0, "y": 0.0, "z": -52.0}, {"id": 15, "x": 70.0, "y": 0.0, "z": -56.0},
+        {"id": 16, "x": 75.0, "y": 0.0, "z": -60.0}, {"id": 17, "x": 80.0, "y": 0.0, "z": -64.0}, {"id": 18, "x": 85.0, "y": 0.0, "z": -68.0}, {"id": 19, "x": 90.0, "y": 0.0, "z": -72.0},
+        {"id": 20, "x": 95.0, "y": 0.0, "z": -76.0}, {"id": 21, "x": 100.0, "y": 0.0, "z": -80.0}
+      ],
+      "elements": [
+        {"id": 1, "tension_effective_kN": 10.0}, {"id": 2, "tension_effective_kN": 10.0}, {"id": 3, "tension_effective_kN": 10.0}, {"id": 4, "tension_effective_kN": 10.0}, {"id": 5, "tension_effective_kN": 10.0},
+        {"id": 6, "tension_effective_kN": 10.0}, {"id": 7, "tension_effective_kN": 10.0}, {"id": 8, "tension_effective_kN": 10.0}, {"id": 9, "tension_effective_kN": 10.0}, {"id": 10, "tension_effective_kN": 10.0},
+        {"id": 11, "tension_effective_kN": 10.0}, {"id": 12, "tension_effective_kN": 10.0}, {"id": 13, "tension_effective_kN": 10.0}, {"id": 14, "tension_effective_kN": 10.0}, {"id": 15, "tension_effective_kN": 10.0},
+        {"id": 16, "tension_effective_kN": 10.0}, {"id": 17, "tension_effective_kN": 10.0}, {"id": 18, "tension_effective_kN": 10.0}, {"id": 19, "tension_effective_kN": 10.0}, {"id": 20, "tension_effective_kN": 10.0}
+      ]
+    },
+    {
+      "step": 10,
+      "load_factor": 1.0,
+      "nodes": [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0}, {"id": 2, "x": 5.002, "y": 0.010, "z": -3.998}, {"id": 3, "x": 10.016, "y": 0.053, "z": -7.981}, {"id": 4, "x": 15.035, "y": 0.092, "z": -11.957}, {"id": 5, "x": 20.060, "y": 0.128, "z": -15.926},
+        {"id": 6, "x": 25.090, "y": 0.161, "z": -19.887}, {"id": 7, "x": 30.126, "y": 0.190, "z": -23.841}, {"id": 8, "x": 35.168, "y": 0.216, "z": -27.788}, {"id": 9, "x": 40.202, "y": 0.236, "z": -31.746}, {"id": 10, "x": 45.213, "y": 0.245, "z": -35.732},
+        {"id": 11, "x": 50.203, "y": 0.244, "z": -39.746}, {"id": 12, "x": 55.169, "y": 0.234, "z": -43.787}, {"id": 13, "x": 60.128, "y": 0.218, "z": -47.839}, {"id": 14, "x": 65.092, "y": 0.199, "z": -51.883}, {"id": 15, "x": 70.062, "y": 0.178, "z": -55.921},
+        {"id": 16, "x": 75.038, "y": 0.154, "z": -59.952}, {"id": 17, "x": 80.019, "y": 0.127, "z": -63.975}, {"id": 18, "x": 85.006, "y": 0.098, "z": -67.992}, {"id": 19, "x": 89.998, "y": 0.067, "z": -72.002},
+        {"id": 20, "x": 94.996, "y": 0.034, "z": -76.004}, {"id": 21, "x": 100.0, "y": 0.0, "z": -80.0}
+      ],
+      "elements": [
+        {"id": 1, "tension_effective_kN": 10.0}, {"id": 2, "tension_effective_kN": 10.0}, {"id": 3, "tension_effective_kN": 10.0}, {"id": 4, "tension_effective_kN": 10.0}, {"id": 5, "tension_effective_kN": 10.0},
+        {"id": 6, "tension_effective_kN": 10.0}, {"id": 7, "tension_effective_kN": 10.0}, {"id": 8, "tension_effective_kN": 10.0}, {"id": 9, "tension_effective_kN": 10.0}, {"id": 10, "tension_effective_kN": 10.0},
+        {"id": 11, "tension_effective_kN": 10.0}, {"id": 12, "tension_effective_kN": 10.0}, {"id": 13, "tension_effective_kN": 10.0}, {"id": 14, "tension_effective_kN": 10.0}, {"id": 15, "tension_effective_kN": 10.0},
+        {"id": 16, "tension_effective_kN": 10.0}, {"id": 17, "tension_effective_kN": 10.0}, {"id": 18, "tension_effective_kN": 10.0}, {"id": 19, "tension_effective_kN": 10.0}, {"id": 20, "tension_effective_kN": 10.0}
+      ]
+    }
+  ]
+}
