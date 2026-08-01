@@ -7,10 +7,11 @@
 #include "risersim/seabed.hpp"
 #include "risersim/buoyancy_and_restrictor.hpp"
 #include "risersim/current_profile.hpp"
+#include "risersim/vessel_offset.hpp"
 
 int main() {
     std::cout << "=========================================================" << std::endl;
-    std::cout << "  riserSim Item 1: 3D Cross-Current & Drag Force Test    " << std::endl;
+    std::cout << "  riserSim Item 2: Vessel Offset Analysis (Far/Near/Cross)" << std::endl;
     std::cout << "=========================================================" << std::endl;
 
     // 1. Define Riser Properties
@@ -68,30 +69,27 @@ int main() {
         buoy.apply_to_element(elements[i]);
     }
 
-    // 5. Configure 3D Subsurface Cross-Current Profile (V_surf = 1.5 m/s, Heading = 90 deg -> +Y)
+    // 5. Setup Static Analysis
     risersim::StaticAnalysis analysis;
     analysis.nodes = nodes;
     analysis.elements = elements;
     analysis.water_density = 1025.0;
     analysis.seabed = risersim::SeabedInteraction(-80.0, 1.0e5, 0.5);
 
-    analysis.enable_current = true;
-    analysis.current = risersim::CurrentProfile(1.5, -80.0, 90.0, 0.1428, 1.0); // 1.5 m/s, 90° (+Y)
+    // Phase 1: Static Catenary Equilibrium
+    std::cout << "\n--- Phase 1: Initial Catenary Static Equilibrium ---" << std::endl;
+    bool success_catenary = analysis.solve_catenary_static(10, 100, 1.0e-1);
 
-    std::cout << "[INFO] Enabled 3D Subsurface Cross-Current (V_surf: 1.5 m/s, Heading: 90 deg -> +Y)." << std::endl;
+    // Phase 2: Impose Vessel Offset Near (-10.0m displacement in -X)
+    std::cout << "\n--- Phase 2: Vessel Offset Near (-10.0 m) ---" << std::endl;
+    risersim::VesselOffset offset_near(risersim::OffsetMode::Near, 10.0); // -10m Near Offset
+    bool success_offset = analysis.solve_vessel_offset(offset_near, 20, 500, 100.0);
 
-    for (auto* elem : elements) {
-        double avg_z = 0.5 * (elem->node1->coords.z() + elem->node2->coords.z());
-        elem->p_e = 1025.0 * 9.81 * std::abs(avg_z);
-        elem->update_effective_tension();
-    }
-
-    bool success = analysis.solve_catenary_static(10, 200, 2.5);
     analysis.export_json("catenary_results.json");
 
-    if (success) {
+    if (success_catenary && success_offset) {
         std::cout << "\n=========================================================" << std::endl;
-        std::cout << "  🌊 3D LAZY WAVE WITH LATERAL CROSS-CURRENT PROFILE" << std::endl;
+        std::cout << "  🚢 RISER PROFILE UNDER VESSEL OFFSET FAR (+10.0 m)" << std::endl;
         std::cout << "=========================================================" << std::endl;
         std::cout << std::setw(8) << "Node ID" << std::setw(12) << "X (m)" << std::setw(12) << "Y (m)" << std::setw(12) << "Z (m)" << std::setw(22) << "Status" << std::endl;
         std::cout << "---------------------------------------------------------" << std::endl;
@@ -108,14 +106,13 @@ int main() {
                       << std::setw(22) << status << std::endl;
         }
 
-        std::cout << "\n[3D DEFLECTION] Mid-Water Lateral Y Deflection at Node 10: " 
-                  << nodes[9]->current_coords().y() << " m" << std::endl;
-        std::cout << "[EFFECTIVE TENSION] Top Effective Tension: " 
+        std::cout << "\n[TOP POSITION] Platform Top Position X: " << nodes.front()->current_coords().x() << " m" << std::endl;
+        std::cout << "[EFFECTIVE TENSION] Top Effective Tension under Far Offset: " 
                   << (elements.front()->tension_effective / 1000.0) << " kN" << std::endl;
     }
 
     for (auto* elem : elements) delete elem;
     for (auto* node : nodes) delete node;
 
-    return success ? 0 : 1;
+    return (success_catenary && success_offset) ? 0 : 1;
 }

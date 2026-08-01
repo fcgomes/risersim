@@ -12,11 +12,12 @@ public:
     double D_buoyancy;       // Outer diameter of the buoyancy module (m)
     double net_upward_force; // Net extra upward buoyancy force per meter (N/m)
 
-    BuoyancyModule(double d_buoy = 0.80, double net_force = 1200.0)
+    BuoyancyModule(double d_buoy = 0.80, double net_force = 3600.0)
         : D_buoyancy(d_buoy), net_upward_force(net_force) {}
 
     void apply_to_element(CorotationalBeam3D* elem) const {
         elem->props.D_outer = D_buoyancy;
+        elem->net_upward_buoyancy = net_upward_force;
     }
 };
 

@@ -5,6 +5,7 @@
 #include "risersim/element_beam.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/current_profile.hpp"
+#include "risersim/vessel_offset.hpp"
 #include <vector>
 #include <string>
 #include <Eigen/Sparse>
@@ -45,6 +46,7 @@ public:
 
     void assemble_system(Eigen::SparseMatrix<double>& K_global, const Eigen::VectorXd& F_ext, Eigen::VectorXd& F_int);
     bool solve_catenary_static(int load_steps = 10, int max_iter_per_step = 150, double tol = 1.0e-3);
+    bool solve_vessel_offset(const VesselOffset& offset, int steps = 10, int max_iter = 100, double tol = 1.0e-3);
     bool export_json(const std::string& filename = "catenary_results.json") const;
 };
 
