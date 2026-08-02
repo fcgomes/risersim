@@ -78,7 +78,19 @@ bool StaticAnalysis::solve_catenary_static(int load_steps, int max_iter_per_step
     step0.step_index = 0;
     step0.load_factor = 0.0;
     for (auto* node : nodes) step0.node_coords.push_back(node->current_coords());
-    for (auto* elem : elements) step0.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+    for (size_t i = 0; i < elements.size(); ++i) {
+        auto* elem = elements[i];
+        const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+        const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+        elem->update_effective_tension();
+        auto sc = elem->compute_stress_and_curvature(prev, next);
+        step0.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+        step0.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+        step0.element_curvatures.push_back(sc.curvature);
+        step0.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+        step0.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+    }
     step_history.push_back(step0);
 
     for (int step = 1; step <= load_steps; ++step) {
@@ -146,13 +158,23 @@ bool StaticAnalysis::solve_catenary_static(int load_steps, int max_iter_per_step
                 std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations!" << std::endl;
                 step_converged = true;
 
-                for (auto* elem : elements) elem->update_effective_tension();
-
                 StepSnapshot snap;
                 snap.step_index = step;
                 snap.load_factor = load_factor;
                 for (auto* node : nodes) snap.node_coords.push_back(node->current_coords());
-                for (auto* elem : elements) snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                for (size_t i = 0; i < elements.size(); ++i) {
+                    auto* elem = elements[i];
+                    const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+                    const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+                    elem->update_effective_tension();
+                    auto sc = elem->compute_stress_and_curvature(prev, next);
+                    snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                    snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+                    snap.element_curvatures.push_back(sc.curvature);
+                    snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+                    snap.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+                }
                 step_history.push_back(snap);
 
                 break;
@@ -268,7 +290,19 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& offset, int steps, 
                 snap.step_index = step;
                 snap.load_factor = factor;
                 for (auto* node : nodes) snap.node_coords.push_back(node->current_coords());
-                for (auto* elem : elements) snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                for (size_t i = 0; i < elements.size(); ++i) {
+                    auto* elem = elements[i];
+                    const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+                    const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+                    elem->update_effective_tension();
+                    auto sc = elem->compute_stress_and_curvature(prev, next);
+                    snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                    snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+                    snap.element_curvatures.push_back(sc.curvature);
+                    snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+                    snap.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+                }
                 step_history.push_back(snap);
 
                 break;
@@ -314,7 +348,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& offset, int steps, 
 bool StaticAnalysis::export_json(const std::string& filename) const {
     std::ofstream file(filename);
     if (!file.is_open()) {
-        std::cerr << "❌ Failed to open output JSON file: " << filename << std::endl;
+        std::cerr << "❌ Could not open file for writing: " << filename << std::endl;
         return false;
     }
 
@@ -339,7 +373,13 @@ bool StaticAnalysis::export_json(const std::string& filename) const {
         file << "      ],\n";
         file << "      \"elements\": [\n";
         for (size_t i = 0; i < snap.element_tensions_kN.size(); ++i) {
-            file << "        {\"id\": " << (i + 1) << ", \"tension_effective_kN\": " << snap.element_tensions_kN[i] << "}";
+            file << "        {\"id\": " << (i + 1)
+                 << ", \"tension_effective_kN\": " << snap.element_tensions_kN[i]
+                 << ", \"bending_moment_kNm\": " << (i < snap.element_bending_moments_kNm.size() ? snap.element_bending_moments_kNm[i] : 0.0)
+                 << ", \"curvature\": " << (i < snap.element_curvatures.size() ? snap.element_curvatures[i] : 0.0)
+                 << ", \"von_mises_MPa\": " << (i < snap.element_von_mises_MPa.size() ? snap.element_von_mises_MPa[i] : 0.0)
+                 << ", \"mbr_safety_factor\": " << (i < snap.element_mbr_safety_factors.size() ? snap.element_mbr_safety_factors[i] : 1.0)
+                 << "}";
             if (i + 1 < snap.element_tensions_kN.size()) file << ",";
             file << "\n";
         }

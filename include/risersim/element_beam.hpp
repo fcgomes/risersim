@@ -107,6 +107,21 @@ public:
         Eigen::Matrix<double, 12, 12> M_local = local_mass_matrix(rho_water);
         return T.transpose() * M_local * T;
     }
+
+    // Item 3: Bending Moment, Curvature, MBR Check & von Mises Combined Stress
+    struct StressAndCurvatureResults {
+        double curvature;          // Local curvature kappa (1/m)
+        double bending_moment_kNm; // Bending moment M (kN*m)
+        double bend_radius;        // Actual bend radius R = 1/kappa (m)
+        double mbr_min;            // Minimum Bend Radius threshold (m)
+        double mbr_safety_factor;  // Safety factor R_actual / MBR_min
+        double von_mises_MPa;      // Combined von Mises stress (MPa)
+    };
+
+    StressAndCurvatureResults compute_stress_and_curvature(
+        const CorotationalBeam3D* prev_elem = nullptr,
+        const CorotationalBeam3D* next_elem = nullptr,
+        double yield_stress_MPa = 350.0) const;
 };
 
 } // namespace risersim

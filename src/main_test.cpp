@@ -88,6 +88,7 @@ int main() {
     bool success_offset = analysis.solve_vessel_offset(offset_far, 20, 300, 100.0);
 
     analysis.export_json("risersim/catenary_results.json");
+    analysis.export_json("catenary_results.json");
 
     if (success_catenary && success_offset) {
         std::cout << "\n=========================================================" << std::endl;
@@ -111,6 +112,31 @@ int main() {
         std::cout << "\n[TOP POSITION] Platform Top Position X: " << nodes.front()->current_coords().x() << " m" << std::endl;
         std::cout << "[EFFECTIVE TENSION] Top Effective Tension under Far Offset: " 
                   << (elements.front()->tension_effective / 1000.0) << " kN" << std::endl;
+
+        std::cout << "\n=========================================================================" << std::endl;
+        std::cout << "  📊 ITEM 3: BENDING MOMENTS, CURVATURE & VON MISES STRESS" << std::endl;
+        std::cout << "=========================================================================" << std::endl;
+        std::cout << std::setw(8) << "Elem ID" 
+                  << std::setw(14) << "Tension (kN)" 
+                  << std::setw(16) << "Moment (kN.m)" 
+                  << std::setw(16) << "Curvature(1/m)" 
+                  << std::setw(16) << "von Mises(MPa)" 
+                  << std::setw(14) << "MBR SF" << std::endl;
+        std::cout << "-------------------------------------------------------------------------" << std::endl;
+
+        for (size_t i = 0; i < elements.size(); ++i) {
+            auto* elem = elements[i];
+            const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+            const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+            auto sc = elem->compute_stress_and_curvature(prev, next, 350.0);
+            std::cout << std::setw(8) << elem->id
+                      << std::setw(14) << std::fixed << std::setprecision(1) << (elem->tension_effective / 1000.0)
+                      << std::setw(16) << std::setprecision(2) << sc.bending_moment_kNm
+                      << std::setw(16) << std::scientific << std::setprecision(3) << sc.curvature << std::defaultfloat
+                      << std::setw(16) << std::fixed << std::setprecision(1) << sc.von_mises_MPa
+                      << std::setw(14) << std::setprecision(2) << sc.mbr_safety_factor << std::endl;
+        }
     }
 
     for (auto* elem : elements) delete elem;

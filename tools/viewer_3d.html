@@ -186,7 +186,7 @@
         <!-- Excel Table for Current Step Values -->
         <div id="table-container">
             <h3>
-                <span>📊 Tabela de Tensões e Geometria dos Elementos — <span id="table-step-title">Passo 20 (100%)</span></span>
+                <span>📊 Tabela de Tensões, Momentos, von Mises e Geometria — <span id="table-step-title">Passo 20 (100%)</span></span>
                 <span style="font-size: 11px; opacity: 0.8;">Valores em Tempo Real do Passo Ativo</span>
             </h3>
             <div id="matrix-table-wrapper">
@@ -194,12 +194,14 @@
                     <thead>
                         <tr>
                             <th>Elemento ID</th>
-                            <th>Nó de Origem</th>
-                            <th>Nó de Destino</th>
-                            <th>Coordenada Z Inicial (m)</th>
-                            <th>Coordenada Z Final (m)</th>
+                            <th>Nó Origem ➔ Destino</th>
+                            <th>Z Inicial ➔ Final (m)</th>
                             <th>Status da Seção</th>
                             <th>Tração Efetiva (kN)</th>
+                            <th>Momento Fletor (kN.m)</th>
+                            <th>Curvatura (1/m)</th>
+                            <th>Tensão von Mises (MPa)</th>
+                            <th>Fator MBR (SF)</th>
                         </tr>
                     </thead>
                     <tbody id="table-body">
@@ -230,7 +232,7 @@
             scene.background = new THREE.Color(currentTheme === 'dark' ? 0x1e1e2e : 0xffffff);
 
             camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
-            camera.position.set(50, 40, 110);
+            camera.position.set(60, 50, 140);
 
             renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
             renderer.setSize(container.clientWidth, container.clientHeight);
@@ -253,7 +255,7 @@
 
             // OrbitControls - Independent 60 FPS Mouse Rotation
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.target.set(50, -40, 0);
+            controls.target.set(60, -50, 0);
             controls.update();
 
             window.addEventListener('resize', onWindowResize);
@@ -402,23 +404,29 @@
 
                 const z1 = n1.z.toFixed(2);
                 const z2 = n2.z.toFixed(2);
-                const tension = elem.tension_effective_kN.toFixed(2);
+                const tension = elem.tension_effective_kN !== undefined ? elem.tension_effective_kN.toFixed(1) : "0.0";
+                const moment = elem.bending_moment_kNm !== undefined ? elem.bending_moment_kNm.toFixed(2) : "0.00";
+                const curvature = elem.curvature !== undefined ? elem.curvature.toExponential(3) : "0.000e+00";
+                const vonMises = elem.von_mises_MPa !== undefined ? elem.von_mises_MPa.toFixed(1) : "0.0";
+                const mbrSF = elem.mbr_safety_factor !== undefined ? elem.mbr_safety_factor.toFixed(2) : "1.00";
 
                 let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
-                if (idx >= 7 && idx <= 11) {
+                if (idx >= 14 && idx <= 26) {
                     statusBadge = `<span class="status-buoy">🎈 Flutuador (Lazy Wave)</span>`;
-                } else if (n2.z <= -79.9) {
+                } else if (n2.z <= -99.5) {
                     statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
                 }
 
                 tr.innerHTML = `
                     <td style="font-weight:bold;">Elemento ${elem.id || (idx + 1)}</td>
-                    <td>Nó ${idx + 1} (${n1.x.toFixed(1)}m)</td>
-                    <td>Nó ${idx + 2} (${n2.x.toFixed(1)}m)</td>
-                    <td>${z1} m</td>
-                    <td>${z2} m</td>
+                    <td>Nó ${idx + 1} ➔ Nós ${idx + 2}</td>
+                    <td>${z1}m ➔ ${z2}m</td>
                     <td>${statusBadge}</td>
                     <td class="tension-val">${tension} kN</td>
+                    <td>${moment} kN.m</td>
+                    <td style="font-family:monospace;">${curvature}</td>
+                    <td style="font-weight:bold; color:#e11d48;">${vonMises} MPa</td>
+                    <td style="font-weight:bold; color:#2563eb;">${mbrSF}</td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -599,7 +607,7 @@
 
         // Initialize Three.js Engine and Load Data
         initThreeJS();
-        loadJSON('../../catenary_results.json');
+        loadJSON('../catenary_results.json');
     </script>
 </body>
 </html>

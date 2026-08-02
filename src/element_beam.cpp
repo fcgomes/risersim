@@ -132,4 +132,98 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const 
     return T;
 }
 
+CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress_and_curvature(
+    const CorotationalBeam3D* prev_elem,
+    const CorotationalBeam3D* next_elem,
+    double yield_stress_MPa) const {
+    StressAndCurvatureResults res;
+
+    double L = current_length();
+    if (L <= 0.0) L = initial_length;
+
+    // 1. Calculate 3D Geometric Curvature from adjacent element orientation vectors
+    Eigen::Vector3d ex_curr = (node2->current_coords() - node1->current_coords()).normalized();
+    double kappa_geom = 0.0;
+    int count = 0;
+
+    if (prev_elem) {
+        Eigen::Vector3d ex_prev = (prev_elem->node2->current_coords() - prev_elem->node1->current_coords()).normalized();
+        double dot_val = std::max(-1.0, std::min(1.0, ex_prev.dot(ex_curr)));
+        double d_theta = std::acos(dot_val);
+        double L_avg = 0.5 * (prev_elem->current_length() + L);
+        if (L_avg > 0.0) {
+            kappa_geom += d_theta / L_avg;
+            count++;
+        }
+    }
+
+    if (next_elem) {
+        Eigen::Vector3d ex_next = (next_elem->node2->current_coords() - next_elem->node1->current_coords()).normalized();
+        double dot_val = std::max(-1.0, std::min(1.0, ex_curr.dot(ex_next)));
+        double d_theta = std::acos(dot_val);
+        double L_avg = 0.5 * (L + next_elem->current_length());
+        if (L_avg > 0.0) {
+            kappa_geom += d_theta / L_avg;
+            count++;
+        }
+    }
+
+    if (count > 0) {
+        kappa_geom /= static_cast<double>(count);
+    }
+
+    // 2. Rotational curvature from local DOFs
+    Eigen::Matrix<double, 12, 12> T = transformation_matrix();
+    Eigen::Matrix<double, 12, 1> U_global = Eigen::Matrix<double, 12, 1>::Zero();
+    U_global.block<3, 1>(0, 0) = node1->disp;
+    U_global.block<3, 1>(3, 0) = node1->rot;
+    U_global.block<3, 1>(6, 0) = node2->disp;
+    U_global.block<3, 1>(9, 0) = node2->rot;
+
+    Eigen::Matrix<double, 12, 1> U_local = T * U_global;
+
+    double rot_y1 = U_local(4);
+    double rot_z1 = U_local(5);
+    double rot_y2 = U_local(10);
+    double rot_z2 = U_local(11);
+
+    double kappa_y = (std::abs(rot_y1) + std::abs(rot_y2)) / L;
+    double kappa_z = (std::abs(rot_z1) + std::abs(rot_z2)) / L;
+    double kappa_rot = std::sqrt(kappa_y * kappa_y + kappa_z * kappa_z);
+
+    // Total Curvature is max of geometric and rotational curvature
+    res.curvature = std::max(kappa_rot, kappa_geom);
+
+    // Bending Moment M = E * I * kappa
+    double M_total_Nm = props.E * props.IY * res.curvature;
+    res.bending_moment_kNm = M_total_Nm / 1000.0;
+
+    if (res.curvature > 1.0e-7) {
+        res.bend_radius = 1.0 / res.curvature;
+    } else {
+        res.bend_radius = 9999.0;
+    }
+
+    double yield_Pa = yield_stress_MPa * 1.0e6;
+    res.mbr_min = (props.E * props.D_outer) / (2.0 * yield_Pa);
+    res.mbr_safety_factor = res.bend_radius / (res.mbr_min > 0.01 ? res.mbr_min : 1.0);
+
+    double A_struct = (props.A > 0.0) ? props.A : (M_PI * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
+    double sigma_axial = tension_effective / A_struct;
+    double r_outer = props.D_outer / 2.0;
+    double sigma_bending = (M_total_Nm * r_outer) / (props.IY > 1.0e-9 ? props.IY : 1.0e-5);
+    double sigma_direct = std::abs(sigma_axial) + std::abs(sigma_bending);
+
+    double rot_x1 = U_local(3);
+    double rot_x2 = U_local(9);
+    double torsion_angle = std::abs(rot_x2 - rot_x1);
+    double M_torsion = props.G * props.J * torsion_angle / L;
+    double tau = (M_torsion * r_outer) / (props.J > 1.0e-9 ? props.J : 1.0e-4);
+
+    double von_mises_Pa = std::sqrt(sigma_direct * sigma_direct + 3.0 * tau * tau);
+    res.von_mises_MPa = von_mises_Pa / 1.0e6;
+
+    return res;
+}
+
 } // namespace risersim
