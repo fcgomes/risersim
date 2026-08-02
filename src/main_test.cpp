@@ -2,7 +2,9 @@
 #include <iomanip>
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
-#include "risersim/solver.hpp"
+#include "risersim/static_analysis.hpp"
+#include "risersim/dynamic_analysis.hpp"
+#include "risersim/simulation_exporter.hpp"
 #include "risersim/hydrodynamics.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/buoyancy_and_restrictor.hpp"
@@ -11,7 +13,7 @@
 
 int main() {
     std::cout << "=========================================================" << std::endl;
-    std::cout << "  riserSim Item 2: Vessel Offset Analysis (Far/Near/Cross)" << std::endl;
+    std::cout << "  riserSim Item 2: Vessel Offset & Dynamic Analysis" << std::endl;
     std::cout << "=========================================================" << std::endl;
 
     // 1. Define Riser Properties (Flexible Riser Pipe)
@@ -71,32 +73,39 @@ int main() {
         buoy.apply_to_element(elements[i]);
     }
 
-    // 5. Setup Static Analysis
-    risersim::StaticAnalysis analysis;
-    analysis.nodes = nodes;
-    analysis.elements = elements;
-    analysis.water_density = 1025.0;
-    analysis.seabed = risersim::SeabedInteraction(-100.0, 1.0e5, 0.5);
+    // 5. Setup Dedicated Static Analysis
+    risersim::StaticAnalysis static_analysis;
+    static_analysis.nodes = nodes;
+    static_analysis.elements = elements;
+    static_analysis.water_density = 1025.0;
+    static_analysis.seabed = risersim::SeabedInteraction(-100.0, 1.0e5, 0.5);
+    static_analysis.load_steps = 20;
+    static_analysis.tol = 10000.0;
+    static_analysis.offset = risersim::VesselOffset(risersim::OffsetMode::Far, 10.0);
+    static_analysis.enable_offset = true;
 
-    // Phase 1: Initial Catenary Static Equilibrium
-    std::cout << "\n--- Phase 1: Initial Catenary Static Equilibrium ---" << std::endl;
-    bool success_catenary = analysis.solve_catenary_static(20, 300, 100.0);
+    // Phase 1 & 2: Static Catenary & Vessel Offset Solves
+    std::cout << "\n--- Running Static Analysis ---" << std::endl;
+    bool success_static = static_analysis.solve();
 
-    // Phase 2: Impose Vessel Offset Far (+10.0m displacement in +X)
-    std::cout << "\n--- Phase 2: Vessel Offset Far (+10.0 m) ---" << std::endl;
-    risersim::VesselOffset offset_far(risersim::OffsetMode::Far, 10.0); // +10m Far Offset
-    bool success_offset = analysis.solve_vessel_offset(offset_far, 20, 300, 100.0);
+    // 6. Setup Dedicated Dynamic Analysis (passing static equilibrium state)
+    risersim::DynamicAnalysis dynamic_analysis(static_analysis);
+    dynamic_analysis.duration_s = 20.0;
+    dynamic_analysis.dt_s = 0.05;
+    dynamic_analysis.wave_amplitude = 2.5;
+    dynamic_analysis.wave_period = 10.0;
 
-    // Phase 3: 3D Time-Domain Dynamic Wave Response (20s duration, dt = 0.05s)
-    std::cout << "\n--- Phase 3: 3D Time-Domain Dynamic Wave Response ---" << std::endl;
-    bool success_dynamic = analysis.solve_time_domain_dynamic(20.0, 0.05, 2.5, 10.0);
+    // Phase 3: 3D Time-Domain Dynamic Wave Response
+    std::cout << "\n--- Running Dynamic Analysis ---" << std::endl;
+    bool success_dynamic = dynamic_analysis.solve();
 
-    analysis.export_json("risersim/catenary_results.json");
-    analysis.export_json("catenary_results.json");
-    analysis.export_hdf5("risersim/catenary_results.h5");
-    analysis.export_hdf5("catenary_results.h5");
+    // 7. Export Combined Static & Dynamic Results
+    risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, "risersim/catenary_results.json");
+    risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, "catenary_results.json");
+    risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, "risersim/catenary_results.h5");
+    risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, "catenary_results.h5");
 
-    if (success_catenary && success_offset) {
+    if (success_static && success_dynamic) {
         std::cout << "\n=========================================================" << std::endl;
         std::cout << "  🚢 RISER PROFILE UNDER VESSEL OFFSET FAR (+10.0 m)" << std::endl;
         std::cout << "=========================================================" << std::endl;
@@ -148,5 +157,5 @@ int main() {
     for (auto* elem : elements) delete elem;
     for (auto* node : nodes) delete node;
 
-    return (success_catenary && success_offset) ? 0 : 1;
+    return (success_static && success_dynamic) ? 0 : 1;
 }

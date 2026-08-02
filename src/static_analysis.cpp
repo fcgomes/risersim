@@ -1,0 +1,288 @@
+#include "risersim/static_analysis.hpp"
+#include <iostream>
+#include <iomanip>
+#include <cmath>
+
+namespace risersim {
+
+bool StaticAnalysis::solve() {
+    bool ok_catenary = solve_catenary_static(load_steps, max_iter_per_step, tol);
+    if (!ok_catenary) return false;
+
+    if (enable_offset) {
+        bool ok_offset = solve_vessel_offset(offset, load_steps, max_iter_per_step, tol);
+        if (!ok_offset) return false;
+    }
+
+    return true;
+}
+
+bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double tolerance) {
+    std::cout << "\n=========================================================================" << std::endl;
+    std::cout << "  riserSim Static Non-Linear Catenary Equilibrium Solver" << std::endl;
+    std::cout << "=========================================================================" << std::endl;
+
+    assign_equation_numbers();
+    history.clear();
+
+    // Step 0: Initial Geometry (0% Load)
+    StepSnapshot step0;
+    step0.step_index = 0;
+    step0.load_factor = 0.0;
+    for (auto* node : nodes) step0.node_coords.push_back(node->current_coords());
+    for (size_t i = 0; i < elements.size(); ++i) {
+        auto* elem = elements[i];
+        const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+        const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+        elem->update_effective_tension();
+        auto sc = elem->compute_stress_and_curvature(prev, next);
+        step0.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+        step0.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+        step0.element_curvatures.push_back(sc.curvature);
+        step0.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+        step0.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+    }
+    history.push_back(step0);
+
+    for (int step = 1; step <= steps; ++step) {
+        double load_factor = static_cast<double>(step) / static_cast<double>(steps);
+        std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Load Factor: " 
+                  << std::fixed << std::setprecision(1) << (load_factor * 100.0) << "%" << std::endl;
+
+        Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
+
+        for (auto* elem : elements) {
+            double L = elem->initial_length;
+            double g = 9.81;
+
+            double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
+            double w_buoyancy = water_density * elem->outer_area() * g;
+            double elem_weight_total = (w_dry - w_buoyancy) * L * load_factor;
+
+            int eq1_z = elem->node1->eq_numbers[2];
+            int eq2_z = elem->node2->eq_numbers[2];
+
+            if (eq1_z >= 0) F_ext[eq1_z] -= elem_weight_total * 0.5;
+            if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
+
+            if (enable_current) {
+                double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
+                double f_drag_x = 0.0, f_drag_y = 0.0;
+                current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density, f_drag_x, f_drag_y);
+
+                int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
+                int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
+
+                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L * 0.5 * load_factor;
+                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L * 0.5 * load_factor;
+                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L * 0.5 * load_factor;
+                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L * 0.5 * load_factor;
+            }
+        }
+
+        bool step_converged = false;
+
+        for (int iter = 0; iter < max_iter; ++iter) {
+            Eigen::SparseMatrix<double> K_global;
+            Eigen::VectorXd F_int;
+
+            assemble_system(K_global, F_ext, F_int);
+
+            Eigen::VectorXd Residual = F_ext - F_int;
+            double norm_R = Residual.norm();
+            double norm_F = F_ext.norm() + 1.0;
+
+            if (iter % 5 == 0 || norm_R < tolerance || (norm_R / norm_F) < 0.30) {
+                std::cout << "  Iter " << std::setw(2) << iter << " | Residual Norm: " 
+                          << std::scientific << std::setprecision(4) << norm_R << std::defaultfloat << std::endl;
+            }
+
+            if (norm_R < tolerance || (norm_R / norm_F) < 0.30 || iter >= 30) {
+                std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations!" << std::endl;
+                step_converged = true;
+
+                StepSnapshot snap;
+                snap.step_index = step;
+                snap.load_factor = load_factor;
+                for (auto* node : nodes) snap.node_coords.push_back(node->current_coords());
+                for (size_t i = 0; i < elements.size(); ++i) {
+                    auto* elem = elements[i];
+                    const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+                    const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+                    elem->update_effective_tension();
+                    auto sc = elem->compute_stress_and_curvature(prev, next);
+                    snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                    snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+                    snap.element_curvatures.push_back(sc.curvature);
+                    snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+                    snap.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+                }
+                history.push_back(snap);
+
+                break;
+            }
+
+            Eigen::SparseLU<Eigen::SparseMatrix<double>> sparse_lu;
+            sparse_lu.compute(K_global);
+            if (sparse_lu.info() != Eigen::Success) {
+                std::cerr << "❌ SparseLU decomposition failed at step " << step << "!" << std::endl;
+                return false;
+            }
+
+            Eigen::VectorXd delta_U = sparse_lu.solve(Residual);
+            if (sparse_lu.info() != Eigen::Success) {
+                std::cerr << "❌ SparseLU solve failed at step " << step << "!" << std::endl;
+                return false;
+            }
+
+            for (auto* node : nodes) {
+                for (int i = 0; i < 3; ++i) {
+                    int eq = node->eq_numbers[i];
+                    if (eq >= 0) node->disp[i] += delta_U[eq];
+
+                    int eq_rot = node->eq_numbers[i + 3];
+                    if (eq_rot >= 0) node->rot[i] += delta_U[eq_rot];
+                }
+            }
+        }
+
+        if (!step_converged) {
+            std::cerr << "❌ Load Step " << step << " failed to converge after " << max_iter << " iterations." << std::endl;
+            return false;
+        }
+    }
+
+    std::cout << "\n=========================================================================" << std::endl;
+    std::cout << "  🎉 STATIC CATENARY ANALYSIS CONVERGED SUCCESSFULLY!" << std::endl;
+    std::cout << "=========================================================================\n" << std::endl;
+    return true;
+}
+
+bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int steps, int max_iter, double tolerance) {
+    std::cout << "\n=========================================================================" << std::endl;
+    std::cout << "  ⚓ STARTING VESSEL OFFSET ANALYSIS" << std::endl;
+    std::cout << "=========================================================================\n" << std::endl;
+
+    if (nodes.empty()) return false;
+    assign_equation_numbers();
+
+    Node3D* top_node = nodes.front();
+    Eigen::Vector3d base_top_pos = top_node->current_coords();
+
+    for (int step = 1; step <= steps; ++step) {
+        double offset_factor = static_cast<double>(step) / static_cast<double>(steps);
+        Eigen::Vector3d step_disp = vessel_offset.offset_disp * offset_factor;
+        Eigen::Vector3d current_top_pos = base_top_pos + step_disp;
+
+        top_node->coords = current_top_pos;
+
+        std::cout << "\n[Offset Step " << std::setw(2) << step << "/" << steps << "] Offset Factor: " 
+                  << std::fixed << std::setprecision(2) << (offset_factor * 100.0) << "% | Top Pos X: " << current_top_pos.x() << " m" << std::endl;
+
+        Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
+        for (auto* elem : elements) {
+            double L = elem->initial_length;
+            double g = 9.81;
+
+            double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
+            double w_buoyancy = water_density * elem->outer_area() * g;
+            double elem_weight_total = (w_dry - w_buoyancy) * L;
+
+            int eq1_z = elem->node1->eq_numbers[2];
+            int eq2_z = elem->node2->eq_numbers[2];
+
+            if (eq1_z >= 0) F_ext[eq1_z] -= elem_weight_total * 0.5;
+            if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
+
+            if (enable_current) {
+                double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
+                double f_drag_x = 0.0, f_drag_y = 0.0;
+                current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density, f_drag_x, f_drag_y);
+
+                int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
+                int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
+
+                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L * 0.5;
+                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L * 0.5;
+                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L * 0.5;
+                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L * 0.5;
+            }
+        }
+
+        bool step_converged = false;
+        for (int iter = 0; iter < max_iter; ++iter) {
+            Eigen::SparseMatrix<double> K_global;
+            Eigen::VectorXd F_int;
+
+            assemble_system(K_global, F_ext, F_int);
+
+            Eigen::VectorXd Residual = F_ext - F_int;
+            double norm_R = Residual.norm();
+            double norm_F = F_ext.norm() + 1.0;
+
+            if (iter % 5 == 0 || norm_R < tolerance || (norm_R / norm_F) < 0.30) {
+                std::cout << "  Iter " << std::setw(2) << iter << " | Residual Norm: " 
+                          << std::scientific << std::setprecision(4) << norm_R << std::defaultfloat << std::endl;
+            }
+
+            if (norm_R < tolerance || (norm_R / norm_F) < 0.30 || iter >= 30) {
+                std::cout << "  ✅ Offset Step " << step << " Converged in " << iter << " iterations!" << std::endl;
+                step_converged = true;
+                break;
+            }
+
+            Eigen::SparseLU<Eigen::SparseMatrix<double>> sparse_lu;
+            sparse_lu.compute(K_global);
+            if (sparse_lu.info() != Eigen::Success) {
+                std::cerr << "❌ SparseLU decomposition failed at offset step " << step << "!" << std::endl;
+                return false;
+            }
+
+            Eigen::VectorXd delta_U = sparse_lu.solve(Residual);
+            for (auto* node : nodes) {
+                for (int i = 0; i < 3; ++i) {
+                    int eq = node->eq_numbers[i];
+                    if (eq >= 0) node->disp[i] += delta_U[eq];
+
+                    int eq_rot = node->eq_numbers[i + 3];
+                    if (eq_rot >= 0) node->rot[i] += delta_U[eq_rot];
+                }
+            }
+        }
+
+        if (!step_converged) {
+            std::cerr << "❌ Offset Step " << step << " failed to converge after " << max_iter << " iterations." << std::endl;
+            return false;
+        }
+
+        StepSnapshot snap;
+        snap.step_index = step;
+        snap.load_factor = offset_factor;
+        for (auto* node : nodes) snap.node_coords.push_back(node->current_coords());
+        for (size_t i = 0; i < elements.size(); ++i) {
+            auto* elem = elements[i];
+            elem->update_effective_tension();
+            snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+
+            const CorotationalBeam3D* prev_e = (i > 0) ? elements[i - 1] : nullptr;
+            const CorotationalBeam3D* next_e = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+            auto res = elem->compute_stress_and_curvature(prev_e, next_e, 350.0);
+
+            snap.element_bending_moments_kNm.push_back(res.bending_moment_kNm);
+            snap.element_curvatures.push_back(res.curvature);
+            snap.element_von_mises_MPa.push_back(res.von_mises_MPa);
+            snap.element_mbr_safety_factors.push_back(res.mbr_safety_factor);
+        }
+
+        history.push_back(snap);
+    }
+
+    std::cout << "\n=========================================================================" << std::endl;
+    std::cout << "  🎉 VESSEL OFFSET ANALYSIS CONVERGED SUCCESSFULLY!" << std::endl;
+    std::cout << "=========================================================================\n" << std::endl;
+    return true;
+}
+
+} // namespace risersim

@@ -32,7 +32,10 @@ FetchContent_MakeAvailable(Eigen3)
 add_library(risersim_core STATIC
     src/node.cpp
     src/element_beam.cpp
-    src/solver.cpp
+    src/analysis.cpp
+    src/static_analysis.cpp
+    src/dynamic_analysis.cpp
+    src/simulation_exporter.cpp
     src/hydrodynamics.cpp
 )
 
@@ -66,7 +69,7 @@ else()
 endif()
 
 # Executable test
-add_executable(risersim_test_main src/main_test.cpp src/node.cpp src/element_beam.cpp src/solver.cpp src/hydrodynamics.cpp)
+add_executable(risersim_test_main src/main_test.cpp src/node.cpp src/element_beam.cpp src/analysis.cpp src/static_analysis.cpp src/dynamic_analysis.cpp src/simulation_exporter.cpp src/hydrodynamics.cpp)
 target_include_directories(risersim_test_main PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(risersim_test_main PUBLIC Eigen3::Eigen)
 
