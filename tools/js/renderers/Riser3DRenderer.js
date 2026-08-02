@@ -19,11 +19,16 @@ export class Riser3DRenderer {
     }
 
     initEngine() {
+        const width = this.canvas.clientWidth || window.innerWidth || 800;
+        const height = this.canvas.clientHeight || window.innerHeight || 600;
+
         this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
-        this.renderer.setSize(this.canvas.clientWidth, this.canvas.clientHeight);
+        this.renderer.setSize(width, height);
         this.renderer.setPixelRatio(window.devicePixelRatio);
 
-        this.camera = new THREE.PerspectiveCamera(45, this.canvas.clientWidth / this.canvas.clientHeight, 0.1, 2000);
+        this.scene.background = new THREE.Color(0x1e1e2e);
+
+        this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
         this.camera.position.set(60, 50, 160);
 
         this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
@@ -32,10 +37,10 @@ export class Riser3DRenderer {
         this.controls.target.set(60, -50, 0);
 
         // Iluminação
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
         this.scene.add(ambientLight);
 
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
         dirLight.position.set(100, 200, 100);
         this.scene.add(dirLight);
 
@@ -43,7 +48,7 @@ export class Riser3DRenderer {
         this.scene.add(this.riserGroup);
         this.scene.add(this.nodesGroup);
 
-        // Loop de Renderização
+        // Loop de Renderização 60 FPS
         const animate = () => {
             requestAnimationFrame(animate);
             this.controls.update();
@@ -57,8 +62,8 @@ export class Riser3DRenderer {
 
     onWindowResize() {
         if (!this.canvas) return;
-        const width = this.canvas.clientWidth;
-        const height = this.canvas.clientHeight;
+        const width = this.canvas.clientWidth || window.innerWidth || 800;
+        const height = this.canvas.clientHeight || window.innerHeight || 600;
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);

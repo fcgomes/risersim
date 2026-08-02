@@ -1,4 +1,4 @@
-import { HDF5LoaderService } from './services/HDF5LoaderService.js';
+import { DataLoaderService } from './services/DataLoaderService.js';
 import { ColorMapService } from './services/ColorMapService.js';
 import { Riser3DRenderer } from './renderers/Riser3DRenderer.js';
 import { CameraViewController } from './renderers/CameraViewController.js';
@@ -70,13 +70,14 @@ class RiserSimApp {
             this.currentTheme = this.currentTheme === 'dark' ? 'light' : 'dark';
             document.body.className = this.currentTheme === 'dark' ? 'dark-mode' : 'light-mode';
             document.getElementById('theme-toggle-btn').innerText = this.currentTheme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro';
+            this.renderer3D.scene.background.setHex(this.currentTheme === 'dark' ? 0x1e1e2e : 0xffffff);
             this.render();
         });
     }
 
     async loadSimulationData(fileOrUrl) {
         try {
-            this.simulation = await HDF5LoaderService.load(fileOrUrl);
+            this.simulation = await DataLoaderService.load(fileOrUrl);
             const slider = document.getElementById('step-slider');
             slider.max = this.simulation.totalSteps - 1;
             slider.value = this.simulation.totalSteps - 1;
