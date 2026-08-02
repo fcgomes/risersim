@@ -163,8 +163,20 @@
                 </div>
 
                 <div class="control-group">
-                    <div class="control-title">📁 CARREGAR NOVO ARQUIVO JSON</div>
-                    <input type="file" id="json-input" accept=".json">
+                    <div class="control-title">🎥 VISTAS E ATALHOS DE CÂMERA</div>
+                    <div class="btn-row">
+                        <button class="btn-icon btn-primary" id="view-iso-btn" title="Vista Isométrica 3D">🎲 Isométrica</button>
+                        <button class="btn-icon" id="view-xy-btn" title="Plano XY (Vista Superior)">📐 Vista XY</button>
+                    </div>
+                    <div class="btn-row" style="margin-top:4px;">
+                        <button class="btn-icon" id="view-xz-btn" title="Plano XZ (Elevação / Perfil)">📐 Vista XZ</button>
+                        <button class="btn-icon" id="view-yz-btn" title="Plano YZ (Perfil Frontal)">📐 Vista YZ</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">📁 CARREGAR ARQUIVO DE RESULTADOS (.H5 / .JSON)</div>
+                    <input type="file" id="json-input" accept=".h5,.hdf5,.json">
                 </div>
             </div>
 
@@ -433,6 +445,39 @@
             });
         }
 
+        function setCameraView(viewType) {
+            if (!controls || !camera) return;
+
+            let minX = 0, maxX = 120, minY = -100, maxY = 0;
+            if (currentDataset && currentDataset.steps && currentDataset.steps.length > 0) {
+                const nodes = currentDataset.steps[currentDataset.steps.length - 1].nodes;
+                minX = Math.min(...nodes.map(n => n.x));
+                maxX = Math.max(...nodes.map(n => n.x));
+                minY = Math.min(...nodes.map(n => n.z));
+                maxY = Math.max(...nodes.map(n => n.z));
+            }
+
+            const centerX = (minX + maxX) / 2.0;
+            const centerY = (minY + maxY) / 2.0;
+            const target = new THREE.Vector3(centerX, centerY, 0);
+
+            if (viewType === 'ISO') {
+                camera.position.set(centerX + 60, centerY + 60, 160);
+            } else if (viewType === 'XY') {
+                // Top View (looking down from above onto XY plane)
+                camera.position.set(centerX, centerY + 220, 0.001);
+            } else if (viewType === 'XZ') {
+                // Side Elevation View (looking directly at XZ riser profile)
+                camera.position.set(centerX, centerY, 220);
+            } else if (viewType === 'YZ') {
+                // Frontal Cross View (looking along length of riser from side)
+                camera.position.set(centerX + 260, centerY, 0);
+            }
+
+            controls.target.copy(target);
+            controls.update();
+        }
+
         function updateBoundingBox(nodes) {
             if (!nodes || nodes.length === 0) return;
             if (boundingBoxWireframe) scene.remove(boundingBoxWireframe);
@@ -447,10 +492,12 @@
                 minZ = Math.min(minZ, n.y); maxZ = Math.max(maxZ, n.y);
             });
 
-            const boxMargin = 3.0;
+            const boxMargin = 5.0;
+            const marginPerpendicular = 35.0; // Increased distance perpendicular to riser plane (Y axis)
+
             minX -= boxMargin; maxX += boxMargin;
             minY -= boxMargin; maxY += boxMargin;
-            minZ -= boxMargin; maxZ += boxMargin;
+            minZ -= marginPerpendicular; maxZ += marginPerpendicular; // Z in Three.js is Y in physical coordinates!
 
             const boxWidth = maxX - minX;
             const boxHeight = maxY - minY;
@@ -592,6 +639,11 @@
                 isPlaying = false;
             }
         });
+
+        document.getElementById('view-iso-btn').addEventListener('click', () => setCameraView('ISO'));
+        document.getElementById('view-xy-btn').addEventListener('click', () => setCameraView('XY'));
+        document.getElementById('view-xz-btn').addEventListener('click', () => setCameraView('XZ'));
+        document.getElementById('view-yz-btn').addEventListener('click', () => setCameraView('YZ'));
 
         async function loadHDF5(fileOrUrl) {
             try {
