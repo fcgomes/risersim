@@ -2,6 +2,7 @@ import { DataLoaderService } from './services/DataLoaderService.js';
 import { ColorMapService } from './services/ColorMapService.js';
 import { Riser3DRenderer } from './renderers/Riser3DRenderer.js';
 import { CameraViewController } from './renderers/CameraViewController.js';
+import { ProfileChartsController } from './charts/ProfileChartsController.js';
 
 /**
  * app.js
@@ -14,6 +15,7 @@ class RiserSimApp {
         this.isPlaying = false;
         this.animationTimer = null;
         this.currentTheme = 'dark';
+        this.activeTab = 'table'; // 'table' or 'charts'
 
         this.initUI();
     }
@@ -22,12 +24,79 @@ class RiserSimApp {
         const canvas = document.getElementById('three-canvas');
         this.renderer3D = new Riser3DRenderer(canvas);
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls);
+        this.chartsController = new ProfileChartsController();
 
+        this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
+        this.initResizer();
         await this.loadSimulationData('../catenary_results.h5');
     }
 
+    initResizer() {
+        const resizer = document.getElementById('resizer-v');
+        const topContainer = document.getElementById('top-container');
+        const tableContainer = document.getElementById('table-container');
+
+        if (!resizer || !topContainer || !tableContainer) return;
+
+        let isDragging = false;
+        let startY = 0;
+        let startTopHeight = 0;
+        let startTableHeight = 0;
+
+        resizer.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startY = e.clientY;
+            startTopHeight = topContainer.getBoundingClientRect().height;
+            startTableHeight = tableContainer.getBoundingClientRect().height;
+            resizer.classList.add('dragging');
+            document.body.style.cursor = 'row-resize';
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const dy = e.clientY - startY;
+            const newTopHeight = Math.max(150, startTopHeight + dy);
+            const newTableHeight = Math.max(80, startTableHeight - dy);
+
+            topContainer.style.flex = 'none';
+            topContainer.style.height = `${newTopHeight}px`;
+            tableContainer.style.height = `${newTableHeight}px`;
+
+            if (this.renderer3D) this.renderer3D.onWindowResize();
+            window.dispatchEvent(new Event('resize'));
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                resizer.classList.remove('dragging');
+                document.body.style.cursor = '';
+                if (this.renderer3D) this.renderer3D.onWindowResize();
+                window.dispatchEvent(new Event('resize'));
+            }
+        });
+    }
+
     bindEvents() {
+        // Alternância de Abas Flutuantes no Topo do Viewport
+        const vtabs = [
+            { id: 'vtab-3d-btn', view: '3d' },
+            { id: 'vtab-tension-btn', view: 'tension' },
+            { id: 'vtab-moment-btn', view: 'moment' },
+            { id: 'vtab-vm-btn', view: 'vm' }
+        ];
+
+        vtabs.forEach(item => {
+            const btn = document.getElementById(item.id);
+            if (btn) {
+                btn.addEventListener('click', () => {
+                    this.switchViewportView(item.view);
+                });
+            }
+        });
+
         // Slider
         const slider = document.getElementById('step-slider');
         slider.addEventListener('input', (e) => {
@@ -73,6 +142,46 @@ class RiserSimApp {
             this.renderer3D.scene.background.setHex(this.currentTheme === 'dark' ? 0x1e1e2e : 0xffffff);
             this.render();
         });
+    }
+
+    switchViewportView(view) {
+        this.activeViewportView = view;
+
+        const canvas3D = document.getElementById('three-canvas');
+        const tensionChart = document.getElementById('tension-chart');
+        const momentChart = document.getElementById('moment-curv-chart');
+        const vmChart = document.getElementById('vonmises-chart');
+        const colorbarLegend = document.getElementById('colorbar-legend');
+
+        const btn3D = document.getElementById('vtab-3d-btn');
+        const btnTension = document.getElementById('vtab-tension-btn');
+        const btnMoment = document.getElementById('vtab-moment-btn');
+        const btnVM = document.getElementById('vtab-vm-btn');
+
+        [btn3D, btnTension, btnMoment, btnVM].forEach(b => { if (b) b.className = 'btn-tab'; });
+
+        if (canvas3D) canvas3D.style.display = view === '3d' ? 'block' : 'none';
+        if (tensionChart) tensionChart.style.display = view === 'tension' ? 'block' : 'none';
+        if (momentChart) momentChart.style.display = view === 'moment' ? 'block' : 'none';
+        if (vmChart) vmChart.style.display = view === 'vm' ? 'block' : 'none';
+        if (colorbarLegend) colorbarLegend.style.display = view === '3d' ? 'block' : 'none';
+
+        if (view === '3d' && btn3D) btn3D.className = 'btn-tab active';
+        if (view === 'tension' && btnTension) btnTension.className = 'btn-tab active';
+        if (view === 'moment' && btnMoment) btnMoment.className = 'btn-tab active';
+        if (view === 'vm' && btnVM) btnVM.className = 'btn-tab active';
+
+        if (view === '3d') {
+            setTimeout(() => {
+                this.renderer3D.onWindowResize();
+            }, 50);
+        } else {
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 50);
+        }
+
+        this.render();
     }
 
     async loadSimulationData(fileOrUrl) {
@@ -145,6 +254,11 @@ class RiserSimApp {
         // Renderiza Cena 3D
         this.renderer3D.renderStep(step, colormap, tensionRange, this.currentTheme);
         this.updateTable(step);
+
+        // Atualiza Gráficos 2D de Perfil
+        if (this.chartsController) {
+            this.chartsController.updateCharts(step, this.currentTheme);
+        }
     }
 
     updateColorbar(colormap, minVal, maxVal) {

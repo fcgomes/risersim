@@ -61,12 +61,16 @@ export class Riser3DRenderer {
     }
 
     onWindowResize() {
-        if (!this.canvas) return;
-        const width = this.canvas.clientWidth || window.innerWidth || 800;
-        const height = this.canvas.clientHeight || window.innerHeight || 600;
+        if (!this.canvas || !this.canvas.parentElement) return;
+        const parent = this.canvas.parentElement;
+        const width = parent.clientWidth || 800;
+        const height = parent.clientHeight || 600;
+
+        if (width <= 0 || height <= 0) return;
+
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(width, height);
+        this.renderer.setSize(width, height, true);
     }
 
     /**
