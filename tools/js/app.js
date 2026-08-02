@@ -117,9 +117,15 @@ class RiserSimApp {
         if (!step) return;
 
         const colormap = document.getElementById('colormap-select').value;
-        const tensionRange = this.simulation.getTensionRange();
+        
+        // Calcula faixa de tração do passo ativo para gradiente 3D vibrante em todos os passos
+        const stepTensions = step.elements.map(e => e.tensionEffectiveKn);
+        let minTension = Math.min(...stepTensions);
+        let maxTension = Math.max(...stepTensions);
+        if (maxTension === minTension) maxTension = minTension + 1.0;
+        const tensionRange = { min: minTension, max: maxTension };
 
-        // Atualiza Cards
+        // Atualiza Cards de Métricas
         const totalSteps = this.simulation.totalSteps - 1;
         const loadPct = (step.loadFactor * 100).toFixed(0);
         document.getElementById('step-label').innerText = `${step.stepIndex}/${totalSteps} (${loadPct}%)`;
@@ -127,9 +133,41 @@ class RiserSimApp {
         document.getElementById('top-tension').innerText = `${step.getTopTension().toFixed(2)} kN`;
         document.getElementById('max-depth').innerText = `${step.getMaxDepth().toFixed(2)} m`;
 
+        // Atualiza Legenda Flutuante
+        this.updateColorbar(colormap, minTension, maxTension);
+
         // Renderiza Cena 3D
         this.renderer3D.renderStep(step, colormap, tensionRange, this.currentTheme);
         this.updateTable(step);
+    }
+
+    updateColorbar(colormap, minVal, maxVal) {
+        const bar = document.getElementById('colorbar-bar');
+        let gradientStr = '';
+
+        if (colormap === 'Jet') {
+            gradientStr = 'linear-gradient(to top, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)';
+        } else if (colormap === 'Plasma') {
+            gradientStr = 'linear-gradient(to top, #0d0887, #9c179e, #ed6925, #f0f921)';
+        } else if (colormap === 'Viridis') {
+            gradientStr = 'linear-gradient(to top, #440154, #21908d, #fde725)';
+        } else if (colormap === 'Turbo') {
+            gradientStr = 'linear-gradient(to top, #30123b, #1ae4b6, #a6f835, #7a0403)';
+        } else if (colormap === 'Coolwarm') {
+            gradientStr = 'linear-gradient(to top, #3b4cc0, #888888, #b40426)';
+        }
+
+        if (bar) bar.style.background = gradientStr;
+
+        const maxEl = document.getElementById('cbar-max');
+        const mid2El = document.getElementById('cbar-mid2');
+        const mid1El = document.getElementById('cbar-mid1');
+        const minEl = document.getElementById('cbar-min');
+
+        if (maxEl) maxEl.innerText = `${maxVal.toFixed(1)} kN`;
+        if (mid2El) mid2El.innerText = `${(minVal + 0.75 * (maxVal - minVal)).toFixed(1)} kN`;
+        if (mid1El) mid1El.innerText = `${(minVal + 0.25 * (maxVal - minVal)).toFixed(1)} kN`;
+        if (minEl) minEl.innerText = `${minVal.toFixed(1)} kN`;
     }
 
     updateTable(step) {
