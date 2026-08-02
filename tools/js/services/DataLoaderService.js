@@ -59,12 +59,16 @@ export class DataLoaderService {
             const posDS = h5file.get("node_positions");
             const tensDS = h5file.get("element_tensions_kN");
             const momentDS = h5file.get("element_bending_moments_kNm");
+            const curvDS = h5file.get("element_curvatures");
             const vmDS = h5file.get("element_von_mises_MPa");
+            const mbrDS = h5file.get("element_mbr_safety_factors");
 
             const posData = posDS.value;
             const tensData = tensDS.value;
             const momentData = momentDS ? momentDS.value : null;
+            const curvData = curvDS ? curvDS.value : null;
             const vmData = vmDS ? vmDS.value : null;
+            const mbrData = mbrDS ? mbrDS.value : null;
 
             const dimsPos = posDS.shape;
             const dimsTens = tensDS.shape;
@@ -94,9 +98,9 @@ export class DataLoaderService {
                         e + 1,
                         tensData[idxTens],
                         momentData ? momentData[idxTens] : 0.0,
-                        0.0,
+                        curvData ? curvData[idxTens] : 0.0,
                         vmData ? vmData[idxTens] : 0.0,
-                        5.0
+                        mbrData ? mbrData[idxTens] : 5.0
                     ));
                 }
 

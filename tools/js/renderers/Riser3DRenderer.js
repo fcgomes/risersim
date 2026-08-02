@@ -79,14 +79,18 @@ export class Riser3DRenderer {
     renderStep(step, colormap = 'Jet', tensionRange = { min: 0, max: 10 }, currentTheme = 'dark') {
         if (!step) return;
 
-        // Limpa geometrias anteriores
+        // Limpa geometrias anteriores completamente
         while (this.riserGroup.children.length > 0) {
-            const obj = this.riserGroup.children.pop();
+            const obj = this.riserGroup.children[0];
             if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+            this.riserGroup.remove(obj);
         }
         while (this.nodesGroup.children.length > 0) {
-            const obj = this.nodesGroup.children.pop();
+            const obj = this.nodesGroup.children[0];
             if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+            this.nodesGroup.remove(obj);
         }
 
         const nodes = step.nodes;

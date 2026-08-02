@@ -450,6 +450,16 @@ bool StaticAnalysis::export_hdf5(const std::string& filename) const {
         }
         moment_dataset.write(moment_flat.data(), H5::PredType::NATIVE_DOUBLE);
 
+        // Curvature Matrix (num_steps x num_elems)
+        H5::DataSet curv_dataset = file.createDataSet("element_curvatures", H5::PredType::NATIVE_DOUBLE, tens_space);
+        std::vector<double> curv_flat(num_steps * num_elems);
+        for (size_t s = 0; s < num_steps; ++s) {
+            for (size_t e = 0; e < num_elems; ++e) {
+                curv_flat[s * num_elems + e] = (e < step_history[s].element_curvatures.size()) ? step_history[s].element_curvatures[e] : 0.0;
+            }
+        }
+        curv_dataset.write(curv_flat.data(), H5::PredType::NATIVE_DOUBLE);
+
         // von Mises Stress Matrix (num_steps x num_elems)
         H5::DataSet vm_dataset = file.createDataSet("element_von_mises_MPa", H5::PredType::NATIVE_DOUBLE, tens_space);
         std::vector<double> vm_flat(num_steps * num_elems);
@@ -459,6 +469,16 @@ bool StaticAnalysis::export_hdf5(const std::string& filename) const {
             }
         }
         vm_dataset.write(vm_flat.data(), H5::PredType::NATIVE_DOUBLE);
+
+        // MBR Safety Factor Matrix (num_steps x num_elems)
+        H5::DataSet mbr_dataset = file.createDataSet("element_mbr_safety_factors", H5::PredType::NATIVE_DOUBLE, tens_space);
+        std::vector<double> mbr_flat(num_steps * num_elems);
+        for (size_t s = 0; s < num_steps; ++s) {
+            for (size_t e = 0; e < num_elems; ++e) {
+                mbr_flat[s * num_elems + e] = (e < step_history[s].element_mbr_safety_factors.size()) ? step_history[s].element_mbr_safety_factors[e] : 1.0;
+            }
+        }
+        mbr_dataset.write(mbr_flat.data(), H5::PredType::NATIVE_DOUBLE);
 
         file.close();
         std::cout << "✅ Binary HDF5 simulation history successfully exported to: " << filename << std::endl;

@@ -134,18 +134,52 @@ class RiserSimApp {
 
     updateTable(step) {
         const tbody = document.getElementById('elements-tbody');
+        const stepTitle = document.getElementById('table-step-title');
+
+        if (stepTitle && this.simulation) {
+            const totalSteps = this.simulation.totalSteps - 1;
+            const loadPct = (step.loadFactor * 100).toFixed(0);
+            stepTitle.innerText = `Passo ${step.stepIndex}/${totalSteps} (${loadPct}% da Carga / Offset)`;
+        }
+
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        step.elements.forEach(elem => {
+        const nodes = step.nodes;
+        const elements = step.elements;
+
+        elements.forEach((elem, idx) => {
             const tr = document.createElement('tr');
+
+            const n1 = nodes[idx];
+            const n2 = nodes[idx + 1] || n1;
+
+            const z1 = n1 ? n1.z.toFixed(2) : "0.00";
+            const z2 = n2 ? n2.z.toFixed(2) : "0.00";
+
+            let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
+            if (idx >= 14 && idx <= 26) {
+                statusBadge = `<span class="status-buoy">🎈 Flutuador (Lazy Wave)</span>`;
+            } else if (n2 && n2.z <= -99.5) {
+                statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
+            }
+
+            const tensionStr = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn.toFixed(1) : "0.0";
+            const momentStr = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm.toFixed(2) : "0.00";
+            const curvStr = elem.curvature !== undefined ? elem.curvature.toExponential(3) : "0.000e+00";
+            const vmStr = elem.vonMisesMpa !== undefined ? elem.vonMisesMpa.toFixed(1) : "0.0";
+            const mbrStr = elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor.toFixed(2) : "1.00";
+
             tr.innerHTML = `
-                <td>${elem.id}</td>
-                <td class="tension-val">${elem.tensionEffectiveKn.toFixed(2)} kN</td>
-                <td>${elem.bendingMomentKnm.toFixed(2)} kN.m</td>
-                <td style="font-family:monospace;">${elem.curvature.toFixed(5)}</td>
-                <td style="font-weight:bold; color:#e11d48;">${elem.vonMisesMpa.toFixed(2)} MPa</td>
-                <td style="font-weight:bold; color:#2563eb;">${elem.mbrSafetyFactor.toFixed(2)}</td>
+                <td style="font-weight:bold;">Elemento ${elem.id}</td>
+                <td>Nó ${idx + 1} ➔ Nó ${idx + 2}</td>
+                <td>${z1}m ➔ ${z2}m</td>
+                <td>${statusBadge}</td>
+                <td class="tension-val">${tensionStr} kN</td>
+                <td>${momentStr} kN.m</td>
+                <td style="font-family:monospace;">${curvStr}</td>
+                <td style="font-weight:bold; color:#e11d48;">${vmStr} MPa</td>
+                <td style="font-weight:bold; color:#2563eb;">${mbrStr}</td>
             `;
             tbody.appendChild(tr);
         });
