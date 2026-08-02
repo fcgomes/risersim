@@ -125,6 +125,21 @@ class RiserSimApp {
         document.getElementById('view-xz-btn').addEventListener('click', () => this.cameraController.setView('XZ', this.getCurrentStep()));
         document.getElementById('view-yz-btn').addEventListener('click', () => this.cameraController.setView('YZ', this.getCurrentStep()));
 
+        // Seletor de Modo de Análise (Estática / Dinâmica)
+        const modeSelect = document.getElementById('analysis-mode-select');
+        if (modeSelect) {
+            modeSelect.addEventListener('change', (e) => {
+                if (!this.simulation) return;
+                this.pause();
+                this.simulation.mode = e.target.value;
+                const slider = document.getElementById('step-slider');
+                slider.max = Math.max(0, this.simulation.totalSteps - 1);
+                slider.value = 0;
+                this.currentStepIdx = 0;
+                this.render();
+            });
+        }
+
         // Mapa de cores
         document.getElementById('colormap-select').addEventListener('change', () => this.render());
 
@@ -187,10 +202,16 @@ class RiserSimApp {
     async loadSimulationData(fileOrUrl) {
         try {
             this.simulation = await DataLoaderService.load(fileOrUrl);
+            
+            const modeSelect = document.getElementById('analysis-mode-select');
+            if (modeSelect) {
+                modeSelect.value = this.simulation.mode;
+            }
+
             const slider = document.getElementById('step-slider');
-            slider.max = this.simulation.totalSteps - 1;
-            slider.value = this.simulation.totalSteps - 1;
-            this.currentStepIdx = this.simulation.totalSteps - 1;
+            slider.max = Math.max(0, this.simulation.totalSteps - 1);
+            slider.value = Math.max(0, this.simulation.totalSteps - 1);
+            this.currentStepIdx = Math.max(0, this.simulation.totalSteps - 1);
 
             this.render();
             console.log("✅ Simulação OO carregada com sucesso!", this.simulation);
@@ -241,10 +262,22 @@ class RiserSimApp {
         const tensionRange = { min: minTension, max: maxTension };
 
         // Atualiza Cards de Métricas
+        const isDynamic = this.simulation ? this.simulation.mode === 'dynamic' : true;
         const totalSteps = this.simulation ? this.simulation.totalSteps - 1 : 0;
-        const loadPct = (step.loadFactor * 100).toFixed(0);
-        document.getElementById('step-label').innerText = `${step.stepIndex}/${totalSteps} (${loadPct}%)`;
-        document.getElementById('load-factor').innerText = `${loadPct} %`;
+        const topNode = step.nodes && step.nodes.length > 0 ? step.nodes[0] : null;
+
+        if (isDynamic) {
+            const timeVal = (step.stepIndex * 0.05).toFixed(2);
+            const waveZ = topNode ? topNode.z.toFixed(2) : '-100.00';
+            document.getElementById('step-label').innerText = `${step.stepIndex}/${totalSteps} (${timeVal}s)`;
+            document.getElementById('load-factor').innerText = `t = ${timeVal}s (Onda Z: ${waveZ}m)`;
+        } else {
+            const loadPct = (step.loadFactor * 100).toFixed(0);
+            const topX = topNode ? topNode.x.toFixed(2) : '0.00';
+            document.getElementById('step-label').innerText = `${step.stepIndex}/${totalSteps} (${loadPct}%)`;
+            document.getElementById('load-factor').innerText = `${loadPct}% (Offset X: ${topX}m)`;
+        }
+
         document.getElementById('top-tension').innerText = `${step.getTopTension().toFixed(2)} kN`;
         document.getElementById('max-depth').innerText = `${step.getMaxDepth().toFixed(2)} m`;
 

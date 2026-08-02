@@ -33,7 +33,9 @@ public:
     double water_density;
     int num_dofs;
 
-    std::vector<StepSnapshot> step_history;
+    std::vector<StepSnapshot> static_history;
+    std::vector<StepSnapshot> dynamic_history;
+    std::vector<StepSnapshot> step_history; // Legacy fallback
 
     StaticAnalysis() : seabed(-80.0), enable_current(false), water_density(1025.0), num_dofs(0) {}
 
@@ -51,6 +53,7 @@ public:
     void assemble_system(Eigen::SparseMatrix<double>& K_global, const Eigen::VectorXd& F_ext, Eigen::VectorXd& F_int);
     bool solve_catenary_static(int load_steps = 10, int max_iter_per_step = 150, double tol = 1.0e-3);
     bool solve_vessel_offset(const VesselOffset& offset, int steps = 10, int max_iter = 100, double tol = 1.0e-3);
+    bool solve_time_domain_dynamic(double duration_s = 20.0, double dt_s = 0.05, double wave_amplitude = 2.5, double wave_period = 10.0, double alpha_rayleigh = 0.05, double beta_rayleigh = 0.01);
     bool export_json(const std::string& filename = "catenary_results.json") const;
     bool export_hdf5(const std::string& filename = "catenary_results.h5") const;
 };

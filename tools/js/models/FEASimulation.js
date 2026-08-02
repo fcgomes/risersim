@@ -6,50 +6,64 @@ export class FEASimulation {
     /**
      * @param {string} simulationType - Nome/Descrição da Simulação
      * @param {number} seabedDepth - Profundidade do Fundo do Mar (-m)
-     * @param {SimulationStep[]} steps - Coleção de passos incrementais
+     * @param {SimulationStep[]} steps - Coleção de passos incrementais padrão
+     * @param {SimulationStep[]} staticSteps - Passos estáticos
+     * @param {SimulationStep[]} dynamicSteps - Passos dinâmicos temporais
      */
-    constructor(simulationType = "riserSim Equilibrium", seabedDepth = -100.0, steps = []) {
+    constructor(simulationType = "riserSim Equilibrium", seabedDepth = -100.0, steps = [], staticSteps = [], dynamicSteps = []) {
         this.simulationType = simulationType;
         this.seabedDepth = seabedDepth;
         this.steps = steps;
+
+        if (staticSteps && staticSteps.length > 0 && staticSteps.length <= 30) {
+            this.staticSteps = staticSteps;
+        } else if (staticSteps && staticSteps.length > 30) {
+            this.staticSteps = staticSteps.slice(0, 21);
+        } else if (steps.length > 30) {
+            this.staticSteps = steps.slice(0, 21);
+        } else {
+            this.staticSteps = steps;
+        }
+
+        if (dynamicSteps && dynamicSteps.length > 0) {
+            this.dynamicSteps = dynamicSteps;
+        } else if (steps.length > 30) {
+            this.dynamicSteps = steps;
+        } else {
+            this.dynamicSteps = [];
+        }
+
+        this.mode = this.dynamicSteps.length > 0 ? 'dynamic' : 'static';
     }
 
-    /**
-     * Retorna a quantidade total de passos salvos
-     * @returns {number}
-     */
+    get activeSteps() {
+        if (this.mode === 'static' && this.staticSteps.length > 0) return this.staticSteps;
+        if (this.mode === 'dynamic' && this.dynamicSteps.length > 0) return this.dynamicSteps;
+        return this.steps;
+    }
+
     get totalSteps() {
-        return this.steps.length;
+        return this.activeSteps.length;
     }
 
-    /**
-     * Retorna um passo por seu índice
-     * @param {number} index 
-     * @returns {SimulationStep|null}
-     */
     getStep(index) {
-        if (index < 0 || index >= this.steps.length) return null;
-        return this.steps[index];
+        const steps = this.activeSteps;
+        if (index < 0 || index >= steps.length) return null;
+        return steps[index];
     }
 
-    /**
-     * Retorna o último passo de equilíbrio final
-     * @returns {SimulationStep|null}
-     */
     getFinalStep() {
-        return this.steps.length > 0 ? this.steps[this.steps.length - 1] : null;
+        const steps = this.activeSteps;
+        return steps.length > 0 ? steps[steps.length - 1] : null;
     }
 
-    /**
-     * Calcula os limites mínimo e máximo de tração efetiva de toda a simulação
-     * @returns {{min: number, max: number}}
-     */
     getTensionRange() {
         let min = Infinity, max = -Infinity;
-        this.steps.forEach(step => {
+        this.activeSteps.forEach(step => {
             step.elements.forEach(elem => {
-                min = Math.min(min, elem.tensionEffectiveKn);
-                max = Math.max(max, elem.tensionEffectiveKn);
+                const val = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn : (elem.tension_effective_kN || 0);
+                min = Math.min(min, val);
+                max = Math.max(max, val);
             });
         });
         if (min === Infinity) return { min: 0, max: 10 };

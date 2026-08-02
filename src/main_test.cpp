@@ -87,6 +87,10 @@ int main() {
     risersim::VesselOffset offset_far(risersim::OffsetMode::Far, 10.0); // +10m Far Offset
     bool success_offset = analysis.solve_vessel_offset(offset_far, 20, 300, 100.0);
 
+    // Phase 3: 3D Time-Domain Dynamic Wave Response (20s duration, dt = 0.05s)
+    std::cout << "\n--- Phase 3: 3D Time-Domain Dynamic Wave Response ---" << std::endl;
+    bool success_dynamic = analysis.solve_time_domain_dynamic(20.0, 0.05, 2.5, 10.0);
+
     analysis.export_json("risersim/catenary_results.json");
     analysis.export_json("catenary_results.json");
     analysis.export_hdf5("risersim/catenary_results.h5");

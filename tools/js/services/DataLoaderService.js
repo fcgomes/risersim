@@ -33,35 +33,17 @@ export class DataLoaderService {
         }
     }
 
-    /**
-     * Carrega e parseia arquivos HDF5 (.h5) via h5wasm
-     */
-    static async loadHDF5(fileOrUrl) {
-        if (typeof h5wasm === 'undefined') {
-            throw new Error("h5wasm não está disponível");
-        }
-
-        const { FS } = await h5wasm.ready;
-        let buffer;
-
-        if (typeof fileOrUrl === 'string') {
-            const res = await fetch(fileOrUrl);
-            if (!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${fileOrUrl}`);
-            buffer = await res.arrayBuffer();
-        } else {
-            buffer = await fileOrUrl.arrayBuffer();
-        }
-
-        FS.writeFile("temp_render.h5", new Uint8Array(buffer));
-        const h5file = new h5wasm.File("temp_render.h5", "r");
-
+    static parseHDF5Group(group) {
+        if (!group) return [];
         try {
-            const posDS = h5file.get("node_positions");
-            const tensDS = h5file.get("element_tensions_kN");
-            const momentDS = h5file.get("element_bending_moments_kNm");
-            const curvDS = h5file.get("element_curvatures");
-            const vmDS = h5file.get("element_von_mises_MPa");
-            const mbrDS = h5file.get("element_mbr_safety_factors");
+            const posDS = group.get("node_positions");
+            const tensDS = group.get("element_tensions_kN");
+            if (!posDS || !tensDS) return [];
+
+            const momentDS = group.get("element_bending_moments_kNm");
+            const curvDS = group.get("element_curvatures");
+            const vmDS = group.get("element_von_mises_MPa");
+            const mbrDS = group.get("element_mbr_safety_factors");
 
             const posData = posDS.value;
             const tensData = tensDS.value;
@@ -77,18 +59,13 @@ export class DataLoaderService {
             const numNodes = dimsPos[1];
             const numElems = dimsTens[1];
 
-            const simulationSteps = [];
+            const stepsList = [];
 
             for (let s = 0; s < numSteps; ++s) {
                 const nodesList = [];
                 for (let n = 0; n < numNodes; ++n) {
                     const idx = (s * numNodes + n) * 3;
-                    nodesList.push(new Node3D(
-                        n + 1,
-                        posData[idx],
-                        posData[idx + 1],
-                        posData[idx + 2]
-                    ));
+                    nodesList.push(new Node3D(n + 1, posData[idx], posData[idx + 1], posData[idx + 2]));
                 }
 
                 const elementsList = [];
@@ -105,13 +82,71 @@ export class DataLoaderService {
                 }
 
                 const loadFactor = s / Math.max(1, numSteps - 1);
-                simulationSteps.push(new SimulationStep(s, loadFactor, nodesList, elementsList));
+                stepsList.push(new SimulationStep(s, loadFactor, nodesList, elementsList));
             }
 
-            return new FEASimulation("riserSim HDF5 Native Binary", -100.0, simulationSteps);
+            return stepsList;
+        } catch (err) {
+            return [];
+        }
+    }
+
+    static async loadHDF5(fileOrUrl) {
+        if (typeof h5wasm === 'undefined') {
+            throw new Error("h5wasm não está disponível");
+        }
+
+        const { FS } = await h5wasm.ready;
+        let buffer;
+
+        if (typeof fileOrUrl === 'string') {
+            const cacheBusted = fileOrUrl + (fileOrUrl.includes('?') ? '&' : '?') + 'v=' + Date.now();
+            const res = await fetch(cacheBusted, { cache: 'no-cache' });
+            if (!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${fileOrUrl}`);
+            buffer = await res.arrayBuffer();
+        } else {
+            buffer = await fileOrUrl.arrayBuffer();
+        }
+
+        FS.writeFile("temp_render.h5", new Uint8Array(buffer));
+        const h5file = new h5wasm.File("temp_render.h5", "r");
+
+        try {
+            const defaultSteps = DataLoaderService.parseHDF5Group(h5file);
+            let staticSteps = [];
+            let dynamicSteps = [];
+
+            try {
+                const staticGroup = h5file.get("static_analysis");
+                if (staticGroup) staticSteps = DataLoaderService.parseHDF5Group(staticGroup);
+            } catch(e) {}
+
+            try {
+                const dynamicGroup = h5file.get("dynamic_analysis");
+                if (dynamicGroup) dynamicSteps = DataLoaderService.parseHDF5Group(dynamicGroup);
+            } catch(e) {}
+
+            return new FEASimulation("riserSim HDF5 Native Binary", -100.0, defaultSteps, staticSteps, dynamicSteps);
         } finally {
             h5file.close();
         }
+    }
+
+    static parseRawStepsArray(rawSteps) {
+        if (!rawSteps || !Array.isArray(rawSteps)) return [];
+        return rawSteps.map((rawStep, s) => {
+            const nodesList = (rawStep.nodes || []).map(n => new Node3D(n.id, n.x, n.y, n.z));
+            const elementsList = (rawStep.elements || []).map(e => new BeamElement3D(
+                e.id,
+                e.tension_effective_kN !== undefined ? e.tension_effective_kN : (e.tensionEffectiveKn || 0),
+                e.bending_moment_kNm !== undefined ? e.bending_moment_kNm : (e.bendingMomentKnm || 0),
+                e.curvature || 0,
+                e.von_mises_MPa !== undefined ? e.von_mises_MPa : (e.vonMisesMpa || 0),
+                e.mbr_safety_factor !== undefined ? e.mbr_safety_factor : (e.mbrSafetyFactor || 1.0)
+            ));
+            const loadFactor = rawStep.load_factor !== undefined ? rawStep.load_factor : (s / Math.max(1, rawSteps.length - 1));
+            return new SimulationStep(s, loadFactor, nodesList, elementsList);
+        });
     }
 
     /**
@@ -120,7 +155,8 @@ export class DataLoaderService {
     static async loadJSON(fileOrUrl) {
         let jsonObject;
         if (typeof fileOrUrl === 'string') {
-            const res = await fetch(fileOrUrl);
+            const cacheBusted = fileOrUrl + (fileOrUrl.includes('?') ? '&' : '?') + 'v=' + Date.now();
+            const res = await fetch(cacheBusted, { cache: 'no-cache' });
             if (!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${fileOrUrl}`);
             jsonObject = await res.json();
         } else {
@@ -128,28 +164,16 @@ export class DataLoaderService {
             jsonObject = JSON.parse(text);
         }
 
-        const rawSteps = jsonObject.steps || [jsonObject];
-        const simulationSteps = [];
-
-        rawSteps.forEach((rawStep, s) => {
-            const nodesList = (rawStep.nodes || []).map(n => new Node3D(n.id, n.x, n.y, n.z));
-            const elementsList = (rawStep.elements || []).map(e => new BeamElement3D(
-                e.id,
-                e.tension_effective_kN || 0,
-                e.bending_moment_kNm || 0,
-                e.curvature || 0,
-                e.von_mises_MPa || 0,
-                e.mbr_safety_factor || 1.0
-            ));
-
-            const loadFactor = rawStep.load_factor !== undefined ? rawStep.load_factor : (s / Math.max(1, rawSteps.length - 1));
-            simulationSteps.push(new SimulationStep(s, loadFactor, nodesList, elementsList));
-        });
+        const defaultSteps = DataLoaderService.parseRawStepsArray(jsonObject.steps || (Array.isArray(jsonObject) ? jsonObject : [jsonObject]));
+        const staticSteps = DataLoaderService.parseRawStepsArray(jsonObject.static_steps || []);
+        const dynamicSteps = DataLoaderService.parseRawStepsArray(jsonObject.dynamic_steps || []);
 
         return new FEASimulation(
             jsonObject.simulation_type || "riserSim JSON Results",
             jsonObject.seabed_depth || -100.0,
-            simulationSteps
+            defaultSteps,
+            staticSteps,
+            dynamicSteps
         );
     }
 }
