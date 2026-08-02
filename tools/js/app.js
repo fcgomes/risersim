@@ -118,15 +118,21 @@ class RiserSimApp {
 
         const colormap = document.getElementById('colormap-select').value;
         
-        // Calcula faixa de tração do passo ativo para gradiente 3D vibrante em todos os passos
-        const stepTensions = step.elements.map(e => e.tensionEffectiveKn);
+        const globalRange = this.simulation ? this.simulation.getTensionRange() : { min: 0, max: 1000 };
+        const stepTensions = step.elements.map(e => e.tensionEffectiveKn !== undefined ? e.tensionEffectiveKn : (e.tension_effective_kN || 0));
+        
         let minTension = Math.min(...stepTensions);
         let maxTension = Math.max(...stepTensions);
-        if (maxTension === minTension) maxTension = minTension + 1.0;
+        
+        if (isNaN(minTension) || isNaN(maxTension) || maxTension <= minTension) {
+            minTension = globalRange.min;
+            maxTension = globalRange.max;
+        }
+
         const tensionRange = { min: minTension, max: maxTension };
 
         // Atualiza Cards de Métricas
-        const totalSteps = this.simulation.totalSteps - 1;
+        const totalSteps = this.simulation ? this.simulation.totalSteps - 1 : 0;
         const loadPct = (step.loadFactor * 100).toFixed(0);
         document.getElementById('step-label').innerText = `${step.stepIndex}/${totalSteps} (${loadPct}%)`;
         document.getElementById('load-factor').innerText = `${loadPct} %`;

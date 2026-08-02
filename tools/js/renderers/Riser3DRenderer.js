@@ -99,11 +99,15 @@ export class Riser3DRenderer {
         this.updateBoundingBox(nodes, currentTheme);
 
         const outerRadius = 0.6;
+        const rangeSpan = (tensionRange && tensionRange.max > tensionRange.min) 
+            ? (tensionRange.max - tensionRange.min) 
+            : 1.0;
 
         for (let i = 0; i < elements.length; ++i) {
+            const elem = elements[i];
             const n1 = nodes[i];
             const n2 = nodes[i + 1];
-            if (!n1 || !n2) continue;
+            if (!n1 || !n2 || !elem) continue;
 
             const p1 = new THREE.Vector3(n1.x, n1.z, n1.y);
             const p2 = new THREE.Vector3(n2.x, n2.z, n2.y);
@@ -112,7 +116,10 @@ export class Riser3DRenderer {
             const len = dir.length();
             if (len <= 0.001) continue;
 
-            const normT = (elements[i].tensionEffectiveKn - tensionRange.min) / (tensionRange.max - tensionRange.min);
+            const tensionVal = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn : (elem.tension_effective_kN || 0);
+            let normT = (tensionVal - tensionRange.min) / rangeSpan;
+            if (isNaN(normT)) normT = 0.5;
+
             const rgb = ColorMapService.getColor(colormap, normT);
 
             const cylinderGeo = new THREE.CylinderGeometry(outerRadius, outerRadius, len, 16);
