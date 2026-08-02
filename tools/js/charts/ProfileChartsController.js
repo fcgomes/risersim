@@ -45,10 +45,11 @@ export class ProfileChartsController {
             elementS.push(0.5 * (arcLengths[i] + arcLengths[i + 1]));
         }
 
-        const tensions = step.elements.map(e => e.tensionEffectiveKn);
-        const moments = step.elements.map(e => e.bendingMomentKnm);
-        const curvatures = step.elements.map(e => e.curvature);
-        const vonMises = step.elements.map(e => e.vonMisesMpa);
+        const tensions = step.elements.map(e => e.tensionEffectiveKn !== undefined ? e.tensionEffectiveKn : (e.tension_effective_kN || 0));
+        const moments = step.elements.map(e => e.bendingMomentKnm !== undefined ? e.bendingMomentKnm : (e.bending_moment_kNm || 0));
+        const curvatures = step.elements.map(e => e.curvature !== undefined ? e.curvature : 0);
+        const vonMises = step.elements.map(e => e.vonMisesMpa !== undefined ? e.vonMisesMpa : (e.von_mises_MPa || 0));
+        const mbrSF = step.elements.map(e => e.mbrSafetyFactor !== undefined ? e.mbrSafetyFactor : (e.mbr_safety_factor || 1.0));
 
         const bgColor = currentTheme === 'dark' ? '#11111b' : '#ffffff';
         const textColor = currentTheme === 'dark' ? '#cdd6f4' : '#0f172a';
@@ -149,5 +150,15 @@ export class ProfileChartsController {
         };
 
         Plotly.react(this.vonMisesDiv, [traceVonMises, traceYield], layoutVonMises, { responsive: true, displayModeBar: true });
+    }
+
+    resizeCharts() {
+        if (typeof Plotly === 'undefined') return;
+        [this.tensionDiv, this.momentCurvDiv, this.vonMisesDiv].forEach(divId => {
+            const el = document.getElementById(divId);
+            if (el && el.style.display !== 'none') {
+                Plotly.Plots.resize(el);
+            }
+        });
     }
 }

@@ -186,6 +186,17 @@
                 </div>
 
                 <div class="control-group">
+                    <div class="control-title">🎯 GRANDEZA PARA COLORIR (CAMPO ESCALAR)</div>
+                    <select id="scalar-field-select">
+                        <option value="tension" selected>⚡ Tração Efetiva (kN)</option>
+                        <option value="moment">🌀 Momento Fletor (kN·m)</option>
+                        <option value="curvature">📐 Curvatura (1/m)</option>
+                        <option value="vonmises">💥 Tensão von Mises (MPa)</option>
+                        <option value="mbr">🛡️ Fator de Segurança MBR (SF)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
                     <div class="control-title">🎨 MAPA DE CORES (COLORMAP)</div>
                     <select id="colormap-select">
                         <option value="Jet" selected>Jet (Clássico Engineering)</option>
@@ -248,14 +259,17 @@
                 <div id="vonmises-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
 
                 <!-- Floating Colorbar Legend -->
-                <div id="colorbar-legend">
-                    <div id="colorbar-ticks">
-                        <span id="cbar-max">10.0 kN</span>
-                        <span id="cbar-mid2">7.5 kN</span>
-                        <span id="cbar-mid1">5.0 kN</span>
-                        <span id="cbar-min">2.5 kN</span>
+                <div id="colorbar-legend" style="flex-direction: column; align-items: center; gap: 6px;">
+                    <div style="font-size: 11px; font-weight: bold; color: #89b4fa; text-align: center;" id="cbar-unit-title">Tração (kN)</div>
+                    <div style="display: flex; gap: 10px; align-items: stretch;">
+                        <div id="colorbar-ticks">
+                            <span id="cbar-max">10.0</span>
+                            <span id="cbar-mid2">7.5</span>
+                            <span id="cbar-mid1">5.0</span>
+                            <span id="cbar-min">2.5</span>
+                        </div>
+                        <div id="colorbar-bar"></div>
                     </div>
-                    <div id="colorbar-bar"></div>
                 </div>
             </div>
         </div>

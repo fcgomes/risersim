@@ -57,11 +57,32 @@ export class FEASimulation {
         return steps.length > 0 ? steps[steps.length - 1] : null;
     }
 
+    getElementScalar(elem, field = 'tension') {
+        if (!elem) return 0.0;
+        switch (field) {
+            case 'moment':
+                return elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm : (elem.bending_moment_kNm || 0.0);
+            case 'curvature':
+                return elem.curvature !== undefined ? elem.curvature : 0.0;
+            case 'vonmises':
+                return elem.vonMisesMpa !== undefined ? elem.vonMisesMpa : (elem.von_mises_MPa || 0.0);
+            case 'mbr':
+                return elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor : (elem.mbr_safety_factor || 1.0);
+            case 'tension':
+            default:
+                return elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn : (elem.tension_effective_kN || 0.0);
+        }
+    }
+
     getTensionRange() {
+        return this.getScalarRange('tension');
+    }
+
+    getScalarRange(field = 'tension') {
         let min = Infinity, max = -Infinity;
         this.activeSteps.forEach(step => {
             step.elements.forEach(elem => {
-                const val = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn : (elem.tension_effective_kN || 0);
+                const val = this.getElementScalar(elem, field);
                 min = Math.min(min, val);
                 max = Math.max(max, val);
             });

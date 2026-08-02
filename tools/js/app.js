@@ -140,6 +140,20 @@ class RiserSimApp {
             });
         }
 
+        // Seletor de Grandeza / Campo Escalar
+        const scalarSelect = document.getElementById('scalar-field-select');
+        if (scalarSelect) {
+            scalarSelect.addEventListener('change', (e) => {
+                const val = e.target.value;
+                if (this.activeViewportView !== '3d') {
+                    if (val === 'tension') this.switchViewportView('tension');
+                    else if (val === 'moment' || val === 'curvature' || val === 'mbr') this.switchViewportView('moment');
+                    else if (val === 'vonmises') this.switchViewportView('vm');
+                }
+                this.render();
+            });
+        }
+
         // Mapa de cores
         document.getElementById('colormap-select').addEventListener('change', () => this.render());
 
@@ -161,6 +175,13 @@ class RiserSimApp {
 
     switchViewportView(view) {
         this.activeViewportView = view;
+
+        const scalarSelect = document.getElementById('scalar-field-select');
+        if (scalarSelect) {
+            if (view === 'tension') scalarSelect.value = 'tension';
+            else if (view === 'moment') scalarSelect.value = 'moment';
+            else if (view === 'vm') scalarSelect.value = 'vonmises';
+        }
 
         const canvas3D = document.getElementById('three-canvas');
         const tensionChart = document.getElementById('tension-chart');
@@ -193,6 +214,7 @@ class RiserSimApp {
         } else {
             setTimeout(() => {
                 window.dispatchEvent(new Event('resize'));
+                if (this.chartsController) this.chartsController.resizeCharts();
             }, 50);
         }
 
@@ -247,19 +269,21 @@ class RiserSimApp {
         if (!step) return;
 
         const colormap = document.getElementById('colormap-select').value;
+        const scalarFieldEl = document.getElementById('scalar-field-select');
+        const scalarField = scalarFieldEl ? scalarFieldEl.value : 'tension';
         
-        const globalRange = this.simulation ? this.simulation.getTensionRange() : { min: 0, max: 1000 };
-        const stepTensions = step.elements.map(e => e.tensionEffectiveKn !== undefined ? e.tensionEffectiveKn : (e.tension_effective_kN || 0));
+        const globalRange = this.simulation ? this.simulation.getScalarRange(scalarField) : { min: 0, max: 100 };
+        const stepValues = step.elements.map(e => this.simulation ? this.simulation.getElementScalar(e, scalarField) : 0);
         
-        let minTension = Math.min(...stepTensions);
-        let maxTension = Math.max(...stepTensions);
+        let minVal = Math.min(...stepValues);
+        let maxVal = Math.max(...stepValues);
         
-        if (isNaN(minTension) || isNaN(maxTension) || maxTension <= minTension) {
-            minTension = globalRange.min;
-            maxTension = globalRange.max;
+        if (isNaN(minVal) || isNaN(maxVal) || maxVal <= minVal) {
+            minVal = globalRange.min;
+            maxVal = globalRange.max;
         }
 
-        const tensionRange = { min: minTension, max: maxTension };
+        const scalarRange = { min: minVal, max: maxVal };
 
         // Atualiza Cards de Métricas
         const isDynamic = this.simulation ? this.simulation.mode === 'dynamic' : true;
@@ -282,10 +306,10 @@ class RiserSimApp {
         document.getElementById('max-depth').innerText = `${step.getMaxDepth().toFixed(2)} m`;
 
         // Atualiza Legenda Flutuante
-        this.updateColorbar(colormap, minTension, maxTension);
+        this.updateColorbar(colormap, minVal, maxVal, scalarField);
 
         // Renderiza Cena 3D
-        this.renderer3D.renderStep(step, colormap, tensionRange, this.currentTheme);
+        this.renderer3D.renderStep(step, colormap, scalarRange, this.currentTheme, scalarField);
         this.updateTable(step);
 
         // Atualiza Gráficos 2D de Perfil
@@ -294,7 +318,7 @@ class RiserSimApp {
         }
     }
 
-    updateColorbar(colormap, minVal, maxVal) {
+    updateColorbar(colormap, minVal, maxVal, scalarField = 'tension') {
         const bar = document.getElementById('colorbar-bar');
         let gradientStr = '';
 
@@ -312,15 +336,45 @@ class RiserSimApp {
 
         if (bar) bar.style.background = gradientStr;
 
+        const titleEl = document.getElementById('cbar-unit-title');
+        let titleText = 'Tração (kN)';
+        let formatter = (v) => v.toFixed(1);
+
+        switch (scalarField) {
+            case 'moment':
+                titleText = 'Momento (kN·m)';
+                formatter = (v) => v.toFixed(2);
+                break;
+            case 'curvature':
+                titleText = 'Curvatura (1/m)';
+                formatter = (v) => v.toExponential(2);
+                break;
+            case 'vonmises':
+                titleText = 'von Mises (MPa)';
+                formatter = (v) => v.toFixed(1);
+                break;
+            case 'mbr':
+                titleText = 'Fator MBR (SF)';
+                formatter = (v) => v.toFixed(2);
+                break;
+            case 'tension':
+            default:
+                titleText = 'Tração (kN)';
+                formatter = (v) => v.toFixed(1);
+                break;
+        }
+
+        if (titleEl) titleEl.innerText = titleText;
+
         const maxEl = document.getElementById('cbar-max');
         const mid2El = document.getElementById('cbar-mid2');
         const mid1El = document.getElementById('cbar-mid1');
         const minEl = document.getElementById('cbar-min');
 
-        if (maxEl) maxEl.innerText = `${maxVal.toFixed(1)} kN`;
-        if (mid2El) mid2El.innerText = `${(minVal + 0.75 * (maxVal - minVal)).toFixed(1)} kN`;
-        if (mid1El) mid1El.innerText = `${(minVal + 0.25 * (maxVal - minVal)).toFixed(1)} kN`;
-        if (minEl) minEl.innerText = `${minVal.toFixed(1)} kN`;
+        if (maxEl) maxEl.innerText = formatter(maxVal);
+        if (mid2El) mid2El.innerText = formatter(minVal + 0.75 * (maxVal - minVal));
+        if (mid1El) mid1El.innerText = formatter(minVal + 0.25 * (maxVal - minVal));
+        if (minEl) minEl.innerText = formatter(minVal);
     }
 
     updateTable(step) {

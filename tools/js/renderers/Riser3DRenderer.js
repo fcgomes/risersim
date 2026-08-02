@@ -77,10 +77,11 @@ export class Riser3DRenderer {
      * Renderiza o estado 3D do riser em um determinado passo
      * @param {SimulationStep} step 
      * @param {string} colormap 
-     * @param {{min: number, max: number}} tensionRange 
+     * @param {{min: number, max: number}} scalarRange 
      * @param {'dark'|'light'} currentTheme 
+     * @param {string} scalarField - 'tension' | 'moment' | 'curvature' | 'vonmises' | 'mbr'
      */
-    renderStep(step, colormap = 'Jet', tensionRange = { min: 0, max: 10 }, currentTheme = 'dark') {
+    renderStep(step, colormap = 'Jet', scalarRange = { min: 0, max: 10 }, currentTheme = 'dark', scalarField = 'tension') {
         if (!step) return;
 
         // Limpa geometrias anteriores completamente
@@ -103,9 +104,9 @@ export class Riser3DRenderer {
         this.updateBoundingBox(nodes, currentTheme);
 
         const outerRadius = 0.6;
-        const rangeSpan = (tensionRange && tensionRange.max > tensionRange.min) 
-            ? (tensionRange.max - tensionRange.min) 
-            : 1.0;
+        const rangeMin = (scalarRange && scalarRange.min !== undefined) ? scalarRange.min : 0.0;
+        const rangeMax = (scalarRange && scalarRange.max !== undefined) ? scalarRange.max : 1.0;
+        const rangeSpan = (rangeMax > rangeMin) ? (rangeMax - rangeMin) : 1.0;
 
         for (let i = 0; i < elements.length; ++i) {
             const elem = elements[i];
@@ -120,11 +121,30 @@ export class Riser3DRenderer {
             const len = dir.length();
             if (len <= 0.001) continue;
 
-            const tensionVal = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn : (elem.tension_effective_kN || 0);
-            let normT = (tensionVal - tensionRange.min) / rangeSpan;
-            if (isNaN(normT)) normT = 0.5;
+            let val = 0.0;
+            switch (scalarField) {
+                case 'moment':
+                    val = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm : (elem.bending_moment_kNm || 0);
+                    break;
+                case 'curvature':
+                    val = elem.curvature !== undefined ? elem.curvature : 0;
+                    break;
+                case 'vonmises':
+                    val = elem.vonMisesMpa !== undefined ? elem.vonMisesMpa : (elem.von_mises_MPa || 0);
+                    break;
+                case 'mbr':
+                    val = elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor : (elem.mbr_safety_factor || 1.0);
+                    break;
+                case 'tension':
+                default:
+                    val = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn : (elem.tension_effective_kN || 0);
+                    break;
+            }
 
-            const rgb = ColorMapService.getColor(colormap, normT);
+            let normVal = (val - rangeMin) / rangeSpan;
+            if (isNaN(normVal)) normVal = 0.5;
+
+            const rgb = ColorMapService.getColor(colormap, normVal);
 
             const cylinderGeo = new THREE.CylinderGeometry(outerRadius, outerRadius, len, 16);
             const material = new THREE.MeshStandardMaterial({
