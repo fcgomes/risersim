@@ -89,6 +89,8 @@ int main() {
 
     analysis.export_json("risersim/catenary_results.json");
     analysis.export_json("catenary_results.json");
+    analysis.export_hdf5("risersim/catenary_results.h5");
+    analysis.export_hdf5("catenary_results.h5");
 
     if (success_catenary && success_offset) {
         std::cout << "\n=========================================================" << std::endl;

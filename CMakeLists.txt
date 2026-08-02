@@ -40,12 +40,47 @@ target_include_directories(risersim_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(risersim_core PUBLIC Eigen3::Eigen)
+# 2. Check or Fetch HDF5 C/C++ library
+find_package(HDF5 COMPONENTS C CXX QUIET)
+
+if(HDF5_FOUND)
+    message(STATUS "✅ HDF5 C/C++ Library found on system!")
+    add_compile_definitions(RISERSIM_HAS_HDF5)
+else()
+    message(STATUS "ℹ️ HDF5 library not found locally. Fetching HDF5 source via CMake...")
+    set(HDF5_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(HDF5_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(HDF5_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(HDF5_BUILD_CPP_LIB ON CACHE BOOL "" FORCE)
+    set(HDF5_BUILD_HL_LIB ON CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(
+        hdf5
+        URL https://github.com/HDFGroup/hdf5/archive/refs/tags/hdf5-1_14_3.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(hdf5)
+    if(TARGET hdf5_cpp)
+        add_compile_definitions(RISERSIM_HAS_HDF5)
+    endif()
+endif()
 
 # Executable test
 add_executable(risersim_test_main src/main_test.cpp src/node.cpp src/element_beam.cpp src/solver.cpp src/hydrodynamics.cpp)
 target_include_directories(risersim_test_main PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(risersim_test_main PUBLIC Eigen3::Eigen)
+
+if(TARGET hdf5_cpp-static)
+    target_link_libraries(risersim_test_main PRIVATE hdf5_cpp-static hdf5-static)
+    add_compile_definitions(RISERSIM_HAS_HDF5)
+elseif(TARGET hdf5_cpp)
+    target_link_libraries(risersim_test_main PRIVATE hdf5_cpp hdf5)
+    add_compile_definitions(RISERSIM_HAS_HDF5)
+elseif(HDF5_FOUND)
+    target_include_directories(risersim_test_main PRIVATE ${HDF5_INCLUDE_DIRS})
+    target_link_libraries(risersim_test_main PRIVATE ${HDF5_LIBRARIES})
+    add_compile_definitions(RISERSIM_HAS_HDF5)
+endif()
 
 # 2. Optional pybind11 for Python API Bindings (import risersim)
 find_package(Python3 COMPONENTS Interpreter Development)

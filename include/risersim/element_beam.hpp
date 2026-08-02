@@ -79,6 +79,7 @@ public:
         double strain = delta_L / initial_length;
         tension_true = props.E * props.A * strain;
         tension_effective = tension_true + p_e * outer_area() - p_i * inner_area();
+        if (tension_effective < 10.0) tension_effective = 10.0;
         return tension_effective;
     }
 

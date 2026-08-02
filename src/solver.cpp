@@ -4,6 +4,10 @@
 #include <fstream>
 #include <iomanip>
 
+#ifdef RISERSIM_HAS_HDF5
+#include "H5Cpp.h"
+#endif
+
 namespace risersim {
 
 void StaticAnalysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eigen::VectorXd& F_ext, Eigen::VectorXd& F_int) {
@@ -15,50 +19,52 @@ void StaticAnalysis::assemble_system(Eigen::SparseMatrix<double>& K_global, cons
 
     for (auto* elem : elements) {
         elem->update_effective_tension();
-        
-        if (elem->tension_effective < 10.0e3) {
-            elem->tension_effective = 10.0e3;
-        }
 
         Eigen::Matrix<double, 12, 12> K_elem = elem->global_stiffness();
 
-        Eigen::Vector<double, 12> u_elem = Eigen::Vector<double, 12>::Zero();
-        for (int i = 0; i < 3; ++i) {
-            u_elem[i]     = elem->node1->disp[i];
-            u_elem[i + 6] = elem->node2->disp[i];
-        }
-
-        Eigen::Vector<double, 12> f_int_elem = K_elem * u_elem;
-
-        int eq[12];
-        for (int i = 0; i < 3; ++i) {
-            eq[i]     = elem->node1->eq_numbers[i];
-            eq[i + 3] = elem->node1->eq_numbers[i + 3];
-            eq[i + 6] = elem->node2->eq_numbers[i];
-            eq[i + 9] = elem->node2->eq_numbers[i + 3];
+        std::vector<int> dofs(12);
+        for (int i = 0; i < 6; ++i) {
+            dofs[i] = elem->node1->eq_numbers[i];
+            dofs[i + 6] = elem->node2->eq_numbers[i];
         }
 
         for (int i = 0; i < 12; ++i) {
-            if (eq[i] < 0) continue;
-            F_int[eq[i]] += f_int_elem[i];
-
+            if (dofs[i] < 0) continue;
             for (int j = 0; j < 12; ++j) {
-                if (eq[j] < 0) continue;
-                triplets.push_back(Eigen::Triplet<double>(eq[i], eq[j], K_elem(i, j)));
+                if (dofs[j] < 0) continue;
+                triplets.push_back(Eigen::Triplet<double>(dofs[i], dofs[j], K_elem(i, j)));
             }
         }
+
+        Eigen::Vector3d ex = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
+        Eigen::Vector3d f_axial = elem->tension_effective * ex;
+
+        int eq1_x = elem->node1->eq_numbers[0];
+        int eq1_y = elem->node1->eq_numbers[1];
+        int eq1_z = elem->node1->eq_numbers[2];
+
+        int eq2_x = elem->node2->eq_numbers[0];
+        int eq2_y = elem->node2->eq_numbers[1];
+        int eq2_z = elem->node2->eq_numbers[2];
+
+        if (eq1_x >= 0) F_int[eq1_x] -= f_axial.x();
+        if (eq1_y >= 0) F_int[eq1_y] -= f_axial.y();
+        if (eq1_z >= 0) F_int[eq1_z] -= f_axial.z();
+
+        if (eq2_x >= 0) F_int[eq2_x] += f_axial.x();
+        if (eq2_y >= 0) F_int[eq2_y] += f_axial.y();
+        if (eq2_z >= 0) F_int[eq2_z] += f_axial.z();
     }
 
-    // Apply Soil Reaction Stiffness K_z to nodes below seabed depth
+    // Apply Seabed Interaction (Bilinear Soil Springs at TDZ)
     for (auto* node : nodes) {
+        double f_seabed = 0.0, k_seabed = 0.0;
+        seabed.calculate_seabed_reaction(node->current_coords().z(), f_seabed, k_seabed);
+
         int eq_z = node->eq_numbers[2];
         if (eq_z >= 0) {
-            double current_z = node->current_coords().z();
-            double f_soil = 0.0, k_soil = 0.0;
-            seabed.calculate_seabed_reaction(current_z, f_soil, k_soil);
-
-            F_int[eq_z] -= f_soil;
-            triplets.push_back(Eigen::Triplet<double>(eq_z, eq_z, k_soil));
+            F_int[eq_z] += f_seabed;
+            triplets.push_back(Eigen::Triplet<double>(eq_z, eq_z, k_seabed));
         }
     }
 
@@ -71,7 +77,6 @@ bool StaticAnalysis::solve_catenary_static(int load_steps, int max_iter_per_step
     std::cout << "=========================================================================" << std::endl;
 
     assign_equation_numbers();
-    step_history.clear();
 
     // Step 0: Initial Geometry (0% Load)
     StepSnapshot step0;
@@ -395,6 +400,77 @@ bool StaticAnalysis::export_json(const std::string& filename) const {
     file.close();
     std::cout << "✅ Full incremental simulation history exported to JSON: " << filename << std::endl;
     return true;
+}
+
+bool StaticAnalysis::export_hdf5(const std::string& filename) const {
+#ifdef RISERSIM_HAS_HDF5
+    try {
+        H5::H5File file(filename, H5F_ACC_TRUNC);
+
+        size_t num_steps = step_history.size();
+        size_t num_nodes = nodes.size();
+        size_t num_elems = elements.size();
+
+        // Node Positions Matrix (num_steps x num_nodes x 3)
+        hsize_t pos_dims[3] = { num_steps, num_nodes, 3 };
+        H5::DataSpace pos_space(3, pos_dims);
+        H5::DataSet pos_dataset = file.createDataSet("node_positions", H5::PredType::NATIVE_DOUBLE, pos_space);
+
+        std::vector<double> pos_flat(num_steps * num_nodes * 3);
+        for (size_t s = 0; s < num_steps; ++s) {
+            for (size_t n = 0; n < num_nodes; ++n) {
+                size_t idx = (s * num_nodes + n) * 3;
+                pos_flat[idx + 0] = step_history[s].node_coords[n].x();
+                pos_flat[idx + 1] = step_history[s].node_coords[n].y();
+                pos_flat[idx + 2] = step_history[s].node_coords[n].z();
+            }
+        }
+        pos_dataset.write(pos_flat.data(), H5::PredType::NATIVE_DOUBLE);
+
+        // Effective Tension Matrix (num_steps x num_elems)
+        hsize_t tens_dims[2] = { num_steps, num_elems };
+        H5::DataSpace tens_space(2, tens_dims);
+        H5::DataSet tens_dataset = file.createDataSet("element_tensions_kN", H5::PredType::NATIVE_DOUBLE, tens_space);
+
+        std::vector<double> tens_flat(num_steps * num_elems);
+        for (size_t s = 0; s < num_steps; ++s) {
+            for (size_t e = 0; e < num_elems; ++e) {
+                tens_flat[s * num_elems + e] = step_history[s].element_tensions_kN[e];
+            }
+        }
+        tens_dataset.write(tens_flat.data(), H5::PredType::NATIVE_DOUBLE);
+
+        // Bending Moment Matrix (num_steps x num_elems)
+        H5::DataSet moment_dataset = file.createDataSet("element_bending_moments_kNm", H5::PredType::NATIVE_DOUBLE, tens_space);
+        std::vector<double> moment_flat(num_steps * num_elems);
+        for (size_t s = 0; s < num_steps; ++s) {
+            for (size_t e = 0; e < num_elems; ++e) {
+                moment_flat[s * num_elems + e] = (e < step_history[s].element_bending_moments_kNm.size()) ? step_history[s].element_bending_moments_kNm[e] : 0.0;
+            }
+        }
+        moment_dataset.write(moment_flat.data(), H5::PredType::NATIVE_DOUBLE);
+
+        // von Mises Stress Matrix (num_steps x num_elems)
+        H5::DataSet vm_dataset = file.createDataSet("element_von_mises_MPa", H5::PredType::NATIVE_DOUBLE, tens_space);
+        std::vector<double> vm_flat(num_steps * num_elems);
+        for (size_t s = 0; s < num_steps; ++s) {
+            for (size_t e = 0; e < num_elems; ++e) {
+                vm_flat[s * num_elems + e] = (e < step_history[s].element_von_mises_MPa.size()) ? step_history[s].element_von_mises_MPa[e] : 0.0;
+            }
+        }
+        vm_dataset.write(vm_flat.data(), H5::PredType::NATIVE_DOUBLE);
+
+        file.close();
+        std::cout << "✅ Binary HDF5 simulation history successfully exported to: " << filename << std::endl;
+        return true;
+    } catch (const H5::Exception& err) {
+        std::cerr << "❌ HDF5 Exception during export: " << err.getDetailMsg() << std::endl;
+        return false;
+    }
+#else
+    std::cout << "ℹ️ HDF5 export skipped (HDF5 library not linked)." << std::endl;
+    return false;
+#endif
 }
 
 } // namespace risersim

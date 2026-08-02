@@ -52,6 +52,7 @@ public:
     bool solve_catenary_static(int load_steps = 10, int max_iter_per_step = 150, double tol = 1.0e-3);
     bool solve_vessel_offset(const VesselOffset& offset, int steps = 10, int max_iter = 100, double tol = 1.0e-3);
     bool export_json(const std::string& filename = "catenary_results.json") const;
+    bool export_hdf5(const std::string& filename = "catenary_results.h5") const;
 };
 
 } // namespace risersim

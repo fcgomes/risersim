@@ -5,6 +5,7 @@
     <title>riserSim 3D Three.js Web Visualizer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/h5wasm@0.4.10/dist/h5wasm.js"></script>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #1e1e2e; color: #cdd6f4; overflow: hidden; transition: background-color 0.3s; }
         
@@ -592,22 +593,105 @@
             }
         });
 
+        async function loadHDF5(fileOrUrl) {
+            try {
+                if (typeof h5wasm === 'undefined') throw new Error("h5wasm module not loaded");
+                const { FS, ready } = await h5wasm.ready;
+                let buffer;
+                if (typeof fileOrUrl === 'string') {
+                    const res = await fetch(fileOrUrl);
+                    if (!res.ok) throw new Error("HTTP error " + res.status);
+                    buffer = await res.arrayBuffer();
+                } else {
+                    buffer = await fileOrUrl.arrayBuffer();
+                }
+
+                FS.writeFile("temp.h5", new Uint8Array(buffer));
+                const h5file = new h5wasm.File("temp.h5", "r");
+
+                const posDS = h5file.get("node_positions");
+                const tensDS = h5file.get("element_tensions_kN");
+                const momentDS = h5file.get("element_bending_moments_kNm");
+                const vmDS = h5file.get("element_von_mises_MPa");
+
+                const posData = posDS.value;
+                const tensData = tensDS.value;
+                const momentData = momentDS ? momentDS.value : null;
+                const vmData = vmDS ? vmDS.value : null;
+
+                const dimsPos = posDS.shape;
+                const dimsTens = tensDS.shape;
+
+                const numSteps = dimsPos[0];
+                const numNodes = dimsPos[1];
+                const numElems = dimsTens[1];
+
+                const steps = [];
+                for (let s = 0; s < numSteps; ++s) {
+                    const nodes = [];
+                    for (let n = 0; n < numNodes; ++n) {
+                        const idx = (s * numNodes + n) * 3;
+                        nodes.push({ id: n + 1, x: posData[idx], y: posData[idx + 1], z: posData[idx + 2] });
+                    }
+
+                    const elements = [];
+                    for (let e = 0; e < numElems; ++e) {
+                        const idxTens = s * numElems + e;
+                        elements.push({
+                            id: e + 1,
+                            tension_effective_kN: tensData[idxTens],
+                            bending_moment_kNm: momentData ? momentData[idxTens] : 0.0,
+                            von_mises_MPa: vmData ? vmData[idxTens] : 0.0,
+                            mbr_safety_factor: 5.0
+                        });
+                    }
+
+                    steps.push({
+                        step: s,
+                        load_factor: (s / Math.max(1, numSteps - 1)),
+                        nodes: nodes,
+                        elements: elements
+                    });
+                }
+
+                h5file.close();
+
+                currentDataset = {
+                    simulation_type: "riserSim HDF5 Native Binary Output",
+                    seabed_depth: -100.0,
+                    num_steps: numSteps,
+                    steps: steps
+                };
+
+                setupSlider(currentDataset);
+                renderStep(numSteps - 1);
+                console.log("✅ HDF5 Binary File Loaded & Parsed via h5wasm!");
+            } catch (err) {
+                console.warn("Could not load HDF5 via h5wasm, falling back to JSON: ", err);
+                loadJSON('../catenary_results.json');
+            }
+        }
+
         document.getElementById('json-input').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
 
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                currentDataset = JSON.parse(e.target.result);
-                setupSlider(currentDataset);
-                renderStep(currentDataset.steps ? currentDataset.steps.length - 1 : 0);
-            };
-            reader.readAsText(file);
+            if (file.name.endsWith('.h5') || file.name.endsWith('.hdf5')) {
+                loadHDF5(file);
+            } else {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    currentDataset = JSON.parse(e.target.result);
+                    setupSlider(currentDataset);
+                    renderStep(currentDataset.steps ? currentDataset.steps.length - 1 : 0);
+                };
+                reader.readAsText(file);
+            }
         });
 
-        // Initialize Three.js Engine and Load Data
+        // Initialize Three.js Engine and Load Native HDF5 Data
         initThreeJS();
-        loadJSON('../catenary_results.json');
+        loadHDF5('../catenary_results.h5');
     </script>
 </body>
 </html>
