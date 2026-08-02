@@ -48,9 +48,9 @@ public:
     double p_e;               // External hydrostatic pressure (Pa)
     double net_upward_buoyancy; // Net upward buoyancy force per meter from modules (N/m)
 
-    CorotationalBeam3D(int elem_id, Node3D* n1, Node3D* n2, const BeamMaterialProps& p)
+    CorotationalBeam3D(int elem_id, Node3D* n1, Node3D* n2, const BeamMaterialProps& p, double L_unstretched = 0.0)
         : id(elem_id), node1(n1), node2(n2), props(p), tension_true(0.0), tension_effective(0.0), p_i(0.0), p_e(0.0), net_upward_buoyancy(0.0) {
-        initial_length = (node2->coords - node1->coords).norm();
+        initial_length = (L_unstretched > 0.0) ? L_unstretched : (node2->coords - node1->coords).norm();
     }
 
     double current_length() const {
@@ -75,8 +75,9 @@ public:
 
     // Calculate Effective Tension T_eff = T_true + p_e * A_e - p_i * A_i
     double update_effective_tension() {
-        double strain = (current_length() - initial_length) / initial_length;
-        tension_true = std::abs(props.E * props.A * strain);
+        double delta_L = current_length() - initial_length;
+        double strain = delta_L / initial_length;
+        tension_true = props.E * props.A * strain;
         tension_effective = tension_true + p_e * outer_area() - p_i * inner_area();
         return tension_effective;
     }

@@ -14,10 +14,10 @@ int main() {
     std::cout << "  riserSim Item 2: Vessel Offset Analysis (Far/Near/Cross)" << std::endl;
     std::cout << "=========================================================" << std::endl;
 
-    // 1. Define Riser Properties
+    // 1. Define Riser Properties (Flexible Riser Pipe)
     risersim::BeamMaterialProps props;
-    props.E = 2.1e11;          // 210 GPa (Steel)
-    props.G = 8.0e10;          // 80 GPa
+    props.E = 2.0e9;           // 2.0 GPa (Flexible Riser Composite Core)
+    props.G = 8.0e8;           // 0.8 GPa
     props.A = 0.015;           // 0.015 m^2
     props.IY = 5.0e-5;         // 5e-5 m^4
     props.IZ = 5.0e-5;         // 5e-5 m^4
@@ -28,11 +28,11 @@ int main() {
     props.rho_fluid = 850.0;   // Oil fluid density (kg/m^3)
     props.Ca = 1.0;            // Hydrodynamic added mass
 
-    // 2. Discretize Catenary Riser into 20 Elements
-    const int num_elements = 20;
+    // 2. Discretize Classic Deepwater Catenary Riser into 40 Elements (Total Line Scope = 180 m)
+    const int num_elements = 40;
     const int num_nodes = num_elements + 1;
-    const double total_span_x = 100.0;  // 100 meters
-    const double total_depth_z = -80.0; // 80 meters depth
+    const double total_span_x = 120.0;   // 120 meters horizontal span
+    const double total_depth_z = -100.0; // 100 meters water depth
 
     std::vector<risersim::Node3D*> nodes;
     std::vector<risersim::CorotationalBeam3D*> elements;
@@ -40,7 +40,8 @@ int main() {
     for (int i = 0; i < num_nodes; ++i) {
         double ratio = static_cast<double>(i) / static_cast<double>(num_elements);
         double x = ratio * total_span_x;
-        double z = ratio * total_depth_z;
+        // Initial smooth catenary curve with natural sagging
+        double z = ratio * total_depth_z - 25.0 * std::sin(ratio * M_PI);
         
         auto* node = new risersim::Node3D(i + 1, x, 0.0, z);
         nodes.push_back(node);
@@ -53,8 +54,9 @@ int main() {
         nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
     }
 
+    const double L_unstretched = 4.35; // Un-stretched manufactured element length (174m total un-stretched pipe)
     for (int i = 0; i < num_elements; ++i) {
-        auto* elem = new risersim::CorotationalBeam3D(i + 1, nodes[i], nodes[i + 1], props);
+        auto* elem = new risersim::CorotationalBeam3D(i + 1, nodes[i], nodes[i + 1], props, L_unstretched);
         elem->p_i = 3.0e7; // 300 bar
         elements.push_back(elem);
     }
@@ -63,9 +65,9 @@ int main() {
     risersim::BendRestrictor restrictor(5.0);
     restrictor.apply_to_element(elements[0]);
 
-    // 4. Apply Buoyancy Modules to Elements 8-11 (Lazy Wave)
-    risersim::BuoyancyModule buoy(0.80, 1200.0);
-    for (int i = 7; i <= 10; ++i) {
+    // 4. Apply Buoyancy Modules (D_buoy = 0.60 m) to Elements 14-26 (Classic Lazy Wave S-Arch)
+    risersim::BuoyancyModule buoy(0.60, 0.0);
+    for (int i = 14; i <= 26; ++i) {
         buoy.apply_to_element(elements[i]);
     }
 
@@ -74,18 +76,18 @@ int main() {
     analysis.nodes = nodes;
     analysis.elements = elements;
     analysis.water_density = 1025.0;
-    analysis.seabed = risersim::SeabedInteraction(-80.0, 1.0e5, 0.5);
+    analysis.seabed = risersim::SeabedInteraction(-100.0, 1.0e5, 0.5);
 
-    // Phase 1: Static Catenary Equilibrium
+    // Phase 1: Initial Catenary Static Equilibrium
     std::cout << "\n--- Phase 1: Initial Catenary Static Equilibrium ---" << std::endl;
-    bool success_catenary = analysis.solve_catenary_static(10, 100, 1.0e-1);
+    bool success_catenary = analysis.solve_catenary_static(20, 300, 100.0);
 
-    // Phase 2: Impose Vessel Offset Near (-10.0m displacement in -X)
-    std::cout << "\n--- Phase 2: Vessel Offset Near (-10.0 m) ---" << std::endl;
-    risersim::VesselOffset offset_near(risersim::OffsetMode::Near, 10.0); // -10m Near Offset
-    bool success_offset = analysis.solve_vessel_offset(offset_near, 20, 500, 100.0);
+    // Phase 2: Impose Vessel Offset Far (+10.0m displacement in +X)
+    std::cout << "\n--- Phase 2: Vessel Offset Far (+10.0 m) ---" << std::endl;
+    risersim::VesselOffset offset_far(risersim::OffsetMode::Far, 10.0); // +10m Far Offset
+    bool success_offset = analysis.solve_vessel_offset(offset_far, 20, 300, 100.0);
 
-    analysis.export_json("catenary_results.json");
+    analysis.export_json("risersim/catenary_results.json");
 
     if (success_catenary && success_offset) {
         std::cout << "\n=========================================================" << std::endl;

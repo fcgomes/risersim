@@ -94,7 +94,7 @@ bool StaticAnalysis::solve_catenary_static(int load_steps, int max_iter_per_step
 
             double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
             double w_buoyancy = water_density * elem->outer_area() * g;
-            double w_submerged = (w_dry - w_buoyancy - elem->net_upward_buoyancy) * load_factor;
+            double w_submerged = (w_dry - w_buoyancy) * load_factor;
 
             double elem_weight_total = w_submerged * L;
 
@@ -218,7 +218,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& offset, int steps, 
 
             double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
             double w_buoyancy = water_density * elem->outer_area() * g;
-            double elem_weight_total = (w_dry - w_buoyancy - elem->net_upward_buoyancy) * L;
+            double elem_weight_total = (w_dry - w_buoyancy) * L;
 
             int eq1_z = elem->node1->eq_numbers[2];
             int eq2_z = elem->node2->eq_numbers[2];
