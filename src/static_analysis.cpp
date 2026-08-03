@@ -25,15 +25,17 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     assign_equation_numbers();
     history.clear();
 
+    if (!model) return false;
+
     // Step 0: Initial Geometry (0% Load)
     StepSnapshot step0;
     step0.step_index = 0;
     step0.load_factor = 0.0;
-    for (auto* node : nodes) step0.node_coords.push_back(node->current_coords());
-    for (size_t i = 0; i < elements.size(); ++i) {
-        auto* elem = elements[i];
-        const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
-        const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+    for (auto* node : model->nodes) step0.node_coords.push_back(node->current_coords());
+    for (size_t i = 0; i < model->elements.size(); ++i) {
+        auto* elem = model->elements[i];
+        const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
+        const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
 
         elem->update_effective_tension();
         auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -47,7 +49,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     // Força total de referência com 100% da carga para normalização estrita
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
-    for (auto* elem : elements) {
+    for (auto* elem : model->elements) {
         double L = elem->initial_length;
         double g = 9.81;
         double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
@@ -69,7 +71,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
 
-        for (auto* elem : elements) {
+        for (auto* elem : model->elements) {
             double L = elem->initial_length;
             double g = 9.81;
 
@@ -124,11 +126,11 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 StepSnapshot snap;
                 snap.step_index = step;
                 snap.load_factor = load_factor;
-                for (auto* node : nodes) snap.node_coords.push_back(node->current_coords());
-                for (size_t i = 0; i < elements.size(); ++i) {
-                    auto* elem = elements[i];
-                    const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
-                    const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+                for (auto* node : model->nodes) snap.node_coords.push_back(node->current_coords());
+                for (size_t i = 0; i < model->elements.size(); ++i) {
+                    auto* elem = model->elements[i];
+                    const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
+                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
 
                     elem->update_effective_tension();
                     auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -163,7 +165,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
             for (int line_search = 0; line_search < 10; ++line_search) {
                 // Aplica tentativa de passo com alpha atual
-                for (auto* node : nodes) {
+                for (auto* node : model->nodes) {
                     for (int i = 0; i < 3; ++i) {
                         int eq = node->eq_numbers[i];
                         if (eq >= 0) node->disp[i] += alpha * step_dU[eq];
@@ -179,7 +181,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 double norm_R_test = (F_ext - F_int_test).norm();
 
                 // Desfaz tentativa — será reaplicado com o melhor alpha ao final
-                for (auto* node : nodes) {
+                for (auto* node : model->nodes) {
                     for (int i = 0; i < 3; ++i) {
                         int eq = node->eq_numbers[i];
                         if (eq >= 0) node->disp[i] -= alpha * step_dU[eq];
@@ -211,7 +213,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             // Aplica definitivamente o melhor alpha encontrado
             // Se nenhum alpha melhorou (best_alpha == 0), aplica um passo mínimo
             double final_alpha = (best_alpha > 0.0) ? best_alpha : 0.01;
-            for (auto* node : nodes) {
+            for (auto* node : model->nodes) {
                 for (int i = 0; i < 3; ++i) {
                     int eq = node->eq_numbers[i];
                     if (eq >= 0) node->disp[i] += final_alpha * step_dU[eq];
@@ -221,7 +223,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 }
             }
 
-            for (auto* elem : elements) {
+            for (auto* elem : model->elements) {
                 elem->update_effective_tension();
             }
         }
@@ -247,7 +249,9 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
     std::cout << "  ⚓ STARTING VESSEL OFFSET ANALYSIS" << std::endl;
     std::cout << "=========================================================================\n" << std::endl;
 
-    Node3D* top_node = nodes.front();
+    if (!model) return false;
+
+    Node3D* top_node = model->nodes.front();
 
     for (int step = 1; step <= steps; ++step) {
         double offset_factor = static_cast<double>(step) / static_cast<double>(steps);
@@ -263,7 +267,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
 
-        for (auto* elem : elements) {
+        for (auto* elem : model->elements) {
             double L = elem->initial_length;
             double g = 9.81;
             double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
@@ -302,11 +306,11 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 StepSnapshot snap;
                 snap.step_index = steps + step;
                 snap.load_factor = 1.0 + offset_factor;
-                for (auto* node : nodes) snap.node_coords.push_back(node->current_coords());
-                for (size_t i = 0; i < elements.size(); ++i) {
-                    auto* elem = elements[i];
-                    const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
-                    const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+                for (auto* node : model->nodes) snap.node_coords.push_back(node->current_coords());
+                for (size_t i = 0; i < model->elements.size(); ++i) {
+                    auto* elem = model->elements[i];
+                    const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
+                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
 
                     elem->update_effective_tension();
                     auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -329,7 +333,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
             Eigen::VectorXd step_dU = solver.solve(Residual);
 
-            for (auto* node : nodes) {
+            for (auto* node : model->nodes) {
                 if (node == top_node) continue;
                 for (int i = 0; i < 3; ++i) {
                     int eq = node->eq_numbers[i];
@@ -340,7 +344,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 }
             }
 
-            for (auto* elem : elements) {
+            for (auto* elem : model->elements) {
                 elem->update_effective_tension();
             }
         }

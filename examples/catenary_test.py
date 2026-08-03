@@ -38,9 +38,12 @@ e1.tension_effective = 150000.0 # 150 kN de tração efetiva
 e2.tension_effective = 120000.0 # 120 kN de tração efetiva
 
 # 4. Iniciar Análise Estática
+model = risersim.RiserModel()
+model.nodes = [n1, n2, n3]
+model.elements = [e1, e2]
+
 analysis = risersim.StaticAnalysis()
-analysis.nodes = [n1, n2, n3]
-analysis.elements = [e1, e2]
+analysis.model = model
 
 print(f"Comprimento inicial Elem 1: {e1.current_length():.2f} m")
 print(f"Comprimento inicial Elem 2: {e2.current_length():.2f} m")

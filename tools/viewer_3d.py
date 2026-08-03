@@ -83,9 +83,16 @@ def visualize_riser_3d(json_path="catenary_results.json"):
             import socketserver
 
             PORT = 8080
-            Handler = http.server.SimpleHTTPRequestHandler
+            
+            class CORSRequestHandler(http.server.SimpleHTTPRequestHandler):
+                def end_headers(self):
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                    self.send_header('Access-Control-Allow-Headers', '*')
+                    super().end_headers()
+
             print(f"🌐 Abra seu navegador em: http://localhost:{PORT}/risersim/tools/viewer_3d.html")
-            with socketserver.TCPServer(("", PORT), Handler) as httpd:
+            with socketserver.TCPServer(("", PORT), CORSRequestHandler) as httpd:
                 httpd.serve_forever()
 
 if __name__ == "__main__":

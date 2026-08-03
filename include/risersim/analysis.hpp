@@ -1,8 +1,7 @@
 #ifndef RISERSIM_ANALYSIS_HPP
 #define RISERSIM_ANALYSIS_HPP
 
-#include "risersim/node.hpp"
-#include "risersim/element_beam.hpp"
+#include "risersim/model.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/current_profile.hpp"
 #include "risersim/snapshot.hpp"
@@ -14,8 +13,7 @@ namespace risersim {
 
 class Analysis {
 public:
-    std::vector<Node3D*> nodes;
-    std::vector<CorotationalBeam3D*> elements;
+    RiserModel* model;
     SeabedInteraction seabed;
     CurrentProfile current;
     bool enable_current;
@@ -24,12 +22,13 @@ public:
 
     std::vector<StepSnapshot> history;
 
-    Analysis() : seabed(-80.0), enable_current(false), water_density(1025.0), num_dofs(0) {}
+    Analysis() : model(nullptr), seabed(-80.0), enable_current(false), water_density(1025.0), num_dofs(0) {}
     virtual ~Analysis() = default;
 
     virtual void assign_equation_numbers() {
         num_dofs = 0;
-        for (auto* node : nodes) {
+        if (!model) return;
+        for (auto* node : model->nodes) {
             for (int i = 0; i < 6; ++i) {
                 if (node->eq_numbers[i] >= 0) {
                     node->eq_numbers[i] = num_dofs++;

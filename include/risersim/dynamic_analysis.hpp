@@ -31,8 +31,7 @@ public:
           wave_period(10.0),
           alpha_rayleigh(0.05),
           beta_rayleigh(0.01) {
-        nodes = static_analysis.nodes;
-        elements = static_analysis.elements;
+        model = static_analysis.model;
         seabed = static_analysis.seabed;
         current = static_analysis.current;
         enable_current = static_analysis.enable_current;

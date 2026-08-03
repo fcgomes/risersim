@@ -167,8 +167,9 @@ int main(int argc, char* argv[]) {
 
     // Discretização do riser com trecho suspenso + trecho apoiado no solo (TDZ)
     const int num_nodes = num_elements + 1;
-    std::vector<risersim::Node3D*> nodes;
-    std::vector<risersim::CorotationalBeam3D*> elements;
+    // Discretização do riser com trecho suspenso + trecho apoiado no solo (TDZ)
+    const int num_nodes = num_elements + 1;
+    auto* model = new risersim::RiserModel();
 
     double h_water = std::abs(total_depth_z); // 265.0 m
     double L_total = total_length;            // 500.0 m
@@ -195,27 +196,26 @@ int main(int argc, char* argv[]) {
             z = -h_water; // Deitado exatamente sobre o solo
         }
 
-        nodes.push_back(new risersim::Node3D(i + 1, x, 0.0, z));
+        model->nodes.push_back(new risersim::Node3D(i + 1, x, 0.0, z));
     }
 
-    nodes.front()->eq_numbers = std::vector<int>(6, -1);
-    nodes.back()->eq_numbers = std::vector<int>(6, -1);
+    model->nodes.front()->eq_numbers = std::vector<int>(6, -1);
+    model->nodes.back()->eq_numbers = std::vector<int>(6, -1);
 
-    for (size_t i = 1; i < nodes.size() - 1; ++i) {
+    for (size_t i = 1; i < model->nodes.size() - 1; ++i) {
         // Graus de liberdade ativados para X, Y, Z
-        nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
+        model->nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
     }
 
     const double L_unstretched = total_length / static_cast<double>(num_elements);
     for (int i = 0; i < num_elements; ++i) {
-        auto* elem = new risersim::CorotationalBeam3D(i + 1, nodes[i], nodes[i + 1], props, L_unstretched);
-        elements.push_back(elem);
+        auto* elem = new risersim::CorotationalBeam3D(i + 1, model->nodes[i], model->nodes[i + 1], props, L_unstretched);
+        model->elements.push_back(elem);
     }
 
     // Configuração Estática com contato rígido no solo (Stiffness Penalty = 1e6 N/m^2)
     risersim::StaticAnalysis static_analysis;
-    static_analysis.nodes = nodes;
-    static_analysis.elements = elements;
+    static_analysis.model = model;
     static_analysis.water_density = water_density;
     double penalty_seabed_stiffness = std::max(seabed_stiffness, 1.0e6);
     static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, penalty_seabed_stiffness, seabed_friction);
@@ -235,9 +235,9 @@ int main(int argc, char* argv[]) {
 
     if (success_static) {
         std::cout << "✅ Análise Estática Convergida com Sucesso!" << std::endl;
-        std::cout << "  [TOPO] X=" << nodes.front()->current_coords().x()
-                  << " m, Z=" << nodes.front()->current_coords().z() << " m" << std::endl;
-        std::cout << "  [T_eff TOPO] " << (elements.front()->tension_effective / 1000.0) << " kN" << std::endl;
+        std::cout << "  [TOPO] X=" << model->nodes.front()->current_coords().x()
+                  << " m, Z=" << model->nodes.front()->current_coords().z() << " m" << std::endl;
+        std::cout << "  [T_eff TOPO] " << (model->elements.front()->tension_effective / 1000.0) << " kN" << std::endl;
     }
 
     // Configuração Dinâmica
@@ -268,8 +268,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\n💾 Resultados exportados para:" << std::endl;
     std::cout << "   " << json_out << std::endl;
 
-    for (auto* elem : elements) delete elem;
-    for (auto* node : nodes) delete node;
+    delete model;
 
     return (success_static && success_dynamic) ? 0 : 1;
 }

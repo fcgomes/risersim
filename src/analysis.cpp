@@ -9,7 +9,9 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
 
     std::vector<Eigen::Triplet<double>> triplets;
 
-    for (auto* elem : elements) {
+    if (!model) return;
+
+    for (auto* elem : model->elements) {
         elem->update_effective_tension();
 
         Eigen::Matrix<double, 12, 12> K_elem = elem->global_stiffness();
@@ -47,7 +49,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     }
 
     // Apply Seabed Interaction (Bilinear Soil Springs at TDZ)
-    for (auto* node : nodes) {
+    for (auto* node : model->nodes) {
         double f_seabed = 0.0, k_seabed = 0.0;
         seabed.calculate_seabed_reaction(node->current_coords().z(), f_seabed, k_seabed);
 

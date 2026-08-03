@@ -23,7 +23,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     std::cout << "  Duration: " << duration_s << " s | dt: " << dt_s << " s | Wave Amp: " << wave_amplitude << " m | Wave Period: " << wave_period << " s" << std::endl;
     std::cout << "=========================================================================\n" << std::endl;
 
-    if (nodes.empty()) return false;
+    if (!model || model->nodes.empty()) return false;
     assign_equation_numbers();
 
     history.clear();
@@ -40,12 +40,12 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     // Save Initial Equilibrium Displacements
     std::vector<Eigen::Vector3d> static_disps;
     std::vector<Eigen::Vector3d> static_rots;
-    for (auto* node : nodes) {
+    for (auto* node : model->nodes) {
         static_disps.push_back(node->disp);
         static_rots.push_back(node->rot);
     }
 
-    Node3D* top_node = nodes.front();
+    Node3D* top_node = model->nodes.front();
 
     // Dynamic State Vectors (System DOFs)
     Eigen::VectorXd U = Eigen::VectorXd::Zero(num_dofs);
@@ -75,8 +75,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         int max_iters = 12;
         for (int iter = 0; iter < max_iters; ++iter) {
             // Update Node Displacements (Static + Current Dynamic Perturbation)
-            for (size_t i = 0; i < nodes.size(); ++i) {
-                auto* node = nodes[i];
+            for (size_t i = 0; i < model->nodes.size(); ++i) {
+                auto* node = model->nodes[i];
                 if (node == top_node) continue;
 
                 for (int k = 0; k < 3; ++k) {
@@ -89,13 +89,13 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             }
 
             // Update Element Effective Tensions based on deformed geometry
-            for (auto* elem : elements) {
+            for (auto* elem : model->elements) {
                 elem->update_effective_tension();
             }
 
             // 1. External Load Vector F_ext
             Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
-            for (auto* elem : elements) {
+            for (auto* elem : model->elements) {
                 double L = elem->initial_length;
                 double g = 9.81;
 
@@ -129,9 +129,10 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             Eigen::VectorXd F_int = Eigen::VectorXd::Zero(num_dofs);
             assemble_system(K_global, F_ext, F_int);
 
+            if (!model) return false;
             Eigen::SparseMatrix<double> M_global(num_dofs, num_dofs);
             std::vector<Eigen::Triplet<double>> m_triplets;
-            for (auto* elem : elements) {
+            for (auto* elem : model->elements) {
                 Eigen::Matrix<double, 12, 12> m_elem = elem->global_mass(water_density);
                 std::vector<int> eq_map = {
                     elem->node1->eq_numbers[0], elem->node1->eq_numbers[1], elem->node1->eq_numbers[2],
@@ -191,14 +192,14 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             snap.step_index = step;
             snap.load_factor = time;
 
-            for (auto* node : nodes) {
+            for (auto* node : model->nodes) {
                 snap.node_coords.push_back(node->current_coords());
             }
 
-            for (size_t i = 0; i < elements.size(); ++i) {
-                auto* elem = elements[i];
-                const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
-                const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+            for (size_t i = 0; i < model->elements.size(); ++i) {
+                auto* elem = model->elements[i];
+                const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
+                const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
 
                 auto sc = elem->compute_stress_and_curvature(prev, next, 350.0);
                 snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);

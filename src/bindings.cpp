@@ -283,11 +283,19 @@ Exemplo mínimo de uso:
         .def_readwrite("element_mbr_safety_factors",  &StepSnapshot::element_mbr_safety_factors);
 
     // =========================================================================
+    // RiserModel
+    // =========================================================================
+    py::class_<RiserModel>(m, "RiserModel", "Modelo estrutural contendo nós e elementos de viga.")
+        .def(py::init<>())
+        .def_readwrite("nodes",          &RiserModel::nodes)
+        .def_readwrite("elements",       &RiserModel::elements)
+        .def("clear",                  &RiserModel::clear);
+
+    // =========================================================================
     // Analysis (base — não instanciável diretamente)
     // =========================================================================
     py::class_<Analysis>(m, "Analysis")
-        .def_readwrite("nodes",          &Analysis::nodes)
-        .def_readwrite("elements",       &Analysis::elements)
+        .def_readwrite("model",          &Analysis::model)
         .def_readwrite("seabed",         &Analysis::seabed)
         .def_readwrite("current",        &Analysis::current)
         .def_readwrite("enable_current", &Analysis::enable_current)
@@ -306,9 +314,12 @@ Exemplo mínimo de uso:
         R"(Análise estática não-linear (Newton-Raphson com incremento de carga).
 
 Sequência de uso:
+    model = risersim.RiserModel()
+    model.nodes    = [n1, n2, ...]
+    model.elements = [e1, e2, ...]
+    
     sa = risersim.StaticAnalysis()
-    sa.nodes    = [n1, n2, ...]
-    sa.elements = [e1, e2, ...]
+    sa.model    = model
     sa.seabed   = risersim.SeabedInteraction(-100.0, 1e5, 0.5)
     sa.load_steps = 20
     sa.tol = 100.0
