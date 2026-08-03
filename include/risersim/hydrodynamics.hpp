@@ -1,18 +1,11 @@
 #ifndef RISERSIM_HYDRODYNAMICS_HPP
 #define RISERSIM_HYDRODYNAMICS_HPP
 
-#ifndef _USE_MATH_DEFINES
-#define _USE_MATH_DEFINES
-#endif
-
+#include "risersim/config.hpp"
 #include <Eigen/Dense>
 #include <vector>
-#include <cmath>
-#include <cstdlib>
+#include <random>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace risersim {
 
@@ -47,10 +40,13 @@ public:
         return S_pm * std::pow(gamma, r);
     }
 
-    std::vector<WaveWaveComponent> generate_wave_components(int N_components = 50, double omega_max = 3.0) const {
+    std::vector<WaveWaveComponent> generate_wave_components(int N_components = 50, double omega_max = 3.0, unsigned int seed = 42) const {
         std::vector<WaveWaveComponent> components;
         double d_omega = omega_max / N_components;
         double g = 9.81;
+
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<double> phase_dist(0.0, 2.0 * M_PI);
 
         for (int i = 1; i <= N_components; ++i) {
             double w = i * d_omega;
@@ -63,7 +59,7 @@ public:
                 k = w * w / (g * std::tanh(k * depth));
             }
 
-            double phase = static_cast<double>(rand()) / RAND_MAX * 2.0 * M_PI;
+            double phase = phase_dist(rng);
 
             components.push_back({w, k, amp, phase});
         }

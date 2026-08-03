@@ -168,7 +168,10 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
         }
     }
 
-    // Curvatura geométrica real entre elementos da catenária
+    // Curvatura geométrica média entre elementos adjacentes
+    if (count > 1) {
+        kappa_geom /= static_cast<double>(count);
+    }
     res.curvature = kappa_geom;
 
     // Rigidez fletora EI (N.m²)
@@ -189,15 +192,34 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     res.mbr_safety_factor = res.bend_radius / (res.mbr_min > 0.01 ? res.mbr_min : 1.0);
 
     double A_struct = (props.A > 0.0) ? props.A : (M_PI * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
-    double sigma_axial = std::abs(tension_effective) / A_struct;
+    double sigma_axial = tension_effective / A_struct;  // Pode ser positivo (tração) ou negativo (compressão)
     double r_outer = props.D_outer / 2.0;
 
-    // Tensão fletora física real nas armaduras de aço externas da linha flexível
+    // Tensão fletora na fibra externa (My/I)
     double I_geom = M_PI * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
     double sigma_bending = (M_total_Nm * r_outer) / (I_geom > 1.0e-12 ? I_geom : 1.0e-5);
-    double sigma_direct = std::abs(sigma_axial) + std::abs(sigma_bending);
 
-    double von_mises_Pa = sigma_direct;
+    // Tensão circunferencial (hoop stress) para tubo de parede fina: σ_h = (p_i * r_i - p_e * r_o) / t
+    double r_inner = props.D_inner / 2.0;
+    double wall_thickness = r_outer - r_inner;
+    double sigma_hoop = 0.0;
+    if (wall_thickness > 1.0e-6) {
+        sigma_hoop = (p_i * r_inner - p_e * r_outer) / wall_thickness;
+    }
+
+    // Tensão axial combinada nas duas fibras extremas (tração e compressão por flexão)
+    double sigma_x_tension     = sigma_axial + std::abs(sigma_bending);  // Fibra tracionada
+    double sigma_x_compression = sigma_axial - std::abs(sigma_bending);  // Fibra comprimida
+
+    // Von Mises biaxial: σ_vm = √(σ_x² - σ_x·σ_h + σ_h²)
+    // Avalia ambas as fibras e usa o pior caso
+    double vm_tension = std::sqrt(sigma_x_tension * sigma_x_tension
+                                  - sigma_x_tension * sigma_hoop
+                                  + sigma_hoop * sigma_hoop);
+    double vm_compression = std::sqrt(sigma_x_compression * sigma_x_compression
+                                      - sigma_x_compression * sigma_hoop
+                                      + sigma_hoop * sigma_hoop);
+    double von_mises_Pa = std::max(vm_tension, vm_compression);
     res.von_mises_MPa = von_mises_Pa / 1.0e6;
 
     return res;

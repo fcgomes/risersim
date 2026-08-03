@@ -3,7 +3,10 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+
+#ifdef RISERSIM_HAS_HDF5
 #include <H5Cpp.h>
+#endif
 
 namespace risersim {
 
@@ -68,6 +71,8 @@ bool SimulationExporter::export_json(const Analysis& static_analysis, const Anal
     return true;
 }
 
+#ifdef RISERSIM_HAS_HDF5
+
 static void write_hdf5_group(H5::H5File& file, const std::string& group_name, const std::vector<StepSnapshot>& history) {
     if (history.empty()) return;
 
@@ -124,5 +129,14 @@ bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Anal
         return false;
     }
 }
+
+#else // RISERSIM_HAS_HDF5 not defined
+
+bool SimulationExporter::export_hdf5(const Analysis& /*static_analysis*/, const Analysis& /*dynamic_analysis*/, const std::string& /*filename*/) {
+    std::cerr << "⚠️ HDF5 support not available (built without RISERSIM_HAS_HDF5). Skipping HDF5 export." << std::endl;
+    return false;
+}
+
+#endif // RISERSIM_HAS_HDF5
 
 } // namespace risersim

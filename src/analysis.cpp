@@ -28,24 +28,22 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             }
         }
 
-        Eigen::Vector3d ex = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
-        Eigen::Vector3d f_axial = elem->tension_effective * ex;
+        // Calcular F_int_elem = K_elem * u_elem (inclui axial + flexão + torção)
+        Eigen::Matrix<double, 12, 1> u_elem;
+        for (int i = 0; i < 3; ++i) {
+            u_elem[i]     = elem->node1->disp[i];
+            u_elem[i + 3] = elem->node1->rot[i];
+            u_elem[i + 6] = elem->node2->disp[i];
+            u_elem[i + 9] = elem->node2->rot[i];
+        }
 
-        int eq1_x = elem->node1->eq_numbers[0];
-        int eq1_y = elem->node1->eq_numbers[1];
-        int eq1_z = elem->node1->eq_numbers[2];
+        Eigen::Matrix<double, 12, 1> F_int_elem = K_elem * u_elem;
 
-        int eq2_x = elem->node2->eq_numbers[0];
-        int eq2_y = elem->node2->eq_numbers[1];
-        int eq2_z = elem->node2->eq_numbers[2];
-
-        if (eq1_x >= 0) F_int[eq1_x] -= f_axial.x();
-        if (eq1_y >= 0) F_int[eq1_y] -= f_axial.y();
-        if (eq1_z >= 0) F_int[eq1_z] -= f_axial.z();
-
-        if (eq2_x >= 0) F_int[eq2_x] += f_axial.x();
-        if (eq2_y >= 0) F_int[eq2_y] += f_axial.y();
-        if (eq2_z >= 0) F_int[eq2_z] += f_axial.z();
+        for (int i = 0; i < 12; ++i) {
+            if (dofs[i] >= 0) {
+                F_int[dofs[i]] += F_int_elem[i];
+            }
+        }
     }
 
     // Apply Seabed Interaction (Bilinear Soil Springs at TDZ)

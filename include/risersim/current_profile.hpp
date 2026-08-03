@@ -1,16 +1,9 @@
 #ifndef RISERSIM_CURRENT_PROFILE_HPP
 #define RISERSIM_CURRENT_PROFILE_HPP
 
-#ifndef _USE_MATH_DEFINES
-#define _USE_MATH_DEFINES
-#endif
-
-#include <cmath>
+#include "risersim/config.hpp"
 #include <algorithm>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace risersim {
 

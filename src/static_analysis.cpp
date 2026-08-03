@@ -158,8 +158,11 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             // Armijo Backtracking Line Search rigoroso
             double alpha = 1.0;
             double norm_R_current = norm_R;
+            double best_alpha = 0.0;
+            double best_norm_R = norm_R_current;
 
             for (int line_search = 0; line_search < 10; ++line_search) {
+                // Aplica tentativa de passo com alpha atual
                 for (auto* node : nodes) {
                     for (int i = 0; i < 3; ++i) {
                         int eq = node->eq_numbers[i];
@@ -175,10 +178,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 assemble_system(K_test, F_ext, F_int_test);
                 double norm_R_test = (F_ext - F_int_test).norm();
 
-                if (norm_R_test <= norm_R_current || alpha < 0.01) {
-                    break;
-                }
-
+                // Desfaz tentativa — será reaplicado com o melhor alpha ao final
                 for (auto* node : nodes) {
                     for (int i = 0; i < 3; ++i) {
                         int eq = node->eq_numbers[i];
@@ -188,7 +188,37 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                         if (eq_rot >= 0) node->rot[i] -= alpha * step_dU[eq_rot];
                     }
                 }
+
+                // Rastreia o melhor alpha encontrado
+                if (norm_R_test < best_norm_R) {
+                    best_norm_R = norm_R_test;
+                    best_alpha = alpha;
+                }
+
+                // Se melhorou em relação ao resíduo corrente, aceita
+                if (norm_R_test <= norm_R_current) {
+                    break;
+                }
+
+                // Se alpha já é muito pequeno, para de buscar
+                if (alpha < 0.01) {
+                    break;
+                }
+
                 alpha *= 0.5;
+            }
+
+            // Aplica definitivamente o melhor alpha encontrado
+            // Se nenhum alpha melhorou (best_alpha == 0), aplica um passo mínimo
+            double final_alpha = (best_alpha > 0.0) ? best_alpha : 0.01;
+            for (auto* node : nodes) {
+                for (int i = 0; i < 3; ++i) {
+                    int eq = node->eq_numbers[i];
+                    if (eq >= 0) node->disp[i] += final_alpha * step_dU[eq];
+
+                    int eq_rot = node->eq_numbers[i + 3];
+                    if (eq_rot >= 0) node->rot[i] += final_alpha * step_dU[eq_rot];
+                }
             }
 
             for (auto* elem : elements) {

@@ -20,6 +20,16 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Compiled Python extension modules (pybind11)
+*.pyd
+*.so
+
+# Simulation result files (generated, not source)
+catenary_results.json
+catenary_results.h5
+risersim_results/
+input_simulation.json
+
 # Temporary logs
 *.log
 *.tmp
