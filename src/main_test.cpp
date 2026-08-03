@@ -167,8 +167,6 @@ int main(int argc, char* argv[]) {
 
     // Discretização do riser com trecho suspenso + trecho apoiado no solo (TDZ)
     const int num_nodes = num_elements + 1;
-    // Discretização do riser com trecho suspenso + trecho apoiado no solo (TDZ)
-    const int num_nodes = num_elements + 1;
     auto* model = new risersim::RiserModel();
 
     double h_water = std::abs(total_depth_z); // 265.0 m
