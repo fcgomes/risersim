@@ -100,34 +100,77 @@ def main():
         print(f"❌ Arquivo AML não encontrado: {aml_path}")
         sys.exit(1)
 
-    # 1. Converter AML para estrutura de dados
-    print(f"\n📖 Lendo arquivo AML: {aml_path}")
-    reader = ANFLEXAMLReader(str(aml_path))
-    reader.summary()
+    # 1. Converter AML ou XML+H5 para estrutura de dados
+    # Procura se há uma pasta _analysis contendo XML + H5 associada
+    parent_dir = aml_path.parent
+    base_name = aml_path.stem
+    analysis_dir = parent_dir / f"{base_name}_analysis"
+    xml_file = analysis_dir / f"{base_name}_A1.xml"
+    h5_file = analysis_dir / f"{base_name}_A1.h5"
 
-    config = reader.to_risersim_config(line_index=args.line_index)
+    use_xml_h5 = xml_file.is_file() and h5_file.is_file()
+    config = {}
 
-    if args.num_elements:
-        config['geometry']['num_elements'] = args.num_elements
+    if use_xml_h5:
+        print(f"\n📦 Detectada pasta de análise XML+H5. Importando modelo robusto:")
+        print(f"   XML: {xml_file}")
+        print(f"   H5:  {h5_file}")
+        from xml_h5_reader import ANFLEXXmlH5Reader
+        reader = ANFLEXXmlH5Reader(str(xml_file), str(h5_file))
+        config = reader.to_risersim_json()
+        reader.close()
+        
+        # Sobrescreve parâmetros da linha de comando se informados
+        if args.num_elements:
+            print("⚠️ Nota: O número de elementos é fixado pela malha XML+H5 e não será sobrescrito.")
+            
+        if '--duration' in sys.argv:
+            config['analysis_options']['dynamic']['duration_s'] = args.duration
+        if '--dt' in sys.argv:
+            config['analysis_options']['dynamic']['dt_s'] = args.dt
+        if args.static_only:
+            config['analysis_options']['dynamic']['enabled'] = False
+            
+    else:
+        print(f"\n📖 Lendo arquivo AML: {aml_path}")
+        reader = ANFLEXAMLReader(str(aml_path))
+        reader.summary()
 
-    if args.offset_near:
+        config = reader.to_risersim_config(line_index=args.line_index)
+
+        if args.num_elements:
+            config['geometry']['num_elements'] = args.num_elements
+
+        # Offsets permanecem nominalmente como 0.0 no equilíbrio.
         config['offsets'] = {
-            'near_m': config['offsets'].get('near_m', 10.0),
-            'far_m': 0.0
+            'near_m': 0.0,
+            'far_m':  0.0
         }
 
-    # Adiciona amortecimento Rayleigh de segurança se for 0 no AML para evitar divergência
-    ray = config.get('rayleigh', {})
-    config['rayleigh'] = {
-        'alpha': max(ray.get('alpha', 0.0), 0.05),
-        'beta': max(ray.get('beta', 0.0), 0.005)
-    }
+        # Adiciona amortecimento Rayleigh de segurança se for 0 no AML para evitar divergência
+        ray = config.get('rayleigh', {})
+        config['rayleigh'] = {
+            'alpha': max(ray.get('alpha', 0.0), 0.05),
+            'beta': max(ray.get('beta', 0.0), 0.005)
+        }
 
-    config['simulation_options'] = {
-        'static_only': args.static_only,
-        'duration_s': args.duration,
-        'dt_s': args.dt
-    }
+        # 2. Mesclar opções de simulação (prioridade: argumentos de linha de comando > AML > default)
+        sim_opts = config.get('simulation_options', {})
+        
+        # Se o usuário não alterou --duration na linha de comando, usa o valor do AML (se existir) ou fallback 20.0
+        duration = args.duration if '--duration' in sys.argv else sim_opts.get('duration_s', 20.0)
+        dt = args.dt if '--dt' in sys.argv else sim_opts.get('dt_s', 0.05)
+
+        config['simulation_options'] = {
+            'static_only': args.static_only,
+            'static_steps': sim_opts.get('static_steps', 20),
+            'static_max_iter': sim_opts.get('static_max_iter', 300),
+            'static_tolerance': sim_opts.get('static_tolerance', 100.0),
+            'duration_s': duration,
+            'dt_s': dt,
+            'dynamic_max_iter': sim_opts.get('dynamic_max_iter', 20),
+            'dynamic_tolerance': sim_opts.get('dynamic_tolerance', 1.0e-3),
+        }
 
     # 2. Criar diretório de saída e salvar o JSON de entrada
     out_dir = Path(args.out_dir).resolve()

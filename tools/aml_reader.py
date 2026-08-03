@@ -227,8 +227,8 @@ class ANFLEXAMLReader:
 
             cat_angle = get_nth('%LINE.CATENARY.ANGLE', 5.0)
             azimuth   = get_nth('%LINE.AZIMUTH', 0.0)
-            offset_near = get_nth('%LINE.OFFSET.NEAR', 10.0)
-            offset_far  = get_nth('%LINE.OFFSET.FAR',  10.0)
+            offset_near = get_nth('%LINE.OFFSET.NEAR', 0.0)
+            offset_far  = get_nth('%LINE.OFFSET.FAR',  0.0)
             conn_id   = get_nth('%LINE.CONNECTION_ID', -1)
             top_press_static  = get_nth('%LINE.TOP_PRESSURE', 0.0, col=0)
             top_press_content = get_nth('%LINE.TOP_PRESSURE', 0.0, col=1)
@@ -248,7 +248,11 @@ class ANFLEXAMLReader:
                         if s < len(mesh_data):
                             parts = mesh_data[s].split()
                             seg_len = float(parts[0]) if parts else 0.0
+                            elem_len = float(parts[1]) if len(parts) > 1 else 5.0
                             total_length_m += seg_len
+                            # Calcular número de elementos para o segmento
+                            seg_elements = max(1, int(round(seg_len / (elem_len if elem_len > 0.0 else 5.0))))
+                            
                             # Material e buoy IDs para este segmento
                             mat_id = -1
                             buoy_id = -1
@@ -266,6 +270,7 @@ class ANFLEXAMLReader:
                                 'length_m': seg_len,
                                 'material_id': mat_id,
                                 'buoy_id': buoy_id,
+                                'num_elements': seg_elements,
                             })
                 except (ValueError, IndexError):
                     pass
@@ -381,6 +386,20 @@ class ANFLEXAMLReader:
             'lines': lines_data,
             'currents': currents,
             'waves': waves,
+            'analysis': {
+                'static': {
+                    'total_time': self._get_float('%ANALYSIS_CASE.STATIC.TOTAL_TIME', self._get_float('%ASSEMBLY.TOTAL_TIME', 11.0)),
+                    'time_step':  self._get_float('%ANALYSIS_CASE.STATIC.TIME_STEP',  self._get_float('%ASSEMBLY.TIME_STEP',  1.0)),
+                    'max_iter':   int(self._get_float('%ANALYSIS_CASE.STATIC.MAX_NUM_ITERATION', self._get_float('%ASSEMBLY.MAX_NUM_ITERATION', 40.0))),
+                    'tolerance':  self._get_float('%ANALYSIS_CASE.STATIC.TOLERANCE',  self._get_float('%ASSEMBLY.TOLERANCE',  1.0e-3)),
+                },
+                'dynamic': {
+                    'total_time': self._get_float('%ANALYSIS_CASE.TIME_DOMAIN.TOTAL_TIME', 1.0),
+                    'time_step':  self._get_float('%ANALYSIS_CASE.TIME_DOMAIN.TIME_STEP',  0.05),
+                    'max_iter':   int(self._get_float('%ANALYSIS_CASE.TIME_DOMAIN.MAX_NUM_ITERATION', 20.0)),
+                    'tolerance':  self._get_float('%ANALYSIS_CASE.TIME_DOMAIN.TOLERANCE',  1.0e-3),
+                }
+            }
         }
 
     @staticmethod
@@ -438,8 +457,13 @@ class ANFLEXAMLReader:
         total_length = line.get('total_length_m', 500.0)
         depth = glb['seabed_depth_m']
 
-        # Estima número de elementos (aprox. 1 elemento por 5 metros)
-        num_elements = max(20, min(200, int(total_length / 5)))
+        # Soma o número de elementos de todos os segmentos da linha definidos no AML
+        if 'segments' in line and line['segments']:
+            num_elements = sum(seg.get('num_elements', 0) for seg in line['segments'])
+        else:
+            num_elements = max(20, min(200, int(total_length / 5)))
+        if num_elements <= 0:
+            num_elements = 100
 
         # Alcance horizontal real X_span da catenária (com trecho repousando no solo TDZ):
         # Para um riser flexível suspenso de comprimento L e profundidade h,
@@ -481,8 +505,8 @@ class ANFLEXAMLReader:
                 'friction_coeff': soil['friction_lateral'],
             },
             'offsets': {
-                'near_m': line.get('offset_near_m', 0.0),
-                'far_m':  line.get('offset_far_m',  0.0),
+                'near_m': 0.0,
+                'far_m':  0.0,
             },
             'wave': {
                 'period_s':   wave.get('period_s', 10.0),
@@ -502,6 +526,17 @@ class ANFLEXAMLReader:
                 'beta':  mat['rayleigh']['beta'],
             },
             'water_density_kgm3': glb['water_density_kgm3'],
+            'simulation_options': {
+                # Configurações de passos e solvers extraídas do AML
+                'static_steps': max(1, int(self.model_data['analysis']['static']['total_time'] / 
+                                          (self.model_data['analysis']['static']['time_step'] if self.model_data['analysis']['static']['time_step'] > 0 else 1.0))),
+                'static_max_iter': self.model_data['analysis']['static']['max_iter'],
+                'static_tolerance': self.model_data['analysis']['static']['tolerance'],
+                'duration_s': self.model_data['analysis']['dynamic']['total_time'],
+                'dt_s': self.model_data['analysis']['dynamic']['time_step'],
+                'dynamic_max_iter': self.model_data['analysis']['dynamic']['max_iter'],
+                'dynamic_tolerance': self.model_data['analysis']['dynamic']['tolerance'],
+            }
         }
         return config
 

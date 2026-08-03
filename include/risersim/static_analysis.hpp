@@ -19,8 +19,8 @@ public:
           load_steps(20),
           max_iter_per_step(300),
           tol(100.0),
-          offset(OffsetMode::Far, 10.0),
-          enable_offset(true) {}
+          offset(OffsetMode::Far, 0.0),
+          enable_offset(false) {}
 
     bool solve_catenary_static(int steps = 20, int max_iter = 300, double tolerance = 100.0);
     bool solve_vessel_offset(const VesselOffset& vessel_offset, int steps = 20, int max_iter = 300, double tolerance = 100.0);

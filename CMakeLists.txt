@@ -21,21 +21,13 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 # 1. Fetch Eigen 3.4.0 (Header-only matrix library)
 include(FetchContent)
 message(STATUS "Fetching Eigen 3.4.0...")
-FetchContent_Declare(
-    Eigen3
-    URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
+FetchContent_Declare(Eigen3 URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(Eigen3)
 
 # 2. Fetch nlohmann/json 3.11.2 (Header-only JSON library)
 message(STATUS "Fetching nlohmann/json 3.11.2...")
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-FetchContent_Declare(
-    nlohmann_json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
+FetchContent_Declare(nlohmann_json URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(nlohmann_json)
 
 # Core C++ Library
@@ -52,6 +44,7 @@ add_library(risersim_core STATIC
 target_include_directories(risersim_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+set_target_properties(risersim_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # 2. Check or Fetch HDF5 C/C++ library
 find_package(HDF5 COMPONENTS C CXX QUIET)

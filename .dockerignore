@@ -1,0 +1,7 @@
+build/
+catenary_results.json
+catenary_results.h5
+risersim_results/
+input_simulation.json
+*.pyd
+*.so
