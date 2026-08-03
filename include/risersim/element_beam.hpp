@@ -22,7 +22,8 @@ struct BeamMaterialProps {
     double IY;         // Moment of inertia Y (m^4)
     double IZ;         // Moment of inertia Z (m^4)
     double J;          // Torsional constant (m^4)
-    double rho;        // Structural mass density (kg/m^3 or kg/m linear density if A=1)
+    double rho;        // Structural mass density (kg/m^3)
+    double EI;         // Bending stiffness EI (N.m^2)
     
     double D_outer;    // Outer diameter (m)
     double D_inner;    // Inner diameter (m)
@@ -30,7 +31,7 @@ struct BeamMaterialProps {
     double Ca;         // Hydrodynamic added mass coefficient (default 1.0)
 
     BeamMaterialProps()
-        : E(2.1e11), G(8.0e10), A(0.015), IY(5.0e-5), IZ(5.0e-5), J(1.0e-4), rho(7850.0),
+        : E(2.1e11), G(8.0e10), A(0.015), IY(5.0e-5), IZ(5.0e-5), J(1.0e-4), rho(7850.0), EI(1.05e7),
           D_outer(0.25), D_inner(0.20), rho_fluid(800.0), Ca(1.0) {}
 };
 
@@ -79,7 +80,6 @@ public:
         double strain = delta_L / initial_length;
         tension_true = props.E * props.A * strain;
         tension_effective = tension_true + p_e * outer_area() - p_i * inner_area();
-        if (tension_effective < 10.0) tension_effective = 10.0;
         return tension_effective;
     }
 

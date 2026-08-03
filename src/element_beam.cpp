@@ -168,34 +168,14 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
         }
     }
 
-    if (count > 0) {
-        kappa_geom /= static_cast<double>(count);
-    }
+    // Curvatura geométrica real entre elementos da catenária
+    res.curvature = kappa_geom;
 
-    // 2. Rotational curvature from local DOFs
-    Eigen::Matrix<double, 12, 12> T = transformation_matrix();
-    Eigen::Matrix<double, 12, 1> U_global = Eigen::Matrix<double, 12, 1>::Zero();
-    U_global.block<3, 1>(0, 0) = node1->disp;
-    U_global.block<3, 1>(3, 0) = node1->rot;
-    U_global.block<3, 1>(6, 0) = node2->disp;
-    U_global.block<3, 1>(9, 0) = node2->rot;
+    // Rigidez fletora EI (N.m²)
+    double EI_eff = (props.EI > 0.0) ? props.EI : (props.E * props.IY);
 
-    Eigen::Matrix<double, 12, 1> U_local = T * U_global;
-
-    double rot_y1 = U_local(4);
-    double rot_z1 = U_local(5);
-    double rot_y2 = U_local(10);
-    double rot_z2 = U_local(11);
-
-    double kappa_y = (std::abs(rot_y1) + std::abs(rot_y2)) / L;
-    double kappa_z = (std::abs(rot_z1) + std::abs(rot_z2)) / L;
-    double kappa_rot = std::sqrt(kappa_y * kappa_y + kappa_z * kappa_z);
-
-    // Total Curvature is max of geometric and rotational curvature
-    res.curvature = std::max(kappa_rot, kappa_geom);
-
-    // Bending Moment M = E * I * kappa
-    double M_total_Nm = props.E * props.IY * res.curvature;
+    // Momento fletor M = EI * kappa (N.m)
+    double M_total_Nm = EI_eff * res.curvature;
     res.bending_moment_kNm = M_total_Nm / 1000.0;
 
     if (res.curvature > 1.0e-7) {
@@ -209,18 +189,15 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     res.mbr_safety_factor = res.bend_radius / (res.mbr_min > 0.01 ? res.mbr_min : 1.0);
 
     double A_struct = (props.A > 0.0) ? props.A : (M_PI * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
-    double sigma_axial = tension_effective / A_struct;
+    double sigma_axial = std::abs(tension_effective) / A_struct;
     double r_outer = props.D_outer / 2.0;
-    double sigma_bending = (M_total_Nm * r_outer) / (props.IY > 1.0e-9 ? props.IY : 1.0e-5);
+
+    // Tensão fletora física real nas armaduras de aço externas da linha flexível
+    double I_geom = M_PI * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
+    double sigma_bending = (M_total_Nm * r_outer) / (I_geom > 1.0e-12 ? I_geom : 1.0e-5);
     double sigma_direct = std::abs(sigma_axial) + std::abs(sigma_bending);
 
-    double rot_x1 = U_local(3);
-    double rot_x2 = U_local(9);
-    double torsion_angle = std::abs(rot_x2 - rot_x1);
-    double M_torsion = props.G * props.J * torsion_angle / L;
-    double tau = (M_torsion * r_outer) / (props.J > 1.0e-9 ? props.J : 1.0e-4);
-
-    double von_mises_Pa = std::sqrt(sigma_direct * sigma_direct + 3.0 * tau * tau);
+    double von_mises_Pa = sigma_direct;
     res.von_mises_MPa = von_mises_Pa / 1.0e6;
 
     return res;

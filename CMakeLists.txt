@@ -28,6 +28,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(Eigen3)
 
+# 2. Fetch nlohmann/json 3.11.2 (Header-only JSON library)
+message(STATUS "Fetching nlohmann/json 3.11.2...")
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Core C++ Library
 add_library(risersim_core STATIC
     src/node.cpp
@@ -68,10 +78,12 @@ else()
     endif()
 endif()
 
+target_link_libraries(risersim_core PUBLIC nlohmann_json::nlohmann_json)
+
 # Executable test
 add_executable(risersim_test_main src/main_test.cpp src/node.cpp src/element_beam.cpp src/analysis.cpp src/static_analysis.cpp src/dynamic_analysis.cpp src/simulation_exporter.cpp src/hydrodynamics.cpp)
 target_include_directories(risersim_test_main PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(risersim_test_main PUBLIC Eigen3::Eigen)
+target_link_libraries(risersim_test_main PUBLIC Eigen3::Eigen nlohmann_json::nlohmann_json)
 
 if(TARGET hdf5_cpp-static)
     target_link_libraries(risersim_test_main PRIVATE hdf5_cpp-static hdf5-static)
@@ -97,7 +109,34 @@ if(Python3_FOUND)
     FetchContent_MakeAvailable(pybind11)
 
     pybind11_add_module(risersim src/bindings.cpp)
-    target_link_libraries(risersim PRIVATE risersim_core)
+    target_link_libraries(risersim PRIVATE risersim_core Eigen3::Eigen)
+
+    # Link HDF5 para o módulo Python também (SimulationExporter::export_hdf5)
+    if(TARGET hdf5_cpp-static)
+        target_link_libraries(risersim PRIVATE hdf5_cpp-static hdf5-static)
+    elseif(TARGET hdf5_cpp)
+        target_link_libraries(risersim PRIVATE hdf5_cpp hdf5)
+    elseif(HDF5_FOUND)
+        target_include_directories(risersim PRIVATE ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(risersim PRIVATE ${HDF5_LIBRARIES})
+    endif()
+
+    # Coloca o .pyd/.so no diretório tools/ para importar diretamente com
+    #   sys.path.insert(0, 'risersim/tools')
+    #   import risersim
+    set_target_properties(risersim PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+    )
+    foreach(cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
+        set_target_properties(risersim PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${cfg} "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+            RUNTIME_OUTPUT_DIRECTORY_${cfg} "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+        )
+    endforeach()
+
+    message(STATUS "✅ Módulo Python 'risersim' será instalado em: ${CMAKE_CURRENT_SOURCE_DIR}/tools/")
 else()
     message(STATUS "Python3 not found. Skipping pybind11 module build.")
 endif()
+

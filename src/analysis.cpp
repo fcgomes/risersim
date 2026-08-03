@@ -55,7 +55,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
 
         int eq_z = node->eq_numbers[2];
         if (eq_z >= 0) {
-            F_int[eq_z] += f_seabed;
+            F_int[eq_z] -= f_seabed; // Upward normal reaction force from seabed
             triplets.push_back(Eigen::Triplet<double>(eq_z, eq_z, k_seabed));
         }
     }

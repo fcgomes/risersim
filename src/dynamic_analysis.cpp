@@ -31,12 +31,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     const int total_steps = static_cast<int>(duration_s / dt_s);
     const double omega = 2.0 * M_PI / wave_period;
 
-    // Newmark-beta Constants (Average Acceleration Method: gamma=0.5, beta=0.25)
+    // Newmark-beta Constants (Average Acceleration Method)
     const double gamma_newmark = 0.55;
     const double beta_newmark = 0.28;
 
     const double c1 = 1.0 / (beta_newmark * dt_s * dt_s);
-    const double c6 = gamma_newmark * dt_s;
 
     // Save Initial Equilibrium Displacements
     std::vector<Eigen::Vector3d> static_disps;
@@ -73,7 +72,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         Eigen::VectorXd U_curr = U_prev + dt_s * V_prev + 0.5 * dt_s * dt_s * (1.0 - 2.0 * beta_newmark) * A_prev;
 
         // Newton-Raphson Iterations per Dynamic Time Step
-        int max_iters = 8;
+        int max_iters = 12;
         for (int iter = 0; iter < max_iters; ++iter) {
             // Update Node Displacements (Static + Current Dynamic Perturbation)
             for (size_t i = 0; i < nodes.size(); ++i) {
@@ -125,103 +124,97 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 }
             }
 
-            // 2. Assemble System Stiffness K_global and Internal Forces F_int
-            Eigen::SparseMatrix<double> K_global;
-            Eigen::VectorXd F_int;
+            // 2. Assemble Global Mass (M) and Stiffness (K) Matrices
+            Eigen::SparseMatrix<double> K_global(num_dofs, num_dofs);
+            Eigen::VectorXd F_int = Eigen::VectorXd::Zero(num_dofs);
             assemble_system(K_global, F_ext, F_int);
 
-            // 3. Assemble Global Mass Matrix M_global
             Eigen::SparseMatrix<double> M_global(num_dofs, num_dofs);
-            std::vector<Eigen::Triplet<double>> triplets_M;
+            std::vector<Eigen::Triplet<double>> m_triplets;
             for (auto* elem : elements) {
-                Eigen::Matrix<double, 12, 12> Me = elem->global_mass(water_density);
-                int dofs[12];
-                for (int i = 0; i < 3; ++i) {
-                    dofs[i]     = elem->node1->eq_numbers[i];
-                    dofs[i + 3] = elem->node1->eq_numbers[i + 3];
-                    dofs[i + 6] = elem->node2->eq_numbers[i];
-                    dofs[i + 9] = elem->node2->eq_numbers[i + 3];
-                }
+                Eigen::Matrix<double, 12, 12> m_elem = elem->global_mass(water_density);
+                std::vector<int> eq_map = {
+                    elem->node1->eq_numbers[0], elem->node1->eq_numbers[1], elem->node1->eq_numbers[2],
+                    elem->node1->eq_numbers[3], elem->node1->eq_numbers[4], elem->node1->eq_numbers[5],
+                    elem->node2->eq_numbers[0], elem->node2->eq_numbers[1], elem->node2->eq_numbers[2],
+                    elem->node2->eq_numbers[3], elem->node2->eq_numbers[4], elem->node2->eq_numbers[5]
+                };
+
                 for (int r = 0; r < 12; ++r) {
+                    if (eq_map[r] < 0) continue;
                     for (int c = 0; c < 12; ++c) {
-                        if (dofs[r] >= 0 && dofs[c] >= 0) {
-                            triplets_M.push_back(Eigen::Triplet<double>(dofs[r], dofs[c], Me(r, c)));
-                        }
+                        if (eq_map[c] < 0) continue;
+                        m_triplets.push_back(Eigen::Triplet<double>(eq_map[r], eq_map[c], m_elem(r, c)));
                     }
                 }
             }
-            M_global.setFromTriplets(triplets_M.begin(), triplets_M.end());
+            M_global.setFromTriplets(m_triplets.begin(), m_triplets.end());
 
-            // 4. Rayleigh Damping Matrix C = alpha * M + beta * K
+            // Damping Matrix C = alpha*M + beta*K
             Eigen::SparseMatrix<double> C_global = alpha_rayleigh * M_global + beta_rayleigh * K_global;
 
-            // 5. Dynamic Residual Vector: R = F_ext - F_int - M * A - C * V
-            Eigen::VectorXd R = (F_ext - F_int) - M_global * A_curr - C_global * V_curr;
+            // Effective Dynamic Stiffness K_eff = K + c1*M + (gamma / (beta * dt))*C
+            Eigen::SparseMatrix<double> K_eff = K_global + c1 * M_global + (gamma_newmark / (beta_newmark * dt_s)) * C_global;
 
-            // 6. Effective Stiffness Matrix: K_eff = c1 * M + c6 * C + K
-            Eigen::SparseMatrix<double> K_eff = c1 * M_global + c6 * C_global + K_global;
+            // Dynamic Residual Force Vector: R = F_ext - F_int - M*A_curr - C*V_curr
+            Eigen::VectorXd F_damp = C_global * V_curr;
+            Eigen::VectorXd F_iner = M_global * A_curr;
+            Eigen::VectorXd Residual = F_ext - F_int - F_iner - F_damp;
 
-            Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver_ldlt;
-            solver_ldlt.compute(K_eff);
-            if (solver_ldlt.info() != Eigen::Success) {
-                std::cerr << "❌ Dynamic LDLT decomposition failed at step " << step << "!" << std::endl;
-                return false;
-            }
-
-            Eigen::VectorXd delta_U = solver_ldlt.solve(R);
-            double dU_norm = delta_U.norm();
-            if (dU_norm > 0.02) {
-                delta_U *= (0.02 / dU_norm);
-            }
-
-            U_curr += 0.20 * delta_U;
-            V_curr = (U_curr - U_prev) / dt_s;
-            A_curr = (V_curr - V_prev) / dt_s;
-
-            // Clamp max physical node velocity to 10 m/s
-            double v_norm = V_curr.norm();
-            if (v_norm > 10.0) {
-                V_curr *= (10.0 / v_norm);
-            }
-
-            if (dU_norm < 1e-4 || iter == max_iters - 1) {
-                U = U_curr;
-                V = V_curr;
-                A = A_curr;
+            double res_norm = Residual.norm();
+            if (res_norm < 1.0e-3) {
                 break;
             }
+
+            // Solve for Displacement Correction delta_U
+            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
+            solver.compute(K_eff);
+            if (solver.info() != Eigen::Success) {
+                break;
+            }
+
+            Eigen::VectorXd delta_U = solver.solve(Residual);
+
+            // Update Displacements, Velocities and Accelerations
+            U_curr += delta_U;
+            A_curr = c1 * (U_curr - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
+            V_curr = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_curr);
         }
 
-        // Snapshot Output
-        StepSnapshot snap;
-        snap.step_index = step;
-        snap.load_factor = time;
+        U = U_curr;
+        V = V_curr;
+        A = A_curr;
 
-        for (auto* node : nodes) {
-            snap.node_coords.push_back(node->current_coords());
+        // Record Snapshot for Web Visualizer
+        if (step % 1 == 0) {
+            StepSnapshot snap;
+            snap.step_index = step;
+            snap.load_factor = time;
+
+            for (auto* node : nodes) {
+                snap.node_coords.push_back(node->current_coords());
+            }
+
+            for (size_t i = 0; i < elements.size(); ++i) {
+                auto* elem = elements[i];
+                const auto* prev = (i > 0) ? elements[i - 1] : nullptr;
+                const auto* next = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
+
+                auto sc = elem->compute_stress_and_curvature(prev, next, 350.0);
+                snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+                snap.element_curvatures.push_back(sc.curvature);
+                snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+                snap.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+            }
+
+            history.push_back(snap);
         }
 
-        for (size_t i = 0; i < elements.size(); ++i) {
-            auto* elem = elements[i];
-            elem->update_effective_tension();
-
-            const CorotationalBeam3D* prev_e = (i > 0) ? elements[i - 1] : nullptr;
-            const CorotationalBeam3D* next_e = (i + 1 < elements.size()) ? elements[i + 1] : nullptr;
-            auto res = elem->compute_stress_and_curvature(prev_e, next_e, 350.0);
-
-            snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
-            snap.element_bending_moments_kNm.push_back(res.bending_moment_kNm);
-            snap.element_curvatures.push_back(res.curvature);
-            snap.element_von_mises_MPa.push_back(res.von_mises_MPa);
-            snap.element_mbr_safety_factors.push_back(res.mbr_safety_factor);
-        }
-
-        history.push_back(snap);
-
-        if (step % 40 == 0 || step == total_steps) {
-            std::cout << "  ⏱️ Dynamic Time Step " << std::setw(3) << step << "/" << total_steps 
-                      << " (t = " << std::fixed << std::setprecision(1) << time << " s) | Top Z: " 
-                      << std::setprecision(2) << top_node->disp.z() << " m" << std::endl;
+        if (step % 40 == 0) {
+            std::cout << "  ⏱️ Dynamic Time Step " << std::setw(4) << step << "/" << total_steps
+                      << " (t = " << std::fixed << std::setprecision(1) << time << " s) | Top Z: "
+                      << std::setprecision(2) << disp_z << " m" << std::endl;
         }
     }
 

@@ -29,7 +29,7 @@ class RiserSimApp {
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
         this.initResizer();
-        await this.loadSimulationData('../catenary_results.h5');
+        await this.loadSimulationData('../catenary_results.json');
     }
 
     initResizer() {
@@ -227,7 +227,8 @@ class RiserSimApp {
             
             const modeSelect = document.getElementById('analysis-mode-select');
             if (modeSelect) {
-                modeSelect.value = this.simulation.mode;
+                this.simulation.mode = 'static';
+                modeSelect.value = 'static';
             }
 
             const slider = document.getElementById('step-slider');
