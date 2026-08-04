@@ -307,6 +307,13 @@ Exemplo mínimo de uso:
         .def("assign_equation_numbers", &Analysis::assign_equation_numbers,
              "Numera automaticamente os graus de liberdade livres.");
 
+    py::enum_<ArtificialStiffnessMode>(m, "ArtificialStiffnessMode",
+        "Controla quando a rigidez artificial fica ativa em solve_catenary_static.")
+        .value("OnlyFirstStep", ArtificialStiffnessMode::OnlyFirstStep, "Só no passo 1 (comportamento histórico).")
+        .value("EveryStep",     ArtificialStiffnessMode::EveryStep,     "Em todos os passos (fase 'assembly').")
+        .value("Never",         ArtificialStiffnessMode::Never,         "Nunca (fase 'static' limpa).")
+        .export_values();
+
     // =========================================================================
     // StaticAnalysis
     // =========================================================================
@@ -344,6 +351,7 @@ Sequência de uso:
              "Retorna True se convergiu.")
         .def("solve_catenary_static", &StaticAnalysis::solve_catenary_static,
              py::arg("steps") = 20, py::arg("max_iter") = 300, py::arg("tolerance") = 100.0,
+             py::arg("artif_mode") = ArtificialStiffnessMode::OnlyFirstStep,
              "Executa apenas a fase catenary (sem offset).")
         .def("solve_vessel_offset", &StaticAnalysis::solve_vessel_offset,
              py::arg("offset"), py::arg("steps") = 20, py::arg("max_iter") = 300,

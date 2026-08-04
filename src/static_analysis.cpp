@@ -1,4 +1,5 @@
 #include "risersim/static_analysis.hpp"
+#include "risersim/static_integrator.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -6,8 +7,27 @@
 namespace risersim {
 
 bool StaticAnalysis::solve() {
-    bool ok_catenary = solve_catenary_static(load_steps, max_iter_per_step, tol);
-    if (!ok_catenary) return false;
+    // Passo 3 do roadmap de modernização (risersim/docs/mapa_classes_anflex_estatica.md):
+    // duas fases, igual ao ANFLEX real (cAnflexAnalysis::solve_assembly() ->
+    // solve_static()). Fase 1 ("assembly") dá à malha rigidez artificial
+    // disponível em TODOS os passos de carga (não só o primeiro) para achar
+    // uma configuração de equilíbrio aproximada; fase 2 ("static") parte
+    // desse estado e resolve limpo, sem rigidez artificial, com a carga
+    // total num único passo (a geometria já está consistente com 100% da
+    // carga ao final da fase 1 — repetir o ramp de carga na fase 2
+    // reintroduziria o mesmo descompasso que quebrou a tentativa de warm
+    // start externo).
+    std::cout << "\n--- Fase 1/2: Assembly (rigidez artificial em todos os passos) ---" << std::endl;
+    bool ok_assembly = solve_catenary_static(load_steps, max_iter_per_step, tol, ArtificialStiffnessMode::EveryStep);
+    if (!ok_assembly) {
+        std::cout << "⚠️ Fase de assembly não convergiu totalmente — prosseguindo para a fase estática "
+                     "a partir do estado alcançado (a fase de assembly é um pré-solve, não precisa ser perfeita)."
+                  << std::endl;
+    }
+
+    std::cout << "\n--- Fase 2/2: Static (sem rigidez artificial, carga total em 1 passo) ---" << std::endl;
+    bool ok_static = solve_catenary_static(1, max_iter_per_step, tol, ArtificialStiffnessMode::Never);
+    if (!ok_static) return false;
 
     if (enable_offset) {
         bool ok_offset = solve_vessel_offset(offset, load_steps, max_iter_per_step, tol);
@@ -17,7 +37,7 @@ bool StaticAnalysis::solve() {
     return true;
 }
 
-bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double tolerance) {
+bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double tolerance, ArtificialStiffnessMode artif_mode) {
     std::cout << "\n=========================================================================" << std::endl;
     std::cout << "  riserSim Static Non-Linear Catenary Equilibrium Solver" << std::endl;
     std::cout << "=========================================================================" << std::endl;
@@ -64,40 +84,28 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     }
     double norm_F_ref = F_total_ref.norm() + 1.0;
 
+    StaticIntegrator integrator(this);
+
     for (int step = 1; step <= steps; ++step) {
         double load_factor = static_cast<double>(step) / static_cast<double>(steps);
-        std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Load Factor: " 
+        std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Load Factor: "
                   << std::fixed << std::setprecision(1) << (load_factor * 100.0) << "%" << std::endl;
 
-        Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
+        Eigen::VectorXd F_ext = integrator.assemble_load_vector(load_factor);
 
-        for (auto* elem : model->elements) {
-            double L = elem->initial_length;
-            double g = 9.81;
-
-            double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
-            double w_buoyancy = water_density * elem->outer_area() * g;
-            double elem_weight_total = (w_dry - w_buoyancy) * L * load_factor;
-
-            int eq1_z = elem->node1->eq_numbers[2];
-            int eq2_z = elem->node2->eq_numbers[2];
-
-            if (eq1_z >= 0) F_ext[eq1_z] -= elem_weight_total * 0.5;
-            if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
-
-            if (enable_current) {
-                double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
-                double f_drag_x = 0.0, f_drag_y = 0.0;
-                current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density_for_mass, f_drag_x, f_drag_y);
-
-                int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
-                int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
-
-                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L * 0.5 * load_factor;
-                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L * 0.5 * load_factor;
-                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L * 0.5 * load_factor;
-                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L * 0.5 * load_factor;
-            }
+        // StaticIntegrator decide a rigidez artificial por este flag, não
+        // mais por uma condição inline dentro do loop de iteração — o que
+        // permite reutilizar a mesma função para as duas fases do Passo 3.
+        switch (artif_mode) {
+            case ArtificialStiffnessMode::OnlyFirstStep:
+                integrator.artificial_stiffness_enabled = (step == 1);
+                break;
+            case ArtificialStiffnessMode::EveryStep:
+                integrator.artificial_stiffness_enabled = true;
+                break;
+            case ArtificialStiffnessMode::Never:
+                integrator.artificial_stiffness_enabled = false;
+                break;
         }
 
         bool step_converged = false;
@@ -127,7 +135,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             Eigen::SparseMatrix<double> K_global;
             Eigen::VectorXd F_int;
 
-            assemble_system(K_global, F_ext, F_int);
+            integrator.assemble_stiffness_and_internal_forces(iter, K_global, F_int);
 
             Eigen::VectorXd Residual = F_ext - F_int;
             double norm_R = Residual.norm();
@@ -138,48 +146,13 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                           << std::scientific << std::setprecision(4) << norm_R << " | Rel R (ref): " << rel_R << std::defaultfloat << std::endl;
             }
 
-            // Rigidez artificial (regularização de Tikhonov) no primeiro passo de carga,
-            // igual à técnica do ANFLEX real (beam.cpp:calc_artificial_stiffness /
-            // static_integrator.cpp). No primeiro passo a geometria ainda está quase reta
-            // e sem tração, deixando a rigidez lateral/flexional real quase singular —
-            // a rigidez artificial (proporcional à rigidez axial média EA/L dos elementos)
-            // estabiliza as primeiras iterações e decai exponencialmente até desaparecer.
-            if (step == 1 && !model->elements.empty()) {
-                double avg_EA_L = 0.0;
-                for (auto* elem : model->elements) {
-                    double L = elem->current_length();
-                    if (L > 1.0e-9) avg_EA_L += (elem->props.E * elem->props.A) / L;
-                }
-                avg_EA_L /= static_cast<double>(model->elements.size());
-
-                double decay = std::exp(-static_cast<double>(iter) / 1.25);
-                double k_transversal = avg_EA_L * decay;
-                double k_rotational = k_transversal * 0.05;
-
-                std::vector<Eigen::Triplet<double>> artif_triplets;
-                for (auto* node : model->nodes) {
-                    for (int i = 0; i < 3; ++i) {
-                        int eq = node->eq_numbers[i];
-                        if (eq >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq, eq, k_transversal));
-
-                        int eq_rot = node->eq_numbers[i + 3];
-                        if (eq_rot >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq_rot, eq_rot, k_rotational));
-                    }
-                }
-                Eigen::SparseMatrix<double> K_artificial(num_dofs, num_dofs);
-                K_artificial.setFromTriplets(artif_triplets.begin(), artif_triplets.end());
-                K_global += K_artificial;
-            }
-
-            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
-            solver.compute(K_global);
-            if (solver.info() != Eigen::Success) {
+            Eigen::VectorXd step_dU;
+            LinearSolverStatus lin_status = linear_solver->solve(K_global, Residual, step_dU);
+            if (lin_status == LinearSolverStatus::DecompositionFailed) {
                 std::cout << "❌ SparseLU decomposition failed at step " << step << "!" << std::endl;
                 return false;
             }
-
-            Eigen::VectorXd step_dU = solver.solve(Residual);
-            if (solver.info() != Eigen::Success) {
+            if (lin_status == LinearSolverStatus::SolveFailed) {
                 std::cerr << "❌ SparseLU solve failed at step " << step << "!" << std::endl;
                 return false;
             }
@@ -340,14 +313,12 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 break;
             }
 
-            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
-            solver.compute(K_global);
-            if (solver.info() != Eigen::Success) {
+            Eigen::VectorXd step_dU;
+            LinearSolverStatus lin_status = linear_solver->solve(K_global, Residual, step_dU);
+            if (lin_status == LinearSolverStatus::DecompositionFailed) {
                 std::cout << "❌ SparseLU decomposition failed at offset step " << step << "!" << std::endl;
                 return false;
             }
-
-            Eigen::VectorXd step_dU = solver.solve(Residual);
 
             for (auto* node : model->nodes) {
                 if (node == top_node) continue;

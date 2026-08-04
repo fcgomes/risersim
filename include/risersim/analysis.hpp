@@ -5,8 +5,10 @@
 #include "risersim/seabed.hpp"
 #include "risersim/current_profile.hpp"
 #include "risersim/snapshot.hpp"
+#include "risersim/linear_solver.hpp"
 #include <vector>
 #include <string>
+#include <memory>
 #include <Eigen/Sparse>
 
 namespace risersim {
@@ -23,7 +25,15 @@ public:
 
     std::vector<StepSnapshot> history;
 
-    Analysis() : model(nullptr), seabed(-80.0), enable_current(false), water_density(1025.0), water_density_for_mass(1025.0), num_dofs(0) {}
+    // Backend do solver linear (Passo 1 do roadmap de modernização) — default
+    // Eigen::SparseLU via EigenSparseLUSolver, trocável por outro backend
+    // (ex.: MKL/Pardiso) sem alterar o código que consome esta interface.
+    std::unique_ptr<LinearSolver> linear_solver;
+
+    Analysis()
+        : model(nullptr), seabed(-80.0), enable_current(false), water_density(1025.0),
+          water_density_for_mass(1025.0), num_dofs(0),
+          linear_solver(std::make_unique<EigenSparseLUSolver>()) {}
     virtual ~Analysis() = default;
 
     virtual void assign_equation_numbers() {

@@ -11,6 +11,8 @@ O ANFLEX real **nunca** tenta resolver a estática "de verdade" (com todas as to
 
 Isso importa porque o `risersim` hoje faz só **uma fase**: a rigidez artificial decai exponencialmente (`BETA=1.25`) dentro do mesmo orçamento de iterações (40) do primeiro passo de carga real. A "muleta" precisa desaparecer antes do solver ter de fato convergido, no mesmo fôlego em que a carga real está sendo aplicada — muito mais frágil do que garantir uma base sólida (fase 1, sem pressa, só com a muleta) antes de sequer tentar a fase 2 sem ela. **Essa é a explicação mais direta e evidenciada (não especulativa) encontrada até agora para por que o ANFLEX converge em malhas finas/flexíveis como o Exemplo_01a e o risersim não.**
 
+> **Atualização (implementação testada — ver seção "Resultado do teste das duas fases" no final):** implementamos esse padrão de duas fases no risersim e **não resolveu** a divergência do Exemplo_01a real. A fase 1 (assembly) diverge exatamente na mesma iteração (~20) de sempre, independente de ter rigidez artificial disponível em todos os passos — porque a instabilidade acontece dentro do **próprio passo 1**, antes de qualquer outro passo entrar em jogo. Isso não invalida o mapeamento acima (ele é fiel ao código real do ANFLEX), mas mostra que reproduzir só a *orquestração* de duas fases não é suficiente — falta algo na própria formulação do elemento (ver detalhes no final).
+
 ## Camada de controle (Strategy pattern já usado no ANFLEX real)
 
 | Classe | Papel | Observações |
@@ -104,6 +106,20 @@ O objetivo de "modernizar" aqui é reaproveitar a **separação em camadas** que
 3. **Refactor OOP** (`Element` abstrato + `BeamElement` wrapper, `Integrator` abstrato, `Model`/`Domain`) — traz a separação de camadas do ANFLEX real para dentro do risersim, sem tocar a matemática do elemento. O passo 1 já força um primeiro movimento nessa direção (separar integrator do loop de NR).
 4. **`PrescribedMotion` genérico por penalidade** (substituindo `VesselOffset::Near/Far`).
 5. **Abstração de solver linear plugável** (`Eigen::SparseLU` default, `Eigen::ConjugateGradient` como alternativa para modelos grandes).
+
+## Resultado do teste das duas fases (Passo 3 implementado e testado)
+
+Implementado em `risersim/src/static_analysis.cpp`: `StaticAnalysis::solve()` agora roda `solve_catenary_static()` duas vezes — fase 1 ("assembly") com `ArtificialStiffnessMode::EveryStep` (rigidez artificial disponível, decaindo por iteração, em **todos** os passos de carga, não só o primeiro) usando `load_steps`/`max_iter_per_step` normais; fase 2 ("static") com `ArtificialStiffnessMode::Never`, carga total num único passo, partindo do estado que a fase 1 deixou. A flag mora no `StaticIntegrator` (Passo 2), então as duas fases reusam a mesma função sem duplicar lógica.
+
+**Resultado no Exemplo_01a real: não resolveu.**
+
+- **Fase 1 (assembly)** diverge com os **resíduos idênticos, bit-a-bit**, aos do modo de fase única de sempre (`1.2791e+03 → 1.0447e+03 → 6.4445e+07 → 6.9411e+10` nas iterações 0/10/20/30) — porque a instabilidade acontece **dentro do próprio passo 1**, e nenhum outro passo chega a ser tentado. Disponibilizar rigidez artificial em passos futuros não muda nada sobre o que acontece no passo 1, já que ele é sempre o primeiro a rodar.
+- **Fase 2 (static)**, partindo do estado corrompido que a fase 1 deixou (deslocamentos absurdos, resíduo de fase 1 chegou a ~7×10¹⁰), começa **ainda pior** (resíduo inicial de 1,19×10¹²) e também diverge.
+- O caso sintético de teste (catenária simples, sem rotação livre — ver `risersim/tests/test_static_analysis.cpp`) continua convergindo normalmente com as duas fases, com resultado praticamente idêntico ao de antes (diferença de ~0,0001% na tração final) — confirma que a mudança não quebrou o caminho que já funcionava, só não resolveu o que estava quebrado.
+
+**O que isso ensina**: o mapeamento da arquitetura de duas fases do ANFLEX é fiel ao código-fonte real (seção acima), mas replicar só a *orquestração* (rodar duas vezes, com/sem rigidez artificial) não é suficiente — a causa raiz não está em "quantas vezes" ou "em quantos passos" a rigidez artificial fica disponível, está em **algo que acontece dentro da própria iteração ~20 do passo 1**, antes de qualquer segunda fase ter chance de ajudar. Isso descarta com evidência forte a hipótese de que uma orquestração diferente do solver resolveria o problema, e reforça — pela segunda vez nesta investigação (a primeira foi o warm start do MoorPy) — que a causa está na formulação/implementação do próprio elemento de viga corrotacional (`element_beam.cpp`), não em como ele é orquestrado.
+
+**Próximo passo recomendado**: voltar à investigação original, ainda pendente — isolar o `CorotationalBeam3D` num teste mínimo (2-3 elementos, mesma proporção de malha fina/EI baixo/quase-vertical do Exemplo_01a) para observar diretamente o que acontece com `local_geometric_stiffness()`/`transformation_matrix()`/`local_material_stiffness()` por volta da iteração 15-20, fora do contexto de 500 elementos acoplados. Um candidato concreto a investigar nesse teste isolado: comparar a formulação de rigidez geométrica (`local_geometric_stiffness`) do risersim contra a formulação de Crisfield do ANFLEX real (`cBeam::calc_local_nonlinear_stiff_mt`, `beam.cpp:321-503`) — são abordagens diferentes para o mesmo problema (rigidez geométrica não-linear), e uma diferença ali é a suspeita mais concreta ainda não descartada nesta sessão.
 
 ## Ver também
 

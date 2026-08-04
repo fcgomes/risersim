@@ -35,6 +35,8 @@ add_library(risersim_core STATIC
     src/node.cpp
     src/element_beam.cpp
     src/analysis.cpp
+    src/linear_solver.cpp
+    src/static_integrator.cpp
     src/static_analysis.cpp
     src/dynamic_analysis.cpp
     src/simulation_exporter.cpp
@@ -125,4 +127,23 @@ if(Python3_FOUND)
 else()
     message(STATUS "Python3 not found. Skipping pybind11 module build.")
 endif()
+
+# Testes de unidade (Catch2) — protecao de regressao para o refactor de
+# arquitetura descrito em risersim/docs/mapa_classes_anflex_estatica.md
+message(STATUS "Fetching Catch2 3.5.2...")
+FetchContent_Declare(
+    Catch2
+    URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.5.2.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(Catch2)
+
+add_executable(risersim_tests
+    tests/test_static_analysis.cpp
+)
+target_link_libraries(risersim_tests PRIVATE risersim_core Catch2::Catch2WithMain)
+
+enable_testing()
+include(${catch2_SOURCE_DIR}/extras/Catch.cmake)
+catch_discover_tests(risersim_tests)
 

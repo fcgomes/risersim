@@ -183,13 +183,10 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             res_norm_prev = res_norm;
 
             // Solve for Displacement Correction delta_U
-            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
-            solver.compute(K_eff);
-            if (solver.info() != Eigen::Success) {
+            Eigen::VectorXd delta_U;
+            if (linear_solver->solve(K_eff, Residual, delta_U) == LinearSolverStatus::DecompositionFailed) {
                 break;
             }
-
-            Eigen::VectorXd delta_U = solver.solve(Residual);
 
             // Update Displacements, Velocities and Accelerations
             U_curr += delta_U;
