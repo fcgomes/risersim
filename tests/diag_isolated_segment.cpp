@@ -28,6 +28,7 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 
+#include "risersim/config.hpp"
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
 #include "risersim/model.hpp"
@@ -104,7 +105,7 @@ int main(int argc, char** argv) {
         double I_eff = EI / props.E;
         props.IY = I_eff;
         props.IZ = I_eff;
-        double I_geom = M_PI * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
+        double I_geom = std::numbers::pi * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
         props.J = 2.0 * I_geom;
 
         Eigen::Vector3d c1(coords_by_id[n1_id][0], coords_by_id[n1_id][1], coords_by_id[n1_id][2]);

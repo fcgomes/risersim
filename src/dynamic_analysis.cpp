@@ -4,6 +4,7 @@
  */
 #include "risersim/dynamic_analysis.hpp"
 #include "risersim/rotation_utils.hpp"
+#include "risersim/config.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -34,7 +35,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     history.clear();
 
     const int total_steps = static_cast<int>(duration_s / dt_s);
-    const double omega = 2.0 * M_PI / wave_period;
+    const double omega = 2.0 * std::numbers::pi / wave_period;
 
     // Newmark-beta Constants (Average Acceleration Method)
     const double gamma_newmark = 0.55;
@@ -64,7 +65,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
 
         // Prescribe Top Vessel Harmonic Motion with 5s Smooth Ramp
         double ramp_time = 5.0;
-        double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(M_PI * time / ramp_time)) : 1.0;
+        double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
         double disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
         top_node->disp = static_disps.front() + Eigen::Vector3d(0.0, 0.0, disp_z);
 

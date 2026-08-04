@@ -277,12 +277,12 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     res.mbr_min = (props.E * props.D_outer) / (2.0 * yield_Pa);
     res.mbr_safety_factor = res.bend_radius / (res.mbr_min > 0.01 ? res.mbr_min : 1.0);
 
-    double A_struct = (props.A > 0.0) ? props.A : (M_PI * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
+    double A_struct = (props.A > 0.0) ? props.A : (std::numbers::pi * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
     double sigma_axial = tension_effective / A_struct;  // Can be positive (tension) or negative (compression)
     double r_outer = props.D_outer / 2.0;
 
     // Bending stress at the outer fiber (My/I)
-    double I_geom = M_PI * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
+    double I_geom = std::numbers::pi * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
     double sigma_bending = (M_total_Nm * r_outer) / (I_geom > 1.0e-12 ? I_geom : 1.0e-5);
 
     // Hoop stress for a thin-walled pipe: sigma_h = (p_i * r_i - p_e * r_o) / t

@@ -10,6 +10,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 
+#include "risersim/config.hpp"
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
 #include "risersim/static_analysis.hpp"
@@ -132,7 +133,7 @@ int main(int argc, char* argv[]) {
                             
                             double do_m = elem_props.D_outer;
                             double di_m = elem_props.D_inner;
-                            double I_geom = M_PI * (std::pow(do_m, 4) - std::pow(di_m, 4)) / 64.0;
+                            double I_geom = std::numbers::pi * (std::pow(do_m, 4) - std::pow(di_m, 4)) / 64.0;
                             elem_props.J = 2.0 * I_geom;
                         }
 

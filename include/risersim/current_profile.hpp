@@ -56,7 +56,7 @@ public:
         double v = get_velocity(z);
         double f_mag = 0.5 * rho_water * Cd * D_outer * v * v;
 
-        double rad = heading_deg * M_PI / 180.0;
+        double rad = heading_deg * std::numbers::pi / 180.0;
         F_drag_x = f_mag * std::cos(rad);
         F_drag_y = f_mag * std::sin(rad);
     }

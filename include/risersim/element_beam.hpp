@@ -86,12 +86,12 @@ public:
 
     /** @brief Cross-sectional area enclosed by the outer diameter (m^2). */
     double outer_area() const {
-        return M_PI * props.D_outer * props.D_outer / 4.0;
+        return std::numbers::pi * props.D_outer * props.D_outer / 4.0;
     }
 
     /** @brief Cross-sectional area enclosed by the inner (bore) diameter (m^2). */
     double inner_area() const {
-        return M_PI * props.D_inner * props.D_inner / 4.0;
+        return std::numbers::pi * props.D_inner * props.D_inner / 4.0;
     }
 
     /**

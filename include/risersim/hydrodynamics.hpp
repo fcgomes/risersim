@@ -41,7 +41,7 @@ public:
      */
     double evaluate(double omega) const {
         if (omega <= 0.0) return 0.0;
-        double omega_p = 2.0 * M_PI / Tp;
+        double omega_p = 2.0 * std::numbers::pi / Tp;
         double g = 9.81;
 
         double sigma = (omega <= omega_p) ? 0.07 : 0.09;
@@ -71,7 +71,7 @@ public:
         double g = 9.81;
 
         std::mt19937 rng(seed);
-        std::uniform_real_distribution<double> phase_dist(0.0, 2.0 * M_PI);
+        std::uniform_real_distribution<double> phase_dist(0.0, 2.0 * std::numbers::pi);
 
         for (int i = 1; i <= N_components; ++i) {
             double w = i * d_omega;
@@ -190,7 +190,7 @@ public:
         Eigen::Vector3d f_drag = 0.5 * rho_water * Cd * D * v_rel_perp.norm() * v_rel_perp;
 
         // Inertia force: F_inertia = rho * (pi * D^2 / 4) * (Cm * a_fluid - (Cm - 1) * a_struct)
-        double Area_outer = M_PI * D * D / 4.0;
+        double Area_outer = std::numbers::pi * D * D / 4.0;
         Eigen::Vector3d f_inertia = rho_water * Area_outer * (Cm * a_fluid_perp - (Cm - 1.0) * a_struct_perp);
 
         return f_drag + f_inertia;
