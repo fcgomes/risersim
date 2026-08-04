@@ -1,0 +1,92 @@
+/**
+@mainpage risersim -- corotational-beam FEM for riser and mooring analysis
+
+@section overview Overview
+
+`risersim` is an open-source C++ reimplementation of the static and dynamic
+analysis engine behind ANFLEX (the closed-source riser/mooring finite-element
+solver at `trunk/src`). It models a riser or mooring line as a chain of 3D
+corotational beam elements (risersim::CorotationalBeam3D), solved with a
+full-step Newton-Raphson nonlinear iteration inside a direct linear solver
+(risersim::LinearSolver).
+
+The design deliberately mirrors ANFLEX's class layout where the physics
+matters (element formulation, friction model, artificial-stiffness
+stabilization, linear-solver symmetry/reordering), while modernizing the
+C++ around it (RAII, `std::unique_ptr` ownership, an abstract
+risersim::Integrator / risersim::LinearSolver plug-in layer where ANFLEX has
+`cIntegrator` / `cLinearSolver`). Every place the implementation follows a
+specific ANFLEX source file is called out in a comment, so the two can be
+cross-checked line by line.
+
+@section layers Architecture layers
+
+| Layer            | Classes                                                                 | ANFLEX equivalent                       |
+|-------------------|--------------------------------------------------------------------------|------------------------------------------|
+| Linear solver     | risersim::LinearSolver, risersim::EigenSimplicialLDLTSolver, risersim::EigenSparseLUSolver | `cLinearSolver` / `cLinearSOE`           |
+| Equation reordering | risersim::compute_rcm_order()                                          | `cuthill_mckee_reorderer.cpp`            |
+| Integrator        | risersim::Integrator, risersim::StaticIntegrator                        | `cIntegrator` / `cStaticIntegrator`      |
+| Analysis (nonlinear loop) | risersim::Analysis, risersim::StaticAnalysis, risersim::DynamicAnalysis | `cAnflexAnalysis`, `cNewtonRaphson`      |
+| Element           | risersim::CorotationalBeam3D                                            | `cBeam` (`beam.cpp`)                     |
+| Node              | risersim::Node3D                                                        | `cNode`                                  |
+| Model             | risersim::RiserModel                                                    | `cDomain`                                |
+| Environment       | risersim::SeabedInteraction, risersim::CurrentProfile, risersim::MorisonForce, risersim::JONSWAPSpectrum | `soil.cpp`, current/wave loading modules |
+| Prescribed top motion | risersim::VesselOffset                                              | `cLoad` / `cTimeSeries`                  |
+
+@section fidelity_notes Key fidelity findings (see docs/mapa_classes_anflex_estatica.md)
+
+A companion document, `docs/mapa_classes_anflex_estatica.md` (Portuguese,
+development log), records the investigation that produced several of the
+non-obvious design decisions baked into this code:
+
+- risersim::CorotationalBeam3D keeps a **fixed reference triad** per node,
+  set once at t=0 (`node1_init_triad`/`node2_init_triad`), and measures local
+  deformational rotation against it every iteration -- mirroring ANFLEX's
+  `calc_init_rot_mt`. Feeding the *total accumulated* rotation into the
+  bending stiffness instead (the original risersim bug) collapses
+  convergence far earlier than ANFLEX for long chains.
+- risersim::rodrigues() / risersim::compose_rotations() compose finite 3D
+  rotations properly (matrix/quaternion composition), because naive vector
+  addition is wrong for rotations that don't commute -- mirroring ANFLEX's
+  `pseudo_sum`.
+- risersim::SeabedInteraction::calculate_friction_1d() is an
+  **incremental elastic-plastic** Coulomb friction model driven by the
+  per-iteration displacement increment plus persistent force state
+  (risersim::Node3D::friction_force), not by total accumulated displacement
+  -- mirroring `soil_uncoupled.cpp::calc_unidimensional_friction`.
+  risersim::Analysis::assemble_system() decomposes that increment into local
+  axial/lateral directions (not global X/Y) before calling it twice, also
+  mirroring `soil.cpp::calc_transf_matrix`.
+- risersim::compute_rcm_order() and risersim::EigenSimplicialLDLTSolver
+  close a solver-fidelity gap: ANFLEX defaults to a symmetric direct solver
+  (Skyline) with Reverse Cuthill-McKee bandwidth reduction applied at
+  model-build time, regardless of which of its three backends
+  (Skyline/MKL/Pardiso) is selected -- neither iterative nor preconditioned.
+  Both changes were validated as pure, behavior-preserving refactors (same
+  reference results across the regression battery).
+- ANFLEX itself has **no line search / step-cutting / damping** in its
+  Newton-Raphson loop (confirmed by reading `newton_raphson.cpp` and
+  `integrator.cpp::update()`) -- risersim's optional backtracking line
+  search (in `static_analysis.cpp`) is an extension beyond ANFLEX, added as
+  a safety net against contact-induced divergence, not a fidelity match.
+
+@section open_problems Known open problems
+
+Documented in detail in `docs/mapa_classes_anflex_estatica.md`, not yet
+resolved:
+- Long isolated chains (roughly 300-350 elements) hit a convergence
+  threshold tied to the artificial-stiffness exponential decay rate.
+- Combined seabed + current loading diverges catastrophically in longer
+  chains (33+ elements near touchdown; the full 500-element model).
+- A 20-element seabed-only case chatters (tiny oscillating residual) right
+  at the elastic/plastic friction yield boundary, introduced by the
+  axial/lateral friction decomposition.
+
+@section building Generating this documentation
+
+    cd risersim
+    doxygen Doxyfile
+
+Output lands in `docs/doxygen/html/index.html`. If CMake found Doxygen at
+configure time, `cmake --build build --target docs` does the same.
+*/

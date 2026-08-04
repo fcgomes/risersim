@@ -1,3 +1,7 @@
+/**
+ * @file static_integrator.cpp
+ * @brief StaticIntegrator: static load vector assembly and artificial-stiffness (Tikhonov) regularization.
+ */
 #include "risersim/static_integrator.hpp"
 #include <cmath>
 #include <vector>
@@ -43,15 +47,15 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double load_factor) const
 void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::SparseMatrix<double>& K_global, Eigen::VectorXd& F_int) {
     auto* model = analysis->model;
 
-    // assemble_system ignora o parametro F_ext (peso/atrito ja entram direto
-    // na formulacao de forca interna do elemento/solo) -- preservado aqui.
+    // assemble_system ignores the F_ext parameter (weight/friction already enter
+    // directly through the element/soil internal-force formulation) -- kept here as-is.
     Eigen::VectorXd F_ext_unused;
     analysis->assemble_system(K_global, F_ext_unused, F_int);
 
     if (!artificial_stiffness_enabled || !model || model->elements.empty()) return;
 
-    // Rigidez artificial (regularizacao de Tikhonov), igual a tecnica do
-    // ANFLEX real (beam.cpp:calc_artificial_stiffness / static_integrator.cpp).
+    // Artificial stiffness (Tikhonov regularization), the same technique used by
+    // real ANFLEX (beam.cpp:calc_artificial_stiffness / static_integrator.cpp).
     double avg_EA_L = 0.0;
     for (auto* elem : model->elements) {
         double L = elem->current_length();
@@ -59,23 +63,16 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
     }
     avg_EA_L /= static_cast<double>(model->elements.size());
 
-    // NOTA: testado com constante 5.0 (em vez de 1.25) como forma de manter a
-    // rigidez artificial relevante por mais iteracoes -- isso de fato evita a
-    // explosao do residuo em cadeias muito longas (~300+ elementos), mas tem
-    // contrapartida: cadeias curtas convergem mais devagar (mais iteracoes
-    // necessarias) dentro do mesmo orcamento, uma regressao real. Revertido
-    // para 1.25 (comportamento original) ate um esquema adaptativo (ex.:
-    // escalar com o numero de elementos/DOFs da cadeia) ser projetado.
-    // Ver mapa_classes_anflex_estatica.md, secao sobre o limiar ~300 elementos.
-    // NOTA: testado com constante 5.0 (em vez de 1.25) como forma de manter a
-    // rigidez artificial relevante por mais iteracoes -- isso de fato evita a
-    // explosao do residuo em cadeias muito longas (~300+ elementos) e foi
-    // usado para isolar a causa real da divergencia do modelo completo (ver
-    // secao "Causa real isolada" em mapa_classes_anflex_estatica.md: a
-    // combinacao solo+corrente, nao o comprimento da cadeia). Tem contrapartida
-    // real: cadeias curtas convergem mais devagar dentro do mesmo orcamento de
-    // iteracoes. Revertido para 1.25 (comportamento original) ate um esquema
-    // adaptativo (ex.: escalar com o numero de elementos/DOFs) ser projetado.
+    // NOTE: tested with constant 5.0 (instead of 1.25) as a way to keep artificial
+    // stiffness relevant for more iterations -- this does prevent residual blow-up
+    // in very long chains (~300+ elements), and was used to isolate the real cause
+    // of the full model's divergence (see the "Isolated real cause" section in
+    // mapa_classes_anflex_estatica.md: the seabed+current combination, not chain
+    // length). It has a real trade-off, though: short chains converge more slowly
+    // within the same iteration budget -- a real regression. Reverted to 1.25
+    // (original behavior) until an adaptive scheme (e.g. scaling with the chain's
+    // element/DOF count) is designed. See mapa_classes_anflex_estatica.md, section
+    // on the ~300-element threshold.
     double decay = std::exp(-static_cast<double>(iter) / 1.25);
     double k_transversal = avg_EA_L * decay;
     double k_rotational = k_transversal * 0.05;

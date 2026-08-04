@@ -1,3 +1,7 @@
+/**
+ * @file element_beam.cpp
+ * @brief Implementation of CorotationalBeam3D: local stiffness/mass matrices and the corotational force/stiffness pipeline.
+ */
 #include "risersim/element_beam.hpp"
 
 namespace risersim {
@@ -107,11 +111,11 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_mass_matrix(double rho_w
 }
 
 Eigen::Matrix3d CorotationalBeam3D::build_frame_from_chord(const Eigen::Vector3d& ex) {
-    // Escolhe o eixo global menos alinhado com ex (em vez de um limiar fixo em Z),
-    // para evitar uma troca descontínua de referência quando muitos elementos ficam
-    // perto de um limiar único (ex: elementos quase verticais todos perto de |ex.z|=0.99,
-    // onde uma pequena correção de Newton pode empurrá-los para o outro lado e causar
-    // um salto abrupto na matriz de rigidez local entre iterações).
+    // Picks the global axis least aligned with ex (rather than a fixed Z threshold),
+    // to avoid a discontinuous reference switch when many elements sit close to a
+    // single threshold (e.g. near-vertical elements all near |ex.z|=0.99, where a
+    // small Newton correction can push them to the other side and cause an abrupt
+    // jump in the local stiffness matrix between iterations).
     double adx = std::abs(ex.x()), ady = std::abs(ex.y()), adz = std::abs(ex.z());
     Eigen::Vector3d ez_temp(0, 0, 1);
     if (adx <= ady && adx <= adz) {
@@ -144,9 +148,15 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const 
     return T;
 }
 
-// Extrai a rotacao LOCAL (pequenos angulos) entre duas triades A e B --
-// mismatch(A relativo a B). Replica calc_relative_rotations, i_form=0
-// ("Formulacao tradicional do Anflex"), matrix.cpp:518-528.
+/**
+ * @brief Extracts the local (small-angle) rotation mismatch of triad A relative to triad B.
+ *
+ * Replicates ANFLEX's `calc_relative_rotations`, `i_form=0` ("traditional ANFLEX formulation"),
+ * `matrix.cpp:518-528`.
+ * @param A The node's current triad.
+ * @param B The element's corotating reference (ghost frame).
+ * @return Approximate small-angle rotation vector (A relative to B).
+ */
 static Eigen::Vector3d extract_relative_rotation(const Eigen::Matrix3d& A, const Eigen::Matrix3d& B) {
     Eigen::Vector3d defor;
     defor[0] = A.row(1).dot(B.row(2));
@@ -161,15 +171,15 @@ void CorotationalBeam3D::compute_corotational_forces(Eigen::Matrix<double, 12, 1
     double L = dx.norm();
     Eigen::Vector3d ex = L > 0.0 ? (dx / L).eval() : Eigen::Vector3d(1, 0, 0);
 
-    // Triade atual de cada no = triade de referencia fixa (t=0) composta com a
-    // rotacao TOTAL acumulada do no (calc_init_rot_mt + update_transformations_matrices
-    // do ANFLEX real: m_node_tm = m_node_init_tm * trans(gen_mat_3d(rot_total))).
+    // Each node's current triad = fixed reference triad (t=0) composed with the node's
+    // TOTAL accumulated rotation (real ANFLEX's calc_init_rot_mt + update_transformations_matrices:
+    // m_node_tm = m_node_init_tm * trans(gen_mat_3d(rot_total))).
     Eigen::Matrix3d node1_tm = node1_init_triad * rodrigues(node1->rot).transpose();
     Eigen::Matrix3d node2_tm = node2_init_triad * rodrigues(node2->rot).transpose();
 
-    // Ghost frame de Crisfield: rotacao "media" entre as duas triades dos nos,
-    // reorthogonalizada para que seu eixo x coincida exatamente com a corda
-    // atual (element.cpp:215-257 do ANFLEX real).
+    // Crisfield's ghost frame: the "mean" rotation between the two nodes' triads,
+    // re-orthogonalized so its x-axis coincides exactly with the current chord
+    // (real ANFLEX's element.cpp:215-257).
     Eigen::Matrix3d Rrel = node2_tm.transpose() * node1_tm;
     Eigen::AngleAxisd aa_rel(Rrel);
     Eigen::Vector3d gamma_half = 0.5 * aa_rel.angle() * aa_rel.axis();
@@ -186,9 +196,8 @@ void CorotationalBeam3D::compute_corotational_forces(Eigen::Matrix<double, 12, 1
     ghost.row(1) = I2.transpose();
     ghost.row(2) = I3.transpose();
 
-    // Rotacoes locais/deformacionais (mismatch entre a triade do no e o ghost
-    // frame) -- isto, e nao a rotacao total acumulada, e o que efetivamente
-    // flete o elemento.
+    // Local/deformational rotations (mismatch between each node's triad and the ghost
+    // frame) -- this, not the total accumulated rotation, is what actually bends the element.
     Eigen::Vector3d local_rot1 = extract_relative_rotation(node1_tm, ghost);
     Eigen::Vector3d local_rot2 = extract_relative_rotation(node2_tm, ghost);
 
@@ -245,16 +254,16 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
         }
     }
 
-    // Curvatura geométrica média entre elementos adjacentes
+    // Average geometric curvature between adjacent elements
     if (count > 1) {
         kappa_geom /= static_cast<double>(count);
     }
     res.curvature = kappa_geom;
 
-    // Rigidez fletora EI (N.m²)
+    // Bending stiffness EI (N.m^2)
     double EI_eff = (props.EI > 0.0) ? props.EI : (props.E * props.IY);
 
-    // Momento fletor M = EI * kappa (N.m)
+    // Bending moment M = EI * kappa (N.m)
     double M_total_Nm = EI_eff * res.curvature;
     res.bending_moment_kNm = M_total_Nm / 1000.0;
 
@@ -269,14 +278,14 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     res.mbr_safety_factor = res.bend_radius / (res.mbr_min > 0.01 ? res.mbr_min : 1.0);
 
     double A_struct = (props.A > 0.0) ? props.A : (M_PI * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
-    double sigma_axial = tension_effective / A_struct;  // Pode ser positivo (tração) ou negativo (compressão)
+    double sigma_axial = tension_effective / A_struct;  // Can be positive (tension) or negative (compression)
     double r_outer = props.D_outer / 2.0;
 
-    // Tensão fletora na fibra externa (My/I)
+    // Bending stress at the outer fiber (My/I)
     double I_geom = M_PI * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
     double sigma_bending = (M_total_Nm * r_outer) / (I_geom > 1.0e-12 ? I_geom : 1.0e-5);
 
-    // Tensão circunferencial (hoop stress) para tubo de parede fina: σ_h = (p_i * r_i - p_e * r_o) / t
+    // Hoop stress for a thin-walled pipe: sigma_h = (p_i * r_i - p_e * r_o) / t
     double r_inner = props.D_inner / 2.0;
     double wall_thickness = r_outer - r_inner;
     double sigma_hoop = 0.0;
@@ -284,12 +293,12 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
         sigma_hoop = (p_i * r_inner - p_e * r_outer) / wall_thickness;
     }
 
-    // Tensão axial combinada nas duas fibras extremas (tração e compressão por flexão)
-    double sigma_x_tension     = sigma_axial + std::abs(sigma_bending);  // Fibra tracionada
-    double sigma_x_compression = sigma_axial - std::abs(sigma_bending);  // Fibra comprimida
+    // Combined axial stress at both extreme fibers (tension and compression from bending)
+    double sigma_x_tension     = sigma_axial + std::abs(sigma_bending);  // Tension-side fiber
+    double sigma_x_compression = sigma_axial - std::abs(sigma_bending);  // Compression-side fiber
 
-    // Von Mises biaxial: σ_vm = √(σ_x² - σ_x·σ_h + σ_h²)
-    // Avalia ambas as fibras e usa o pior caso
+    // Biaxial von Mises: sigma_vm = sqrt(sigma_x^2 - sigma_x*sigma_h + sigma_h^2)
+    // Evaluates both fibers and takes the worst case
     double vm_tension = std::sqrt(sigma_x_tension * sigma_x_tension
                                   - sigma_x_tension * sigma_hoop
                                   + sigma_hoop * sigma_hoop);

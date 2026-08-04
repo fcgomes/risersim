@@ -1,3 +1,7 @@
+/**
+ * @file static_analysis.hpp
+ * @brief Static (catenary/vessel-offset) analysis: incremental load stepping with full-step Newton-Raphson.
+ */
 #ifndef RISERSIM_STATIC_ANALYSIS_HPP
 #define RISERSIM_STATIC_ANALYSIS_HPP
 
@@ -6,21 +10,18 @@
 
 namespace risersim {
 
-// Controla quando a rigidez artificial (regularização de Tikhonov, ver
-// StaticIntegrator) fica ativa dentro de solve_catenary_static:
-//   OnlyFirstStep — comportamento histórico do risersim: só no passo 1.
-//   EveryStep     — usada na fase "assembly" (Passo 3 do roadmap de
-//                   modernização): decai a cada iteração dentro de CADA
-//                   passo, dando à malha uma rede de segurança em todo o
-//                   carregamento, não só no primeiro incremento.
-//   Never         — usada na fase "static" (real, limpa), igual ao ANFLEX
-//                   real (m_have_artificial_stiffness=false).
+/**
+ * @brief Controls when artificial stiffness (Tikhonov regularization, see StaticIntegrator) is active within solve_catenary_static().
+ */
 enum class ArtificialStiffnessMode {
-    OnlyFirstStep,
-    EveryStep,
-    Never
+    OnlyFirstStep, ///< risersim's historical behavior: artificial stiffness only during load step 1.
+    EveryStep,     ///< Used in the "assembly" phase (see docs/mapa_classes_anflex_estatica.md): decays every iteration within *every* load step, giving the mesh a safety net across the whole load path, not just the first increment.
+    Never          ///< Used in the "static" (real, clean) phase, matching ANFLEX's real behavior (`m_have_artificial_stiffness=false`).
 };
 
+/**
+ * @brief Static analysis: builds up load in discrete steps, each solved by full-step Newton-Raphson, equivalent to ANFLEX's static solve.
+ */
 class StaticAnalysis : public Analysis {
 public:
     int load_steps;
@@ -37,11 +38,28 @@ public:
           offset(OffsetMode::Far, 0.0),
           enable_offset(false) {}
 
+    /**
+     * @brief Solves the catenary/free-hanging static equilibrium by incremental load stepping.
+     * @param steps Number of load increments (0..1 ramp).
+     * @param max_iter Maximum Newton-Raphson iterations per load step.
+     * @param tolerance Convergence tolerance (residual/increment norm).
+     * @param artif_mode When artificial stiffness regularization is applied (see ArtificialStiffnessMode).
+     * @return true if every load step converged.
+     */
     bool solve_catenary_static(int steps = 20, int max_iter = 300, double tolerance = 100.0,
                                 ArtificialStiffnessMode artif_mode = ArtificialStiffnessMode::OnlyFirstStep);
+
+    /**
+     * @brief Applies a prescribed top-node offset on top of a converged static equilibrium, incrementally.
+     * @param vessel_offset Target top-node displacement to ramp up to.
+     * @param steps Number of increments.
+     * @param max_iter Maximum Newton-Raphson iterations per increment.
+     * @param tolerance Convergence tolerance.
+     * @return true if every increment converged.
+     */
     bool solve_vessel_offset(const VesselOffset& vessel_offset, int steps = 20, int max_iter = 300, double tolerance = 100.0);
 
-    // Uniform polymorphic solve implementation
+    /** @brief Runs solve_catenary_static() with this instance's configured parameters. */
     bool solve() override;
 };
 

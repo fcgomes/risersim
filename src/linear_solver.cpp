@@ -1,3 +1,7 @@
+/**
+ * @file linear_solver.cpp
+ * @brief Implementations of the two LinearSolver backends: general LU and symmetric LDL^T.
+ */
 #include "risersim/linear_solver.hpp"
 
 namespace risersim {

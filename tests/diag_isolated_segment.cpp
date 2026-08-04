@@ -1,24 +1,23 @@
-// Diagnostico (nao e um teste automatizado): isola um pedaco pequeno da
-// malha REAL do Exemplo_01a (mesmo material/espacamento/orientacao) para
-// descobrir se a divergencia observada no modelo completo de 500 elementos
-// tambem aparece numa fatia pequena, ou se e um efeito que só emerge com
-// muitos elementos acoplados.
-//
-// Uso:
-//   risersim_diag_isolated_segment <input.json> <id_elemento_inicial> <num_elementos> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode]
-//   artif_mode:  0=OnlyFirstStep (default), 1=EveryStep, 2=Never
-//   fix_mode:    0=engastado-engastado nas duas pontas (default, condicao original)
-//                1=so a primeira ponta fixa, resto livre (corrente pendurada de 1 ponto,
-//                  sem a condicao de contorno artificial "corda sem folga" na outra ponta)
-//   load_steps:  numero de passos de carga (default 11)
-//   max_iter:    iteracoes NR maximas por passo (default 40)
-//   seabed_mode: 0=solo empurrado para longe/sem contato (default), 1=solo REAL
-//                (mesmos parametros do modelo completo, z~0/k=800000/mu=0.95)
-//   current_mode: 0=sem corrente (default), 1=corrente REAL (v=1.78 m/s, heading=270)
-//
-// Os dois nos nas pontas da fatia ficam fixos na posicao real (lida do
-// JSON); os nos internos ficam livres (translacao + rotacao), igual ao
-// modelo completo. O restante da fisica/solver e identico ao main_test.cpp.
+/**
+ * @file diag_isolated_segment.cpp
+ * @brief Diagnostic tool (not an automated test): isolates a small piece of the REAL Exemplo_01a mesh to check whether the divergence seen in the full 500-element model also shows up in a small slice, or only emerges once many elements are coupled together.
+ *
+ * Usage:
+ *   risersim_diag_isolated_segment <input.json> <start_elem_id> <num_elements> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode] [current_mode]
+ *     artif_mode:   0=OnlyFirstStep (default), 1=EveryStep, 2=Never
+ *     fix_mode:     0=clamped-clamped at both ends (default, original condition)
+ *                   1=only the first end fixed, rest free (a chain hanging from one point,
+ *                     without the artificial "taut chord" boundary condition at the other end)
+ *     load_steps:   number of load steps (default 11)
+ *     max_iter:     max NR iterations per step (default 40)
+ *     seabed_mode:  0=seabed pushed far away/no contact possible (default), 1=REAL seabed
+ *                   (same parameters as the full model, z~0/k=800000/mu=0.95)
+ *     current_mode: 0=no current (default), 1=REAL current (v=1.78 m/s, heading=270)
+ *
+ * The two nodes at the ends of the slice are fixed at their real position (read from the
+ * JSON); internal nodes are free (translation + rotation), matching the full model. The rest
+ * of the physics/solver is identical to `main_test.cpp`.
+ */
 #include <iostream>
 #include <fstream>
 #include <map>
@@ -48,7 +47,7 @@ int main(int argc, char** argv) {
 
     std::ifstream ifs(json_path);
     if (!ifs.is_open()) {
-        std::cerr << "Nao consegui abrir " << json_path << std::endl;
+        std::cerr << "Could not open " << json_path << std::endl;
         return 2;
     }
     json j;
@@ -62,7 +61,7 @@ int main(int argc, char** argv) {
 
     auto* model = new risersim::RiserModel();
     std::map<int, risersim::Node3D*> node_by_id;
-    std::vector<int> node_order; // ordem de criacao == ordem ao longo da linha
+    std::vector<int> node_order; // creation order == order along the line
 
     for (auto& e_j : elems_json) {
         int eid = e_j["id"].get<int>();
@@ -115,16 +114,16 @@ int main(int argc, char** argv) {
     }
 
     if (model->nodes.size() < 2) {
-        std::cerr << "Nenhum elemento encontrado no intervalo [" << start_elem_id << ", " << end_elem_id << "]" << std::endl;
+        std::cerr << "No elements found in range [" << start_elem_id << ", " << end_elem_id << "]" << std::endl;
         delete model;
         return 2;
     }
 
-    // fix_mode=0: fixa os dois nos das pontas da fatia na posicao real (lida do JSON) --
-    //   condicao engastado-engastado, artificial (a ponta "de longe" nao e um contorno
-    //   real do modelo completo, e a corda fica sem folga alguma -- ver discussao).
-    // fix_mode=1: fixa so a primeira ponta; o resto da cadeia, inclusive a ultima ponta,
-    //   fica livre -- corrente pendurada de um unico ponto, sem BC artificial na outra ponta.
+    // fix_mode=0: fixes both end nodes of the slice at their real position (read from JSON) --
+    //   a clamped-clamped condition, artificial (the "far" end isn't a real boundary of the
+    //   full model, and the chord ends up with zero slack at all -- see the discussion above).
+    // fix_mode=1: fixes only the first end; the rest of the chain, including the last end,
+    //   stays free -- a chain hanging from a single point, with no artificial BC at the other end.
     risersim::Node3D* first_node = node_by_id[node_order.front()];
     risersim::Node3D* last_node = node_by_id[node_order.back()];
     first_node->eq_numbers = std::vector<int>(6, -1);
@@ -136,60 +135,60 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "=========================================================" << std::endl;
-    std::cout << "  Diagnostico: segmento isolado da malha real (Exemplo_01a)" << std::endl;
+    std::cout << "  Diagnostic: isolated segment from the real mesh (Exemplo_01a)" << std::endl;
     std::cout << "=========================================================" << std::endl;
-    std::cout << "Elementos " << start_elem_id << ".." << end_elem_id
-              << " (" << model->elements.size() << " elementos, " << model->nodes.size() << " nos)" << std::endl;
-    std::cout << "No extremo 1 (id " << first_node->id << "): "
+    std::cout << "Elements " << start_elem_id << ".." << end_elem_id
+              << " (" << model->elements.size() << " elements, " << model->nodes.size() << " nodes)" << std::endl;
+    std::cout << "End node 1 (id " << first_node->id << "): "
               << first_node->coords.x() << ", " << first_node->coords.y() << ", " << first_node->coords.z() << std::endl;
-    std::cout << "No extremo 2 (id " << last_node->id << "): "
+    std::cout << "End node 2 (id " << last_node->id << "): "
               << last_node->coords.x() << ", " << last_node->coords.y() << ", " << last_node->coords.z() << std::endl;
     double L_total = 0.0;
     for (auto* e : model->elements) L_total += e->initial_length;
-    std::cout << "Comprimento total do segmento: " << L_total << " m" << std::endl;
+    std::cout << "Total segment length: " << L_total << " m" << std::endl;
 
     risersim::StaticAnalysis sa;
     sa.model = model;
-    // Igual ao main_test.cpp quando o modelo vem de JSON: o peso submerso ja
-    // esta embutido em props.rho, entao water_density (para empuxo) fica 0.
+    // Same as main_test.cpp when the model comes from JSON: submerged weight is
+    // already embedded in props.rho, so water_density (for buoyancy) stays 0.
     sa.water_density = 0.0;
     sa.water_density_for_mass = 1025.0;
     int seabed_mode = argc > 8 ? std::stoi(argv[8]) : 0;
     if (seabed_mode == 1) {
-        // Solo REAL, mesmos parametros do modelo completo (Exemplo_01a_A1.xml,
-        // no <Solo>): vertical_stiffness=800 kN/m=800000 N/m,
+        // REAL seabed, same parameters as the full model (Exemplo_01a_A1.xml,
+        // <Solo> section): vertical_stiffness=800 kN/m=800000 N/m,
         // axial_friction=0.92, axial_elastic_deflection_limit=0.03m,
         // lateral_friction=0.95, lateral_elastic_deflection_limit=0.279m --
-        // axial e lateral bem diferentes entre si, e diferentes do default
-        // isotropico (0.05m) usado antes.
+        // axial and lateral are quite different from each other, and from the
+        // isotropic default (0.05m) used previously.
         sa.seabed = risersim::SeabedInteraction(-1.52608e-05, 800000.0, 0.95, 0.279);
         sa.seabed.axial_friction = 0.92;
         sa.seabed.axial_elastic_deflection_limit = 0.03;
         sa.seabed.lateral_friction = 0.95;
         sa.seabed.lateral_elastic_deflection_limit = 0.279;
-        std::cout << "Solo REAL habilitado (z=" << -1.52608e-05
+        std::cout << "REAL seabed enabled (z=" << -1.52608e-05
                   << ", k=800000, axial mu/u=0.92/0.03, lateral mu/u=0.95/0.279)" << std::endl;
     } else {
-        // Solo bem longe -- sem contato possivel, isola o elemento de qualquer
-        // efeito de contato.
+        // Seabed pushed far away -- no contact possible, isolates the element from
+        // any contact effect.
         sa.seabed = risersim::SeabedInteraction(-1.0e6, 0.0, 0.0);
     }
     sa.load_steps = argc > 6 ? std::stoi(argv[6]) : 11;
     sa.max_iter_per_step = argc > 7 ? std::stoi(argv[7]) : 40;
     int current_mode = argc > 9 ? std::stoi(argv[9]) : 0;
     if (current_mode == 1) {
-        // Corrente REAL do Exemplo_01a (environmental.current no JSON completo):
-        // v=1.78 m/s, heading=270 graus, perfil de lei de potencia (alpha=0.1428),
-        // exatamente como main_test.cpp configura a partir do JSON.
+        // REAL current from Exemplo_01a (environmental.current in the full JSON):
+        // v=1.78 m/s, heading=270 degrees, power-law profile (alpha=0.1428),
+        // exactly as main_test.cpp configures it from JSON.
         sa.enable_current = true;
         sa.current = risersim::CurrentProfile(1.78, -1.52608e-05, 270.0, 0.1428, 1.0);
-        std::cout << "Corrente REAL habilitada (v=1.78 m/s, heading=270)" << std::endl;
+        std::cout << "REAL current enabled (v=1.78 m/s, heading=270)" << std::endl;
     }
     sa.tol = 0.001;
 
     bool converged = sa.solve_catenary_static(sa.load_steps, sa.max_iter_per_step, sa.tol, artif_mode);
 
-    std::cout << (converged ? "\n>>> CONVERGIU" : "\n>>> NAO CONVERGIU")
+    std::cout << (converged ? "\n>>> CONVERGED" : "\n>>> DID NOT CONVERGE")
               << " (artif_mode=" << artif_mode_int << ")" << std::endl;
 
     delete model;

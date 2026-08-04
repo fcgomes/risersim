@@ -1,3 +1,7 @@
+/**
+ * @file static_analysis.cpp
+ * @brief StaticAnalysis: incremental load stepping, full-step Newton-Raphson, and an optional backtracking line search.
+ */
 #include "risersim/static_analysis.hpp"
 #include "risersim/static_integrator.hpp"
 #include "risersim/rotation_utils.hpp"
@@ -11,24 +15,47 @@ namespace risersim {
 
 namespace {
 
+/** @brief Per-node state saved/restored around a line-search trial step. */
 struct NodeStateSnapshot {
     Eigen::Vector3d disp, rot;
     Eigen::Vector2d friction_force;
 };
 
-// Aplica o incremento de Newton-Raphson desta iteração com um line search de
-// backtracking simples: tenta o passo cheio (alpha=1); se o resíduo NÃO
-// diminuir, corta alpha pela metade e tenta de novo, até um número máximo de
-// tentativas — depois disso aceita o menor alpha tentado mesmo assim, para
-// garantir progresso e nunca travar. O ANFLEX real NÃO tem esta técnica
-// (newton_raphson.cpp aplica o passo cheio sempre, sem verificação); esta é
-// uma escolha deliberada de robustez numérica do risersim, motivada pelo
-// padrão de "chattering" (resíduo oscilando/estagnado perto de uma
-// descontinuidade de contato ou atrito, sem nunca convergir nem explodir de
-// forma sustentada) encontrado ao investigar solo+corrente juntos — ver
-// risersim/docs/mapa_classes_anflex_estatica.md.
+/// Function signature shared by StaticIntegrator::assemble_stiffness_and_internal_forces()
+/// and Analysis::assemble_system(), used to try trial steps without depending on a
+/// concrete integrator type.
 using AssembleFn = std::function<void(int, Eigen::SparseMatrix<double>&, Eigen::VectorXd&)>;
 
+/**
+ * @brief Applies this iteration's Newton-Raphson increment with a simple backtracking line search.
+ *
+ * Tries the full step (alpha=1); if the residual does *not* decrease (within a generous
+ * tolerance), halves alpha and retries, up to a maximum number of attempts -- after that it
+ * accepts the smallest alpha tried anyway, to guarantee progress and never stall. Real ANFLEX
+ * has *no* such technique (`newton_raphson.cpp` always applies the full step, unchecked); this
+ * is a deliberate risersim robustness addition, motivated by the "chattering" pattern (residual
+ * oscillating/stuck near a contact or friction discontinuity, never converging nor exploding in a
+ * sustained way) found while investigating combined seabed+current loading -- see
+ * `risersim/docs/mapa_classes_anflex_estatica.md`.
+ *
+ * The acceptance tolerance is deliberately loose (100x norm_R_before): the goal is not to chase
+ * monotonic residual decrease (full-step Newton legitimately worsens the residual for several
+ * intermediate iterations far from the solution, and that self-corrects normally; too tight a
+ * threshold steers the solver into a trajectory of artificially small steps that, in
+ * well-behaved cases, makes the final result worse instead of helping -- see the "regression"
+ * documented in `mapa_classes_anflex_estatica.md` after testing a strict threshold). This is a
+ * safety net against genuine catastrophic (order-of-magnitude) blow-up, not a replacement for the
+ * normal full step.
+ *
+ * @param assemble_fn Callback to (re-)assemble K/F_int for a trial displacement state.
+ * @param model The model being solved (node states are mutated in place during trials).
+ * @param F_ext Current external load vector.
+ * @param step_dU Full Newton-Raphson increment for this iteration (all DOFs).
+ * @param norm_R_before Residual norm before this step, used as the backtracking baseline.
+ * @param iter Current iteration index, forwarded to `assemble_fn` (e.g. for artificial-stiffness decay).
+ * @param excluded_node Node to leave untouched (e.g. a node under prescribed motion), or nullptr.
+ * @return The accepted (possibly scaled-down) displacement increment.
+ */
 Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn,
                                                     RiserModel* model,
                                                     const Eigen::VectorXd& F_ext,
@@ -50,7 +77,7 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
                 int eq = node->eq_numbers[i];
                 double du = (eq >= 0) ? alpha * step_dU[eq] : 0.0;
                 if (eq >= 0) node->disp[i] += du;
-                if (i < 2) node->delta_disp_xy[i] = du;
+                if (i < 2) node->delta_disp_xy[i] = du; // consumed by the seabed friction spring
                 int eq_rot = node->eq_numbers[i + 3];
                 if (eq_rot >= 0) { delta_rot[i] = alpha * step_dU[eq_rot]; has_rot_dof = true; }
             }
@@ -78,17 +105,9 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
         assemble_fn(iter, K_trial, F_int_trial);
         double norm_trial = (F_ext - F_int_trial).norm();
 
-        // Tolerância BEM generosa (100x) -- não estamos tentando perseguir
-        // decréscimo monotônico do resíduo (Newton legitimamente piora o
-        // resíduo em algumas iterações intermediárias longe da solução, e
-        // isso é normal/autocorrige com passo cheio; um limiar apertado
-        // demais faz o solver desviar para uma trajetória de passos
-        // artificialmente pequenos que, em casos bem-comportados, piora o
-        // resultado final em vez de ajudar -- ver mapa_classes_anflex_estatica.md,
-        // "regressão pontual" descoberta ao testar isto). O único objetivo
-        // aqui é servir de rede de segurança contra explosão catastrófica
-        // real (ordens de grandeza), o padrão de "chattering" de contato
-        // observado com solo+corrente -- não substituir o passo cheio normal.
+        // Deliberately loose tolerance (100x) -- see the rationale in this function's
+        // docstring above: this is a safety net against catastrophic blow-up, not a
+        // monotonic-decrease line search.
         if (norm_trial <= norm_R_before * 100.0 || bt == max_backtracks) {
             accepted_dU = alpha * step_dU;
             break;
@@ -96,11 +115,11 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
         alpha *= 0.5;
     }
 
-    // O assemble_fn desta função já consumiu delta_disp_xy para atualizar
-    // node->friction_force (elástico-plástico incremental, ver seabed.hpp).
-    // Zera para não deixar o próximo assemble (no topo da iteração seguinte,
-    // fora desta função) reaplicar o MESMO incremento uma segunda vez —
-    // sem isso, a força de atrito é contada em dobro a cada iteração.
+    // This function's assemble_fn calls already consumed delta_disp_xy to update
+    // node->friction_force (incremental elastic-plastic, see seabed.hpp). Reset it so
+    // the next assemble (at the top of the following iteration, outside this function)
+    // doesn't reapply the SAME increment a second time -- without this, the friction
+    // force gets double-counted every iteration.
     for (auto* node : model->nodes) node->delta_disp_xy.setZero();
 
     return accepted_dU;
@@ -109,25 +128,23 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
 } // namespace
 
 bool StaticAnalysis::solve() {
-    // Passo 3 do roadmap de modernização (risersim/docs/mapa_classes_anflex_estatica.md):
-    // duas fases, igual ao ANFLEX real (cAnflexAnalysis::solve_assembly() ->
-    // solve_static()). Fase 1 ("assembly") dá à malha rigidez artificial
-    // disponível em TODOS os passos de carga (não só o primeiro) para achar
-    // uma configuração de equilíbrio aproximada; fase 2 ("static") parte
-    // desse estado e resolve limpo, sem rigidez artificial, com a carga
-    // total num único passo (a geometria já está consistente com 100% da
-    // carga ao final da fase 1 — repetir o ramp de carga na fase 2
-    // reintroduziria o mesmo descompasso que quebrou a tentativa de warm
-    // start externo).
-    std::cout << "\n--- Fase 1/2: Assembly (rigidez artificial em todos os passos) ---" << std::endl;
+    // Two-phase solve, mirroring real ANFLEX (cAnflexAnalysis::solve_assembly() ->
+    // solve_static()). Phase 1 ("assembly") gives the mesh artificial stiffness
+    // available on EVERY load step (not just the first) to find an approximate
+    // equilibrium configuration; phase 2 ("static") starts from that state and
+    // solves cleanly, without artificial stiffness, with the full load in a single
+    // step (the geometry is already consistent with 100% of the load at the end of
+    // phase 1 -- repeating the load ramp in phase 2 would reintroduce the same
+    // mismatch that broke the earlier external warm-start attempt).
+    std::cout << "\n--- Phase 1/2: Assembly (artificial stiffness on every step) ---" << std::endl;
     bool ok_assembly = solve_catenary_static(load_steps, max_iter_per_step, tol, ArtificialStiffnessMode::EveryStep);
     if (!ok_assembly) {
-        std::cout << "⚠️ Fase de assembly não convergiu totalmente — prosseguindo para a fase estática "
-                     "a partir do estado alcançado (a fase de assembly é um pré-solve, não precisa ser perfeita)."
+        std::cout << "WARNING: assembly phase did not fully converge -- proceeding to the static phase "
+                     "from the state reached (the assembly phase is a pre-solve, it doesn't need to be perfect)."
                   << std::endl;
     }
 
-    std::cout << "\n--- Fase 2/2: Static (sem rigidez artificial, carga total em 1 passo) ---" << std::endl;
+    std::cout << "\n--- Phase 2/2: Static (no artificial stiffness, full load in 1 step) ---" << std::endl;
     bool ok_static = solve_catenary_static(1, max_iter_per_step, tol, ArtificialStiffnessMode::Never);
     if (!ok_static) return false;
 
@@ -169,7 +186,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     }
     history.push_back(step0);
 
-    // Força total de referência com 100% da carga para normalização estrita
+    // Total reference force at 100% load, used for a strict normalization
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
     for (auto* elem : model->elements) {
         double L = elem->initial_length;
@@ -195,9 +212,9 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
         Eigen::VectorXd F_ext = integrator.assemble_load_vector(load_factor);
 
-        // StaticIntegrator decide a rigidez artificial por este flag, não
-        // mais por uma condição inline dentro do loop de iteração — o que
-        // permite reutilizar a mesma função para as duas fases do Passo 3.
+        // StaticIntegrator decides artificial stiffness via this flag, rather than
+        // an inline condition inside the iteration loop -- which lets the same
+        // function be reused for both phases of StaticAnalysis::solve().
         switch (artif_mode) {
             case ArtificialStiffnessMode::OnlyFirstStep:
                 integrator.artificial_stiffness_enabled = (step == 1);
@@ -212,13 +229,13 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
         bool step_converged = false;
 
-        // Acumula o deslocamento total do passo (zerado a cada novo load step), usado
-        // pelo critério de convergência por incremento relativo (ver abaixo).
+        // Accumulates this load step's total displacement (reset every new load step),
+        // used by the relative-increment convergence criterion (see below).
         Eigen::VectorXd cumulative_dU = Eigen::VectorXd::Zero(num_dofs);
 
-        // Soma as normas (translação, rotação) de um vetor de incremento restrito aos
-        // DOFs livres de cada tipo, igual a cIntegrator::get_translation_inc_norm /
-        // get_rotation_inc_norm do ANFLEX real.
+        // Sums the norms (translation, rotation) of an increment vector restricted to
+        // the free DOFs of each type, mirroring real ANFLEX's
+        // cIntegrator::get_translation_inc_norm / get_rotation_inc_norm.
         auto split_norms = [&](const Eigen::VectorXd& v, double& transl_norm, double& rot_norm) {
             double t = 0.0, r = 0.0;
             for (auto* node : model->nodes) {
@@ -259,23 +276,23 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 return false;
             }
 
-            // Line search de backtracking (ver apply_newton_step_with_line_search):
-            // tenta o passo cheio, corta pela metade se o resíduo não diminuir.
-            // Ataca o "chattering" de contato/atrito encontrado com solo+corrente
-            // (mapa_classes_anflex_estatica.md), sem exigir mudar a formulação de
-            // contato/atrito em si.
+            // Backtracking line search (see apply_newton_step_with_line_search()):
+            // tries the full step, halves it if the residual doesn't decrease.
+            // Targets the contact/friction "chattering" found with combined
+            // seabed+current loading (mapa_classes_anflex_estatica.md), without
+            // requiring a change to the contact/friction formulation itself.
             AssembleFn assemble_fn = [&integrator](int it, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& F) {
                 integrator.assemble_stiffness_and_internal_forces(it, K, F);
             };
             Eigen::VectorXd accepted_dU = apply_newton_step_with_line_search(
                 assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr);
 
-            // Critério de convergência multi-critério do ANFLEX real (convergence_test.cpp):
-            // a correção desta iteração precisa ser pequena em relação ao deslocamento total
-            // já acumulado neste passo — não em relação a um resíduo de força absoluto. Isso
-            // converge mesmo quando o resíduo de força ainda não caiu a zero (o desequilíbrio
-            // remanescente é resolvido nos passos de carga seguintes, conforme a rigidez real
-            // vai se estabelecendo). Exige pelo menos 2 iterações (iter >= 1).
+            // Real ANFLEX's multi-criterion convergence test (convergence_test.cpp): this
+            // iteration's correction must be small relative to the total displacement already
+            // accumulated this step -- not relative to an absolute force residual. This converges
+            // even when the force residual hasn't dropped to zero yet (the remaining imbalance is
+            // resolved in subsequent load steps, as the real stiffness settles in). Requires at
+            // least 2 iterations (iter >= 1).
             cumulative_dU += accepted_dU;
             double this_transl_norm, this_rot_norm, cum_transl_norm, cum_rot_norm;
             split_norms(accepted_dU, this_transl_norm, this_rot_norm);

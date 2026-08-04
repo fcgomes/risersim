@@ -1,3 +1,7 @@
+/**
+ * @file simulation_exporter.cpp
+ * @brief JSON and HDF5 serialization of Analysis::history for post-processing/visualization.
+ */
 #include "risersim/simulation_exporter.hpp"
 #include <fstream>
 #include <iostream>
@@ -10,11 +14,13 @@
 
 namespace risersim {
 
+/** @brief Replaces NaN/Inf with 0.0 so exported JSON/HDF5 stay valid for downstream consumers. */
 static double safe_num(double val) {
     if (std::isnan(val) || std::isinf(val)) return 0.0;
     return val;
 }
 
+/** @brief Serializes a step history as a JSON array of `{step, load_factor, nodes[], elements[]}` objects. */
 static void write_snapshots_json_array(std::ofstream& ofs, const std::vector<StepSnapshot>& history) {
     ofs << "[";
     for (size_t s = 0; s < history.size(); ++s) {
@@ -73,6 +79,7 @@ bool SimulationExporter::export_json(const Analysis& static_analysis, const Anal
 
 #ifdef RISERSIM_HAS_HDF5
 
+/** @brief Writes a step history to an HDF5 group as `node_positions` (steps x nodes x 3) and `element_tensions_kN` (steps x elements) datasets. */
 static void write_hdf5_group(H5::H5File& file, const std::string& group_name, const std::vector<StepSnapshot>& history) {
     if (history.empty()) return;
 

@@ -1,0 +1,60 @@
+# Doxyfile for risersim
+#
+# Minimal, curated configuration (not the full ~3000-line doxygen -g output):
+# every setting not listed here keeps Doxygen's built-in default. Generate
+# with:
+#
+#   cd risersim && doxygen Doxyfile
+#
+# HTML output lands in docs/doxygen/html/index.html.
+
+#---------------------------------------------------------------------------
+# Project
+#---------------------------------------------------------------------------
+PROJECT_NAME           = "risersim"
+PROJECT_BRIEF          = "Open-source corotational-beam FEM engine for riser/mooring static and dynamic analysis"
+OUTPUT_LANGUAGE        = English
+OUTPUT_DIRECTORY       = docs/doxygen
+
+#---------------------------------------------------------------------------
+# Input
+#---------------------------------------------------------------------------
+INPUT                  = include src tests docs/mainpage.dox
+FILE_PATTERNS           = *.hpp *.h *.cpp
+RECURSIVE               = YES
+EXCLUDE                 = build
+EXCLUDE_PATTERNS        = */build/* */_deps/*
+
+#---------------------------------------------------------------------------
+# Extraction / build
+#---------------------------------------------------------------------------
+EXTRACT_ALL              = YES
+EXTRACT_PRIVATE          = YES
+EXTRACT_STATIC           = YES
+EXTRACT_LOCAL_CLASSES    = YES
+JAVADOC_AUTOBRIEF        = YES
+WARN_IF_UNDOCUMENTED     = YES
+WARN_IF_INCOMPLETE_DOC   = YES
+
+#---------------------------------------------------------------------------
+# Source browsing
+#---------------------------------------------------------------------------
+SOURCE_BROWSER           = YES
+INLINE_SOURCES           = NO
+REFERENCED_BY_RELATION   = YES
+REFERENCES_RELATION      = YES
+
+#---------------------------------------------------------------------------
+# Output formats
+#---------------------------------------------------------------------------
+GENERATE_HTML            = YES
+GENERATE_LATEX           = NO
+# docs/mainpage.dox carries an explicit \mainpage command and is listed in
+# INPUT above, so no USE_MDFILE_AS_MAINPAGE is needed.
+
+#---------------------------------------------------------------------------
+# Diagrams -- off by default so `doxygen Doxyfile` works without Graphviz
+# installed; flip HAVE_DOT to YES locally if dot is available.
+#---------------------------------------------------------------------------
+HAVE_DOT                 = NO
+CLASS_DIAGRAMS           = YES

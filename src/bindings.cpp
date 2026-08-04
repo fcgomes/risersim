@@ -1,15 +1,15 @@
 /**
- * bindings.cpp
- * ============
- * pybind11 bindings para o riserSim.
- * Expõe toda a API necessária para rodar uma simulação completa a partir
- * de Python, sem gerar código C++ intermediário.
+ * @file bindings.cpp
+ * @brief pybind11 bindings for risersim.
+ *
+ * Exposes the full API needed to run a complete simulation from Python, without generating
+ * intermediate C++ code.
  *
  * Build:
  *   cmake -B build risersim/ && cmake --build build --config Release
- *   O módulo resultante é: build/risersim.pyd (Windows) ou risersim.so (Linux)
+ *   The resulting module is: build/risersim.pyd (Windows) or risersim.so (Linux)
  *
- * Uso em Python:
+ * Usage from Python:
  *   import risersim
  *   node = risersim.Node3D(1, 0.0, 0.0, -100.0)
  *   ...
@@ -37,11 +37,11 @@ using namespace risersim;
 
 PYBIND11_MODULE(risersim, m) {
     m.doc() = R"(
-riserSim — Open-Source Offshore Riser & Flexible Pipe Structural Analysis Engine
+riserSim -- Open-Source Offshore Riser & Flexible Pipe Structural Analysis Engine
 ==================================================================================
-Módulo Python para análise de risers offshore usando elementos de viga corotacional 3D.
+Python module for offshore riser analysis using 3D corotational beam elements.
 
-Exemplo mínimo de uso:
+Minimal usage example:
     import risersim, math
 
     props = risersim.BeamMaterialProps()
@@ -63,28 +63,28 @@ Exemplo mínimo de uso:
     // =========================================================================
     // Node3D
     // =========================================================================
-    py::class_<Node3D>(m, "Node3D", "Nó 3D com 6 graus de liberdade (ux, uy, uz, rx, ry, rz).")
+    py::class_<Node3D>(m, "Node3D", "3D node with 6 degrees of freedom (ux, uy, uz, rx, ry, rz).")
         .def(py::init<int, double, double, double>(),
              py::arg("id"), py::arg("x"), py::arg("y"), py::arg("z"),
-             "Cria nó com ID e posição inicial (X, Y, Z) em metros.")
+             "Creates a node with an ID and initial position (X, Y, Z) in meters.")
         .def_readwrite("id",         &Node3D::id)
         .def_readwrite("coords",     &Node3D::coords,
-                       "Posição inicial do nó (Eigen::Vector3d, metros).")
+                       "Initial node position (Eigen::Vector3d, meters).")
         .def_readwrite("disp",       &Node3D::disp,
-                       "Vetor de deslocamento [ux, uy, uz] (metros).")
+                       "Displacement vector [ux, uy, uz] (meters).")
         .def_readwrite("rot",        &Node3D::rot,
-                       "Vetor de rotação [rx, ry, rz] (radianos).")
+                       "Rotation vector [rx, ry, rz] (radians).")
         .def_readwrite("eq_numbers", &Node3D::eq_numbers,
-                       "Números de equação para os 6 DOFs (-1 = restrito).")
+                       "Equation numbers for the 6 DOFs (-1 = restrained).")
         .def("current_coords", &Node3D::current_coords,
-             "Retorna posição atual = coords + disp.")
-        // Métodos auxiliares de condição de contorno
+             "Returns the current position = coords + disp.")
+        // Boundary condition helper methods
         .def("fix_all", [](Node3D& self) {
             self.eq_numbers = {-1, -1, -1, -1, -1, -1};
-        }, "Fixa todos os 6 DOFs (apoio engastado).")
+        }, "Fixes all 6 DOFs (fully clamped support).")
         .def("free_translations", [](Node3D& self) {
             self.eq_numbers = {0, 1, 2, -1, -1, -1};
-        }, "Libera translações, fixa rotações (usado em nós interiores sem momento).")
+        }, "Frees translations, fixes rotations (used for interior nodes with no moment).")
         .def("fix_dofs", [](Node3D& self, bool ux, bool uy, bool uz,
                                            bool rx, bool ry, bool rz) {
             self.eq_numbers[0] = ux ? -1 : 0;
@@ -95,104 +95,104 @@ Exemplo mínimo de uso:
             self.eq_numbers[5] = rz ? -1 : 0;
         }, py::arg("ux")=false, py::arg("uy")=false, py::arg("uz")=false,
            py::arg("rx")=true,  py::arg("ry")=true,  py::arg("rz")=true,
-           "Fixa DOFs individualmente. True = fixo, False = livre.");
+           "Fixes DOFs individually. True = fixed, False = free.");
 
     // =========================================================================
     // BeamMaterialProps
     // =========================================================================
     py::class_<BeamMaterialProps>(m, "BeamMaterialProps",
-        "Propriedades do material e seção da viga (unidades SI: Pa, m, kg/m³).")
+        "Beam material and cross-section properties (SI units: Pa, m, kg/m3).")
         .def(py::init<>())
         .def_readwrite("E",          &BeamMaterialProps::E,
-                       "Módulo de elasticidade (Pa).")
+                       "Young's modulus (Pa).")
         .def_readwrite("G",          &BeamMaterialProps::G,
-                       "Módulo de cisalhamento (Pa).")
+                       "Shear modulus (Pa).")
         .def_readwrite("A",          &BeamMaterialProps::A,
-                       "Área da seção transversal estrutural (m²).")
+                       "Structural cross-section area (m2).")
         .def_readwrite("IY",         &BeamMaterialProps::IY,
-                       "Momento de inércia em Y (m⁴).")
+                       "Moment of inertia about Y (m4).")
         .def_readwrite("IZ",         &BeamMaterialProps::IZ,
-                       "Momento de inércia em Z (m⁴).")
+                       "Moment of inertia about Z (m4).")
         .def_readwrite("J",          &BeamMaterialProps::J,
-                       "Constante de torção (m⁴).")
+                       "Torsional constant (m4).")
         .def_readwrite("rho",        &BeamMaterialProps::rho,
-                       "Densidade de massa estrutural (kg/m³).")
+                       "Structural mass density (kg/m3).")
         .def_readwrite("D_outer",    &BeamMaterialProps::D_outer,
-                       "Diâmetro externo (m).")
+                       "Outer diameter (m).")
         .def_readwrite("D_inner",    &BeamMaterialProps::D_inner,
-                       "Diâmetro interno (m).")
+                       "Inner diameter (m).")
         .def_readwrite("rho_fluid",  &BeamMaterialProps::rho_fluid,
-                       "Densidade do fluido interno (kg/m³).")
+                       "Internal fluid density (kg/m3).")
         .def_readwrite("Ca",         &BeamMaterialProps::Ca,
-                       "Coeficiente de massa adicional hidrodinâmica.");
+                       "Hydrodynamic added mass coefficient.");
 
     // =========================================================================
     // CorotationalBeam3D
     // =========================================================================
     py::class_<CorotationalBeam3D>(m, "CorotationalBeam3D",
-        "Elemento de viga corotacional 3D com 12 DOFs (2 nós × 6 DOFs).")
+        "3D corotational beam element with 12 DOFs (2 nodes x 6 DOFs).")
         .def(py::init<int, Node3D*, Node3D*, const BeamMaterialProps&, double>(),
              py::arg("id"), py::arg("node1"), py::arg("node2"), py::arg("props"),
              py::arg("L_unstretched") = 0.0,
-             "Cria elemento entre node1 e node2. L_unstretched=0 usa comprimento inicial.",
+             "Creates an element between node1 and node2. L_unstretched=0 uses the initial length.",
              py::keep_alive<1, 3>(),   // keep node1 alive
              py::keep_alive<1, 4>())   // keep node2 alive
         .def_readwrite("id",                 &CorotationalBeam3D::id)
         .def_readwrite("props",              &CorotationalBeam3D::props)
         .def_readwrite("p_i",               &CorotationalBeam3D::p_i,
-                       "Pressão do fluido interno (Pa).")
+                       "Internal fluid pressure (Pa).")
         .def_readwrite("p_e",               &CorotationalBeam3D::p_e,
-                       "Pressão hidrostática externa (Pa, calculada automaticamente se 0).")
+                       "External hydrostatic pressure (Pa, computed automatically if 0).")
         .def_readwrite("net_upward_buoyancy", &CorotationalBeam3D::net_upward_buoyancy,
-                       "Força de flutuação extra de módulos (N/m, ex.: lazy wave).")
+                       "Extra net upward buoyancy force from modules (N/m, e.g. lazy wave).")
         .def_readwrite("tension_effective",   &CorotationalBeam3D::tension_effective,
-                       "Tensão efetiva calculada T_eff = T_true + p_e*A_e - p_i*A_i (N).")
+                       "Computed effective tension T_eff = T_true + p_e*A_e - p_i*A_i (N).")
         .def_readwrite("initial_length",      &CorotationalBeam3D::initial_length,
-                       "Comprimento não-deformado (m).")
+                       "Unstretched length (m).")
         .def("current_length",         &CorotationalBeam3D::current_length,
-             "Comprimento atual (m).")
+             "Current length (m).")
         .def("outer_area",             &CorotationalBeam3D::outer_area)
         .def("inner_area",             &CorotationalBeam3D::inner_area)
         .def("update_effective_tension",&CorotationalBeam3D::update_effective_tension,
-             "Recalcula e retorna a tensão efetiva (N).")
+             "Recomputes and returns the effective tension (N).")
         .def("global_stiffness",       &CorotationalBeam3D::global_stiffness,
-             "Retorna a matriz de rigidez global 12×12 (N/m).")
+             "Returns the 12x12 global stiffness matrix (N/m).")
         .def("global_mass",            &CorotationalBeam3D::global_mass,
              py::arg("rho_water") = 1025.0,
-             "Retorna a matriz de massa global 12×12 (kg).")
+             "Returns the 12x12 global mass matrix (kg).")
         .def("compute_stress_and_curvature",
              &CorotationalBeam3D::compute_stress_and_curvature,
              py::arg("prev_elem") = nullptr,
              py::arg("next_elem") = nullptr,
              py::arg("yield_stress_MPa") = 350.0,
-             "Calcula curvatura, momento, von Mises e fator MBR.");
+             "Computes curvature, moment, von Mises stress, and MBR safety factor.");
 
-    // StressAndCurvatureResults (struct interna)
+    // StressAndCurvatureResults (nested struct)
     py::class_<CorotationalBeam3D::StressAndCurvatureResults>(m, "StressResults",
-        "Resultados de tensão e curvatura de um elemento.")
+        "Stress and curvature results for an element.")
         .def_readonly("curvature",           &CorotationalBeam3D::StressAndCurvatureResults::curvature,
-                      "Curvatura κ (1/m).")
+                      "Curvature kappa (1/m).")
         .def_readonly("bending_moment_kNm",  &CorotationalBeam3D::StressAndCurvatureResults::bending_moment_kNm,
-                      "Momento fletor (kN·m).")
+                      "Bending moment (kN.m).")
         .def_readonly("bend_radius",         &CorotationalBeam3D::StressAndCurvatureResults::bend_radius,
-                      "Raio de curvatura real R = 1/κ (m).")
+                      "Actual bend radius R = 1/kappa (m).")
         .def_readonly("mbr_min",             &CorotationalBeam3D::StressAndCurvatureResults::mbr_min,
-                      "Raio mínimo de curvatura MBR (m).")
+                      "Minimum bend radius MBR (m).")
         .def_readonly("mbr_safety_factor",   &CorotationalBeam3D::StressAndCurvatureResults::mbr_safety_factor,
-                      "Fator de segurança MBR = R_atual / MBR_min.")
+                      "MBR safety factor = R_actual / MBR_min.")
         .def_readonly("von_mises_MPa",       &CorotationalBeam3D::StressAndCurvatureResults::von_mises_MPa,
-                      "Tensão combinada von Mises (MPa).");
+                      "Combined von Mises stress (MPa).");
 
     // =========================================================================
     // SeabedInteraction
     // =========================================================================
     py::class_<SeabedInteraction>(m, "SeabedInteraction",
-        "Mola bilinear de interação com o fundo do mar.")
+        "Bilinear seabed interaction spring.")
         .def(py::init<double, double, double>(),
              py::arg("depth")       = -100.0,
              py::arg("stiffness_z") = 1.0e5,
              py::arg("friction")    = 0.5,
-             "depth: coordenada Z do fundo (m, negativo). stiffness_z: rigidez vertical (N/m). friction: coef. de atrito.")
+             "depth: seabed Z coordinate (m, negative). stiffness_z: vertical stiffness (N/m). friction: friction coefficient.")
         .def_readwrite("seabed_depth",  &SeabedInteraction::seabed_depth)
         .def_readwrite("stiffness_z",   &SeabedInteraction::stiffness_z)
         .def_readwrite("friction_coeff",&SeabedInteraction::friction_coeff);
@@ -201,81 +201,81 @@ Exemplo mínimo de uso:
     // CurrentProfile
     // =========================================================================
     py::class_<CurrentProfile>(m, "CurrentProfile",
-        "Perfil de corrente por lei de potência (perfil de Hellmann).")
+        "Power-law (Hellmann) current velocity profile.")
         .def(py::init<double, double, double, double, double>(),
              py::arg("v_surface")      = 1.5,
              py::arg("seabed_depth")   = -100.0,
              py::arg("heading_deg")    = 90.0,
              py::arg("power_exponent") = 0.1428,
              py::arg("Cd")             = 1.0,
-             "v_surface: vel. de superfície (m/s). seabed_depth: Z do fundo (m, negativo). heading_deg: azimute (°).")
+             "v_surface: surface velocity (m/s). seabed_depth: seabed Z (m, negative). heading_deg: azimuth (deg).")
         .def_readwrite("v_surface",      &CurrentProfile::v_surface)
         .def_readwrite("seabed_depth",   &CurrentProfile::seabed_depth)
         .def_readwrite("heading_deg",    &CurrentProfile::heading_deg)
         .def_readwrite("power_exponent", &CurrentProfile::power_exponent)
         .def_readwrite("Cd",             &CurrentProfile::Cd)
         .def("get_velocity", &CurrentProfile::get_velocity, py::arg("z"),
-             "Retorna velocidade da corrente na profundidade z (m/s).");
+             "Returns the current velocity at depth z (m/s).");
 
     // =========================================================================
     // VesselOffset & OffsetMode
     // =========================================================================
-    py::enum_<OffsetMode>(m, "OffsetMode", "Modo de offset da plataforma.")
-        .value("Near",   OffsetMode::Near,   "Afastamento em direção à âncora (-X).")
-        .value("Far",    OffsetMode::Far,     "Afastamento em direção contrária à âncora (+X).")
-        .value("Cross",  OffsetMode::Cross,   "Afastamento lateral (+Y).")
-        .value("Custom", OffsetMode::Custom,  "Deslocamento customizado (dx, dy, dz).")
+    py::enum_<OffsetMode>(m, "OffsetMode", "Vessel offset mode.")
+        .value("Near",   OffsetMode::Near,   "Moves towards the anchor (-X).")
+        .value("Far",    OffsetMode::Far,     "Moves away from the anchor (+X).")
+        .value("Cross",  OffsetMode::Cross,   "Moves laterally (+Y).")
+        .value("Custom", OffsetMode::Custom,  "Custom displacement (dx, dy, dz).")
         .export_values();
 
     py::class_<VesselOffset>(m, "VesselOffset",
-        "Offset imposto ao nó de topo do riser (simula posição da plataforma).")
+        "Offset imposed on the riser's top node (simulates the vessel's position).")
         .def(py::init<OffsetMode, double>(),
              py::arg("mode") = OffsetMode::Far,
              py::arg("magnitude") = 10.0,
-             "Cria offset por modo e magnitude (m).")
+             "Creates an offset from a mode and magnitude (m).")
         .def(py::init<double, double, double>(),
              py::arg("dx"), py::arg("dy"), py::arg("dz"),
-             "Cria offset customizado com vetor (dx, dy, dz) em metros.")
+             "Creates a custom offset from a (dx, dy, dz) vector in meters.")
         .def_readwrite("mode",        &VesselOffset::mode)
         .def_readwrite("offset_disp", &VesselOffset::offset_disp,
-                       "Vetor de deslocamento imposto (Eigen::Vector3d, metros).");
+                       "Imposed displacement vector (Eigen::Vector3d, meters).");
 
     // =========================================================================
     // BuoyancyModule & BendRestrictor
     // =========================================================================
     py::class_<BuoyancyModule>(m, "BuoyancyModule",
-        "Módulo de flutuação para criar configuração Lazy Wave.")
+        "Buoyancy module used to create a Lazy Wave configuration.")
         .def(py::init<double, double>(),
              py::arg("d_buoyancy") = 0.80,
              py::arg("net_force")  = 3600.0,
-             "d_buoyancy: diâmetro do módulo (m). net_force: força líquida ascendente (N/m).")
+             "d_buoyancy: module diameter (m). net_force: net upward force (N/m).")
         .def_readwrite("D_buoyancy",       &BuoyancyModule::D_buoyancy)
         .def_readwrite("net_upward_force", &BuoyancyModule::net_upward_force)
         .def("apply_to_element", &BuoyancyModule::apply_to_element,
              py::arg("element"),
-             "Aplica o módulo ao elemento (altera D_outer e net_upward_buoyancy).");
+             "Applies the module to the element (changes D_outer and net_upward_buoyancy).");
 
     py::class_<BendRestrictor>(m, "BendRestrictor",
-        "Limitador de curvatura (aumenta EI do elemento próximo ao topo).")
+        "Bend restrictor (increases an element's EI near the top).")
         .def(py::init<double>(),
              py::arg("factor") = 5.0,
-             "factor: multiplicador da rigidez EI.")
+             "factor: EI stiffness multiplier.")
         .def_readwrite("stiffness_multiplier", &BendRestrictor::stiffness_multiplier)
         .def("apply_to_element", &BendRestrictor::apply_to_element,
              py::arg("element"),
-             "Multiplica IY e IZ do elemento pelo fator.");
+             "Multiplies the element's IY and IZ by the factor.");
 
     // =========================================================================
     // StepSnapshot
     // =========================================================================
     py::class_<StepSnapshot>(m, "StepSnapshot",
-        "Snapshot de um passo da simulação (coordenadas + resultados por elemento).")
+        "Snapshot of one simulation step (coordinates + per-element results).")
         .def(py::init<>())
         .def_readwrite("step_index",                  &StepSnapshot::step_index)
         .def_readwrite("load_factor",                 &StepSnapshot::load_factor,
-                       "Fator de carga (0–1) para análise estática, ou tempo (s) para dinâmica.")
+                       "Load factor (0-1) for static analysis, or time (s) for dynamic analysis.")
         .def_readwrite("node_coords",                 &StepSnapshot::node_coords,
-                       "Lista de Eigen::Vector3d com posições atuais dos nós.")
+                       "List of Eigen::Vector3d with the nodes' current positions.")
         .def_readwrite("element_tensions_kN",         &StepSnapshot::element_tensions_kN)
         .def_readwrite("element_bending_moments_kNm", &StepSnapshot::element_bending_moments_kNm)
         .def_readwrite("element_curvatures",          &StepSnapshot::element_curvatures)
@@ -285,14 +285,14 @@ Exemplo mínimo de uso:
     // =========================================================================
     // RiserModel
     // =========================================================================
-    py::class_<RiserModel>(m, "RiserModel", "Modelo estrutural contendo nós e elementos de viga.")
+    py::class_<RiserModel>(m, "RiserModel", "Structural model containing beam nodes and elements.")
         .def(py::init<>())
         .def_readwrite("nodes",          &RiserModel::nodes)
         .def_readwrite("elements",       &RiserModel::elements)
         .def("clear",                  &RiserModel::clear);
 
     // =========================================================================
-    // Analysis (base — não instanciável diretamente)
+    // Analysis (base -- not directly instantiable)
     // =========================================================================
     py::class_<Analysis>(m, "Analysis")
         .def_readwrite("model",          &Analysis::model)
@@ -300,31 +300,31 @@ Exemplo mínimo de uso:
         .def_readwrite("current",        &Analysis::current)
         .def_readwrite("enable_current", &Analysis::enable_current)
         .def_readwrite("water_density",  &Analysis::water_density,
-                       "Densidade da água do mar (kg/m³, default 1025.0).")
+                       "Seawater density (kg/m3, default 1025.0).")
         .def_readwrite("num_dofs",       &Analysis::num_dofs)
         .def_readwrite("history",        &Analysis::history,
-                       "Lista de StepSnapshot com o histórico da simulação.")
+                       "List of StepSnapshot with the simulation history.")
         .def("assign_equation_numbers", &Analysis::assign_equation_numbers,
-             "Numera automaticamente os graus de liberdade livres.");
+             "Automatically numbers the free degrees of freedom.");
 
     py::enum_<ArtificialStiffnessMode>(m, "ArtificialStiffnessMode",
-        "Controla quando a rigidez artificial fica ativa em solve_catenary_static.")
-        .value("OnlyFirstStep", ArtificialStiffnessMode::OnlyFirstStep, "Só no passo 1 (comportamento histórico).")
-        .value("EveryStep",     ArtificialStiffnessMode::EveryStep,     "Em todos os passos (fase 'assembly').")
-        .value("Never",         ArtificialStiffnessMode::Never,         "Nunca (fase 'static' limpa).")
+        "Controls when artificial stiffness is active in solve_catenary_static.")
+        .value("OnlyFirstStep", ArtificialStiffnessMode::OnlyFirstStep, "Only on step 1 (historical behavior).")
+        .value("EveryStep",     ArtificialStiffnessMode::EveryStep,     "On every step (the 'assembly' phase).")
+        .value("Never",         ArtificialStiffnessMode::Never,         "Never (the clean 'static' phase).")
         .export_values();
 
     // =========================================================================
     // StaticAnalysis
     // =========================================================================
     py::class_<StaticAnalysis, Analysis>(m, "StaticAnalysis",
-        R"(Análise estática não-linear (Newton-Raphson com incremento de carga).
+        R"(Nonlinear static analysis (Newton-Raphson with load stepping).
 
-Sequência de uso:
+Usage sequence:
     model = risersim.RiserModel()
     model.nodes    = [n1, n2, ...]
     model.elements = [e1, e2, ...]
-    
+
     sa = risersim.StaticAnalysis()
     sa.model    = model
     sa.seabed   = risersim.SeabedInteraction(-100.0, 1e5, 0.5)
@@ -333,98 +333,98 @@ Sequência de uso:
     sa.enable_offset = True
     sa.offset = risersim.VesselOffset(risersim.OffsetMode.Far, 10.0)
     ok = sa.solve()
-    # sa.history contém os snapshots de cada passo
+    # sa.history contains the snapshots of each step
 )")
         .def(py::init<>())
         .def_readwrite("load_steps",        &StaticAnalysis::load_steps,
-                       "Número de incrementos de carga (default 20).")
+                       "Number of load increments (default 20).")
         .def_readwrite("max_iter_per_step", &StaticAnalysis::max_iter_per_step,
-                       "Máximo de iterações N-R por passo (default 300).")
+                       "Maximum Newton-Raphson iterations per step (default 300).")
         .def_readwrite("tol",               &StaticAnalysis::tol,
-                       "Tolerância de convergência da norma do resíduo (N, default 100.0).")
+                       "Residual-norm convergence tolerance (N, default 100.0).")
         .def_readwrite("offset",            &StaticAnalysis::offset,
-                       "Offset de plataforma a aplicar após convergência estática.")
+                       "Vessel offset to apply after static convergence.")
         .def_readwrite("enable_offset",     &StaticAnalysis::enable_offset,
-                       "Se True, aplica o offset após a análise catenary.")
+                       "If True, applies the offset after the catenary analysis.")
         .def("solve", &StaticAnalysis::solve,
-             "Executa a análise estática completa (catenary + offset se enable_offset=True).\n"
-             "Retorna True se convergiu.")
+             "Runs the full static analysis (catenary + offset if enable_offset=True).\n"
+             "Returns True if converged.")
         .def("solve_catenary_static", &StaticAnalysis::solve_catenary_static,
              py::arg("steps") = 20, py::arg("max_iter") = 300, py::arg("tolerance") = 100.0,
              py::arg("artif_mode") = ArtificialStiffnessMode::OnlyFirstStep,
-             "Executa apenas a fase catenary (sem offset).")
+             "Runs only the catenary phase (no offset).")
         .def("solve_vessel_offset", &StaticAnalysis::solve_vessel_offset,
              py::arg("offset"), py::arg("steps") = 20, py::arg("max_iter") = 300,
              py::arg("tolerance") = 100.0,
-             "Aplica offset da plataforma sobre o equilíbrio catenary.");
+             "Applies the vessel offset on top of the catenary equilibrium.");
 
     // =========================================================================
     // DynamicAnalysis
     // =========================================================================
     py::class_<DynamicAnalysis, Analysis>(m, "DynamicAnalysis",
-        R"(Análise dinâmica no domínio do tempo (Newmark-β + Newton-Raphson).
+        R"(Time-domain dynamic analysis (Newmark-beta + Newton-Raphson).
 
-Pode ser inicializado a partir de uma StaticAnalysis já resolvida:
+Can be initialized from an already-solved StaticAnalysis:
     da = risersim.DynamicAnalysis.from_static(static_analysis)
     da.duration_s     = 20.0
     da.dt_s           = 0.05
     da.wave_amplitude = 2.5
     da.wave_period    = 10.0
     ok = da.solve()
-    # da.history contém os snapshots de cada timestep
+    # da.history contains the snapshots of each timestep
 )")
         .def(py::init<>())
         .def(py::init<const Analysis&>(), py::arg("static_analysis"),
-             "Inicializa copiando nós, elementos e parâmetros de uma StaticAnalysis resolvida.")
+             "Initializes by copying nodes, elements, and parameters from a solved StaticAnalysis.")
         .def_readwrite("duration_s",     &DynamicAnalysis::duration_s,
-                       "Duração total da análise dinâmica (s).")
+                       "Total duration of the dynamic analysis (s).")
         .def_readwrite("dt_s",           &DynamicAnalysis::dt_s,
-                       "Passo de tempo (s).")
+                       "Time step (s).")
         .def_readwrite("wave_amplitude", &DynamicAnalysis::wave_amplitude,
-                       "Amplitude da onda prescrita no topo (m).")
+                       "Amplitude of the prescribed wave at the top (m).")
         .def_readwrite("wave_period",    &DynamicAnalysis::wave_period,
-                       "Período da onda (s).")
+                       "Wave period (s).")
         .def_readwrite("alpha_rayleigh", &DynamicAnalysis::alpha_rayleigh,
-                       "Coeficiente α de Rayleigh (amortecimento de massa).")
+                       "Rayleigh alpha coefficient (mass-proportional damping).")
         .def_readwrite("beta_rayleigh",  &DynamicAnalysis::beta_rayleigh,
-                       "Coeficiente β de Rayleigh (amortecimento de rigidez).")
+                       "Rayleigh beta coefficient (stiffness-proportional damping).")
         .def("solve", &DynamicAnalysis::solve,
-             "Executa a análise dinâmica. Retorna True se completou sem erros.")
+             "Runs the dynamic analysis. Returns True if it completed without errors.")
         .def("solve_time_domain_dynamic",
              &DynamicAnalysis::solve_time_domain_dynamic,
              py::arg("duration") = 20.0, py::arg("dt") = 0.05,
              py::arg("amp") = 2.5, py::arg("period") = 10.0,
              py::arg("alpha") = 0.05, py::arg("beta") = 0.01,
-             "Executa solver Newmark-β com os parâmetros fornecidos.")
-        // Método de fábrica estático conveniente
+             "Runs the Newmark-beta solver with the given parameters.")
+        // Convenient static factory method
         .def_static("from_static", [](const Analysis& sa) {
             return new DynamicAnalysis(sa);
         }, py::arg("static_analysis"),
         py::return_value_policy::take_ownership,
-        "Cria DynamicAnalysis copiando o estado de uma StaticAnalysis resolvida.");
+        "Creates a DynamicAnalysis copying the state of a solved StaticAnalysis.");
 
     // =========================================================================
     // SimulationExporter
     // =========================================================================
     py::class_<SimulationExporter>(m, "SimulationExporter",
-        "Exporta resultados da simulação para JSON e HDF5.")
+        "Exports simulation results to JSON and HDF5.")
         .def_static("export_json",
             [](const Analysis& sa, const Analysis& da, const std::string& fn) {
                 return SimulationExporter::export_json(sa, da, fn);
             },
             py::arg("static_analysis"), py::arg("dynamic_analysis"),
             py::arg("filename") = "catenary_results.json",
-            "Exporta histórico completo (estático + dinâmico) para JSON.")
+            "Exports the full history (static + dynamic) to JSON.")
         .def_static("export_hdf5",
             [](const Analysis& sa, const Analysis& da, const std::string& fn) {
                 return SimulationExporter::export_hdf5(sa, da, fn);
             },
             py::arg("static_analysis"), py::arg("dynamic_analysis"),
             py::arg("filename") = "catenary_results.h5",
-            "Exporta histórico completo (estático + dinâmico) para HDF5 binário.");
+            "Exports the full history (static + dynamic) to binary HDF5.");
 
     // =========================================================================
-    // Funções utilitárias de módulo
+    // Module-level utility functions
     // =========================================================================
     m.def("build_catenary_nodes",
         [](int num_elements, double total_length_m, double depth_m,
@@ -439,10 +439,10 @@ Pode ser inicializado a partir de uma StaticAnalysis já resolvida:
                          - std::abs(depth_m) * 0.25 * std::sin(ratio * 3.14159265358979);
                 nodes.push_back(new Node3D(i + 1, x, 0.0, z));
             }
-            // Nós de topo e fundo fixos
+            // Fix the top and bottom nodes
             nodes.front()->eq_numbers = {-1, -1, -1, -1, -1, -1};
             nodes.back()->eq_numbers  = {-1, -1, -1, -1, -1, -1};
-            // Nós intermediários: translações livres, rotações fixas
+            // Intermediate nodes: free translations, fixed rotations
             for (size_t i = 1; i < nodes.size() - 1; ++i) {
                 nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
             }
@@ -453,17 +453,17 @@ Pode ser inicializado a partir de uma StaticAnalysis já resolvida:
         py::arg("depth_m"),
         py::arg("span_x_m"),
         py::return_value_policy::take_ownership,
-        R"(Cria malha de nós na configuração catenary inicial.
+        R"(Creates a node mesh in the initial catenary configuration.
 
-Retorna lista de Node3D* alocados no heap (ownership transferida para Python).
-Nós de topo (front) e fundo (back) são fixados automaticamente.
-Nós intermediários têm translações livres e rotações fixas.
+Returns a list of heap-allocated Node3D* (ownership transferred to Python).
+Top (front) and bottom (back) nodes are fixed automatically.
+Intermediate nodes have free translations and fixed rotations.
 
 Args:
-    num_elements: número de elementos finitos
-    total_length_m: comprimento não-deformado da linha (m)
-    depth_m: lâmina d'água (m, positivo — a função aplica o sinal)
-    span_x_m: extensão horizontal da catenária (m)
+    num_elements: number of finite elements
+    total_length_m: unstretched line length (m)
+    depth_m: water depth (m, positive -- the function applies the sign)
+    span_x_m: horizontal span of the catenary (m)
 )");
 
     m.def("build_catenary_elements",
@@ -472,7 +472,7 @@ Args:
             int num_elements = static_cast<int>(nodes.size()) - 1;
             double L_elem = (nodes.back()->coords - nodes.front()->coords).norm()
                             / static_cast<double>(num_elements);
-            // Usa comprimento ao longo da catenária (linear)
+            // Uses the length along the (piecewise-linear) catenary
             double total_length = 0.0;
             for (int i = 0; i < num_elements; ++i) {
                 total_length += (nodes[i+1]->coords - nodes[i]->coords).norm();
@@ -489,17 +489,17 @@ Args:
         },
         py::arg("nodes"), py::arg("props"),
         py::return_value_policy::take_ownership,
-        R"(Cria elementos de viga entre os nós fornecidos.
+        R"(Creates beam elements between the given nodes.
 
 Args:
-    nodes: lista de Node3D* (deve ter pelo menos 2)
-    props: BeamMaterialProps com propriedades do material
+    nodes: list of Node3D* (must have at least 2)
+    props: BeamMaterialProps with the material properties
 
-Retorna lista de CorotationalBeam3D* (ownership transferida para Python).
-O comprimento não-deformado de cada elemento é calculado automaticamente.
+Returns a list of CorotationalBeam3D* (ownership transferred to Python).
+Each element's unstretched length is computed automatically.
 )");
 
-    // Versão do módulo
+    // Module version
     m.attr("__version__") = "1.0.0";
     m.attr("__author__")  = "riserSim Team";
 }

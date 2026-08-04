@@ -1,15 +1,16 @@
-// Testes de caracterizacao (regressao) para StaticAnalysis::solve().
-//
-// Objetivo: fixar o comportamento ATUAL antes do refactor de arquitetura
-// descrito em risersim/docs/mapa_classes_anflex_estatica.md, para que cada
-// passo do roadmap (Integrator, duas fases assembly/static, etc.) possa
-// ser validado contra "isso nao mudou por acidente".
-//
-// Nota: a geometria sintetica abaixo trava as rotacoes de todos os nos
-// intermediarios (eq_numbers = {0,1,2,-1,-1,-1} em main_test.cpp), entao
-// este caso nao exercita flexao/rotacao do elemento corrotacional -- e um
-// teste de regressao do pipeline (montagem/passos de carga/convergencia),
-// nao uma validacao da formulacao de viga em si.
+/**
+ * @file test_static_analysis.cpp
+ * @brief Characterization (regression) test for StaticAnalysis::solve().
+ *
+ * Goal: pin down CURRENT behavior across the architecture refactor described in
+ * `risersim/docs/mapa_classes_anflex_estatica.md`, so each roadmap step (Integrator, the
+ * two-phase assembly/static solve, etc.) can be validated against "this didn't change by accident".
+ *
+ * Note: the synthetic geometry below locks the rotations of all intermediate nodes
+ * (`eq_numbers = {0,1,2,-1,-1,-1}`, matching `main_test.cpp`), so this case doesn't exercise
+ * bending/rotation of the corotational element -- it's a regression test of the pipeline
+ * (assembly/load stepping/convergence), not a validation of the beam formulation itself.
+ */
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
@@ -22,9 +23,10 @@
 
 namespace {
 
-// Reproduz exatamente a geometria parabolica de fallback de
-// risersim/src/main_test.cpp (usada quando nenhum JSON de entrada e
-// fornecido), para manter os dois em sincronia.
+/**
+ * @brief Reproduces exactly the fallback parabolic geometry from `risersim/src/main_test.cpp`
+ * (used when no input JSON is provided), to keep the two in sync.
+ */
 risersim::RiserModel* build_synthetic_catenary_model() {
     constexpr int num_elements = 40;
     constexpr double total_length = 180.0;
@@ -89,32 +91,28 @@ TEST_CASE("StaticAnalysis converges on the synthetic fallback catenary", "[stati
 
     REQUIRE(converged);
 
-    // Valor de referencia ATUALIZADO apos a correcao da causa raiz da
-    // divergencia (mapa_classes_anflex_estatica.md, secao "Causa raiz
-    // encontrada e corrigida"): a forca interna passou a usar a rotacao
-    // LOCAL/deformacional de cada no (relativa ao ghost frame do elemento)
-    // em vez da rotacao total acumulada. Neste caso sintetico (DOFs de
-    // rotacao travados em 0 em todos os nos), isso muda o comportamento de
-    // forma intencional e correta: antes, rotacao=0 sempre => rigidez de
-    // flexao nunca contribuia (equivalente a um cabo sem flexao); agora, o
-    // "ghost frame" acompanha a corda atual enquanto o no fica congelado na
-    // orientacao inicial, entao a flexao real passa a resistir a deformacao
-    // -- daí a tensao de equilibrio bem menor. Valor ATUALIZADO DE NOVO apos
-    // trocar a mola de atrito do solo por uma versao elastico-plastica
-    // incremental (com estado persistente por no), fiel ao ANFLEX real
-    // (soil_uncoupled.cpp) -- a versao anterior usava o deslocamento TOTAL
-    // acumulado em vez do incremento por iteracao, o que satura a forca de
-    // atrito de forma fisicamente incorreta. Este caso sintetico tem solo
-    // habilitado (seabed com k=1e5, mu=0.5), entao a mudanca de modelo de
-    // atrito afeta o resultado. Valor ATUALIZADO DE NOVO apos decompor o
-    // atrito nas direcoes axial/lateral LOCAIS da linha (em vez de X/Y
-    // globais), fiel ao ANFLEX real (soil.cpp:calc_transf_matrix). Valor
-    // ATUALIZADO DE NOVO apos adicionar um line search de backtracking ao
-    // Newton-Raphson (apply_newton_step_with_line_search em
-    // static_analysis.cpp) -- este caso tem solo habilitado, entao a
-    // trajetoria de iteracoes muda quando o passo cheio eventualmente diverge
-    // muito do residuo anterior. T_eff capturado via Docker apos a correcao:
-    // 3539.18588 kN no elemento do topo.
+    // Reference value, UPDATED after fixing the divergence root cause
+    // (mapa_classes_anflex_estatica.md, "Root cause found and fixed" section): internal
+    // force now uses each node's LOCAL/deformational rotation (relative to the element's
+    // ghost frame) instead of the total accumulated rotation. In this synthetic case
+    // (rotation DOFs locked at 0 on all nodes), this intentionally and correctly changes
+    // behavior: before, rotation=0 always => bending stiffness never contributed
+    // (equivalent to a cable with no bending); now, the "ghost frame" tracks the current
+    // chord while the node stays frozen at its initial orientation, so real bending
+    // starts resisting deformation -- hence the much lower equilibrium tension. Value
+    // UPDATED AGAIN after swapping the seabed friction spring for an incremental
+    // elastic-plastic version (with per-node persistent state), mirroring real ANFLEX
+    // (soil_uncoupled.cpp) -- the previous version used the TOTAL accumulated
+    // displacement instead of the per-iteration increment, which saturates the friction
+    // force in a physically incorrect way. This synthetic case has the seabed enabled
+    // (k=1e5, mu=0.5), so the friction model change affects the result. Value UPDATED
+    // AGAIN after decomposing friction into the line's LOCAL axial/lateral directions
+    // (instead of global X/Y), mirroring real ANFLEX (soil.cpp:calc_transf_matrix). Value
+    // UPDATED AGAIN after adding a backtracking line search to Newton-Raphson
+    // (apply_newton_step_with_line_search in static_analysis.cpp) -- this case has the
+    // seabed enabled, so the iteration trajectory changes whenever the full step
+    // eventually diverges too far from the previous residual. T_eff captured via Docker
+    // after the fix: 3539.18588 kN at the top element.
     const double expected_tension_effective_N = 3539.1858815034814 * 1000.0;
     REQUIRE(model->elements.front()->tension_effective == Catch::Approx(expected_tension_effective_N).epsilon(0.005));
 

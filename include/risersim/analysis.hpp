@@ -1,3 +1,7 @@
+/**
+ * @file analysis.hpp
+ * @brief Abstract base for a riser/mooring analysis run (system assembly, equation numbering, solve loop).
+ */
 #ifndef RISERSIM_ANALYSIS_HPP
 #define RISERSIM_ANALYSIS_HPP
 
@@ -14,21 +18,26 @@
 
 namespace risersim {
 
+/**
+ * @brief Owns a model plus its environment (seabed, current) and drives one analysis run, mirroring ANFLEX's `cAnflexAnalysis`.
+ *
+ * StaticAnalysis and DynamicAnalysis are the concrete implementations of solve().
+ */
 class Analysis {
 public:
     RiserModel* model;
     SeabedInteraction seabed;
     CurrentProfile current;
     bool enable_current;
-    double water_density;           // Para empuxo no F_ext (0 quando rho já embute peso submerso)
-    double water_density_for_mass;  // Para massa adicionada na M e drag (sempre 1025.0)
+    double water_density;           ///< Buoyancy contribution to F_ext (0 when rho already embeds submerged weight).
+    double water_density_for_mass;  ///< Added mass in M and drag loading (always 1025.0).
     int num_dofs;
 
     std::vector<StepSnapshot> history;
 
-    // Backend do solver linear (Passo 1 do roadmap de modernização) — default
-    // Eigen::SparseLU via EigenSparseLUSolver, trocável por outro backend
-    // (ex.: MKL/Pardiso) sem alterar o código que consome esta interface.
+    /**
+     * @brief Linear solver backend (see linear_solver.hpp), swappable without touching code that consumes this interface.
+     */
     std::unique_ptr<LinearSolver> linear_solver;
 
     Analysis()
@@ -37,12 +46,14 @@ public:
           linear_solver(std::make_unique<EigenSimplicialLDLTSolver>()) {}
     virtual ~Analysis() = default;
 
-    // Numera os GDLs seguindo a ordem RCM (Reverse Cuthill-McKee), não a
-    // ordem de model->nodes -- reduz a banda da matriz de rigidez global,
-    // fiel ao ANFLEX real (model_builder_dat.cpp: reorderer default =
-    // "reverse_cuthill_mckee", aplicado antes da montagem independente do
-    // solver escolhido). Só afeta a numeração das equações -- model->nodes
-    // continua na ordem original para tudo mais (saída, iteração, etc.).
+    /**
+     * @brief Numbers global DOF equations following Reverse Cuthill-McKee (RCM) order, not `model->nodes` order.
+     *
+     * Reduces the bandwidth of the assembled global stiffness matrix, mirroring ANFLEX's real
+     * default (`model_builder_dat.cpp`: reorderer default = `"reverse_cuthill_mckee"`, applied
+     * before assembly regardless of the chosen solver). Only affects equation numbering --
+     * `model->nodes` stays in its original order for everything else (output, iteration, etc.).
+     */
     virtual void assign_equation_numbers() {
         num_dofs = 0;
         if (!model) return;
@@ -56,9 +67,15 @@ public:
         }
     }
 
+    /**
+     * @brief Assembles the global tangent stiffness, external load, and internal force vectors for the model's current state.
+     * @param[out] K_global Global tangent stiffness matrix.
+     * @param F_ext External load vector (weight, buoyancy, current drag, prescribed motions).
+     * @param[out] F_int Global internal (resisting) force vector.
+     */
     virtual void assemble_system(Eigen::SparseMatrix<double>& K_global, const Eigen::VectorXd& F_ext, Eigen::VectorXd& F_int);
 
-    // Uniform polymorphic solve method
+    /** @brief Runs this analysis to completion. @return true on convergence/success. */
     virtual bool solve() = 0;
 };
 

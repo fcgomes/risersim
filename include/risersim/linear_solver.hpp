@@ -1,3 +1,11 @@
+/**
+ * @file linear_solver.hpp
+ * @brief Pluggable direct linear solver backend, mirroring ANFLEX's `cLinearSolver`/`cLinearSOE`.
+ *
+ * Extracts the direct use of `Eigen::SparseLU` behind a pluggable interface. Eigen remains the
+ * default backend (open, no dependency on Intel hardware); an optional MKL/Pardiso backend could
+ * be added later behind this same interface without touching callers.
+ */
 #ifndef RISERSIM_LINEAR_SOLVER_HPP
 #define RISERSIM_LINEAR_SOLVER_HPP
 
@@ -5,33 +13,37 @@
 
 namespace risersim {
 
-// Passo 1 do roadmap de modernizacao (risersim/docs/mapa_classes_anflex_estatica.md):
-// extrai o uso direto de Eigen::SparseLU para uma interface plugavel, espelhando
-// cLinearSolver/cLinearSOE do ANFLEX real. Eigen continua sendo o backend padrao
-// (aberto, sem dependencia de hardware Intel); um backend MKL/Pardiso opcional
-// pode ser adicionado depois atras desta mesma interface, sem tocar quem a usa.
+/** @brief Outcome of a LinearSolver::solve() call. */
 enum class LinearSolverStatus {
     Success,
     DecompositionFailed,
     SolveFailed
 };
 
+/** @brief Abstract interface for solving `K * x = b` for the global tangent system. */
 class LinearSolver {
 public:
     virtual ~LinearSolver() = default;
 
-    // Resolve K * x = b. Preenche x e retorna o status; nao imprime nada --
-    // quem chama decide a mensagem/contexto (ex.: "no passo N").
+    /**
+     * @brief Solves `K * x = b`.
+     * @param K Sparse system matrix.
+     * @param b Right-hand side.
+     * @param[out] x Solution vector.
+     * @return Status; callers decide how to log/react (e.g. "at step N") -- this function prints nothing.
+     */
     virtual LinearSolverStatus solve(const Eigen::SparseMatrix<double>& K,
                                       const Eigen::VectorXd& b,
                                       Eigen::VectorXd& x) = 0;
 };
 
-// LU geral (nao-simetrico) com pivoteamento parcial -- funciona para
-// qualquer matriz, inclusive indefinida, sem exigir cuidado extra. Nao e mais
-// o default (ver EigenSimplicialLDLTSolver), mas fica disponivel como opcao
-// robusta caso a matriz fique genuinamente indefinida em algum cenario onde
-// o LDLT falhe.
+/**
+ * @brief General (non-symmetric) sparse LU with partial pivoting.
+ *
+ * Works for any matrix, including indefinite ones, with no extra care required. No longer the
+ * default (see EigenSimplicialLDLTSolver), but kept available as a robust fallback in case the
+ * system matrix becomes genuinely indefinite in some scenario where LDLT fails.
+ */
 class EigenSparseLUSolver : public LinearSolver {
 public:
     LinearSolverStatus solve(const Eigen::SparseMatrix<double>& K,
@@ -39,20 +51,22 @@ public:
                               Eigen::VectorXd& x) override;
 };
 
-// Default: explora a simetria de K_global via decomposicao LDL^T
-// (Eigen::SimplicialLDLT), igual ao que os tres backends do ANFLEX real fazem
-// (Skyline/MKL/Pardiso sao todos simetricos) -- cerca de metade do custo de
-// memoria/tempo do LU geral. K_global e sempre montada simetricamente
-// (analysis.cpp), mas pode ser INDEFINIDA durante a iteracao nao-linear
-// (rigidez geometrica em compressao, regiao de contato); SimplicialLDLT do
-// Eigen NAO faz pivoteamento numerico para isso (diferente do Pardiso real,
-// que usa mtype=-2 "simetrico indefinido" com escalonamento/permutacao MPS
-// especificamente por causa disso). Testado contra toda a bateria de
-// regressao (risersim/docs/mapa_classes_anflex_estatica.md): converge nos
-// mesmos casos que EigenSparseLUSolver, com o mesmo resultado numerico, e nao
-// falha de forma diferente nos casos ja problematicos (solo+corrente) -- se
-// isso mudar no futuro (ex.: modelos maiores/mais indefinidos), trocar para
-// EigenSparseLUSolver e a alternativa segura.
+/**
+ * @brief Default solver: exploits the symmetry of K_global via LDL^T decomposition (`Eigen::SimplicialLDLT`).
+ *
+ * Matches what all three ANFLEX backends do (Skyline/MKL/Pardiso are all symmetric solvers) --
+ * roughly half the memory/time cost of general LU. `K_global` is always assembled symmetrically
+ * (see `analysis.cpp`), but can become **indefinite** during nonlinear iteration (geometric
+ * stiffness in compression, contact regions); Eigen's `SimplicialLDLT` does *not* perform
+ * numerical pivoting for that (unlike real Pardiso, which uses `mtype=-2` "symmetric indefinite"
+ * with MPS scaling/permutation specifically because of this).
+ *
+ * Validated against the full regression battery (`docs/mapa_classes_anflex_estatica.md`):
+ * converges on the same cases as EigenSparseLUSolver, with the same numerical result, and does
+ * not fail differently on the already-problematic cases (seabed + current). If that changes in
+ * the future (e.g. larger/more indefinite models), switching back to EigenSparseLUSolver is the
+ * safe alternative.
+ */
 class EigenSimplicialLDLTSolver : public LinearSolver {
 public:
     LinearSolverStatus solve(const Eigen::SparseMatrix<double>& K,

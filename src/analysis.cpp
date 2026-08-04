@@ -1,3 +1,7 @@
+/**
+ * @file analysis.cpp
+ * @brief Analysis::assemble_system(): assembles the global tangent stiffness, internal force, and seabed contact/friction contributions.
+ */
 #include "risersim/analysis.hpp"
 #include <unordered_map>
 
@@ -12,10 +16,10 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
 
     if (!model) return;
 
-    // Tangente media por no (soma das direcoes de corda atual dos elementos
-    // adjacentes), usada abaixo para decompor o atrito do solo nas direcoes
-    // axial/lateral LOCAIS da linha -- fiel ao ANFLEX real
-    // (soil.cpp:calc_transf_matrix) -- em vez de X/Y globais.
+    // Average tangent per node (sum of adjacent elements' current chord directions),
+    // used below to decompose seabed friction into the line's LOCAL axial/lateral
+    // directions -- mirroring real ANFLEX (soil.cpp:calc_transf_matrix) -- instead
+    // of global X/Y.
     std::unordered_map<Node3D*, Eigen::Vector3d> node_tangent_sum;
     for (auto* elem : model->elements) {
         Eigen::Vector3d ex = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
@@ -26,9 +30,9 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     for (auto* elem : model->elements) {
         elem->update_effective_tension();
 
-        // Rigidez e forca interna a partir do estado corrotacional consistente
-        // (rotacao LOCAL/deformacional de cada no relativa ao ghost frame do
-        // elemento -- nao a rotacao total acumulada desde t=0). Ver
+        // Stiffness and internal force from the consistent corotational state (each
+        // node's LOCAL/deformational rotation relative to the element's ghost frame --
+        // not the total rotation accumulated since t=0). See
         // compute_corotational_forces() / mapa_classes_anflex_estatica.md.
         Eigen::Matrix<double, 12, 12> K_elem;
         Eigen::Matrix<double, 12, 1> F_int_elem;
@@ -66,17 +70,16 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             triplets.push_back(Eigen::Triplet<double>(eq_z, eq_z, k_seabed));
         }
 
-        // Molas de atrito nas direções axial (ao longo da linha) e lateral
-        // (perpendicular, no plano horizontal) LOCAIS -- fiel ao ANFLEX real
-        // (soil.cpp:calc_transf_matrix: Y_lateral = normal×tangente,
-        // X_axial = Y_lateral×normal). Sem isso (usar X/Y globais direto),
-        // a direção "lateral" real -- a que resiste à carga perpendicular à
-        // linha, ex. de corrente marítima -- fica arbitrariamente misturada
-        // com a axial sempre que a linha não está alinhada aos eixos globais,
-        // quase sempre o caso (ver mapa_classes_anflex_estatica.md).
-        // node->friction_force[0]/[1] guardam o estado persistente das
-        // componentes axial/lateral (elástico-plástico incremental, ver
-        // seabed.hpp:calculate_friction_1d).
+        // Friction springs along the LOCAL axial (along the line) and lateral
+        // (perpendicular, horizontal plane) directions -- mirroring real ANFLEX
+        // (soil.cpp:calc_transf_matrix: Y_lateral = normal x tangent,
+        // X_axial = Y_lateral x normal). Without this (using global X/Y directly),
+        // the real "lateral" direction -- the one that resists load perpendicular to
+        // the line, e.g. from ocean current -- gets arbitrarily mixed with the axial
+        // one whenever the line isn't aligned with the global axes, which is almost
+        // always the case (see mapa_classes_anflex_estatica.md).
+        // node->friction_force[0]/[1] hold the persistent state of the axial/lateral
+        // components (incremental elastic-plastic, see seabed.hpp:calculate_friction_1d).
         if (k_seabed > 0.0) {
             Eigen::Vector3d axial_dir(1.0, 0.0, 0.0), lateral_dir(0.0, 1.0, 0.0);
             auto it = node_tangent_sum.find(node);
@@ -101,9 +104,9 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             double f_global_x = node->friction_force[0] * axial_dir.x() + node->friction_force[1] * lateral_dir.x();
             double f_global_y = node->friction_force[0] * axial_dir.y() + node->friction_force[1] * lateral_dir.y();
 
-            // Rigidez tangente completa (2x2), transformada de volta para X/Y
-            // globais -- inclui o termo cruzado XY, necessario porque a
-            // direção axial/lateral raramente coincide com X/Y.
+            // Full tangent stiffness (2x2), transformed back to global X/Y --
+            // includes the cross XY term, needed because the axial/lateral
+            // direction rarely coincides with X/Y.
             double k_xx = k_ax * axial_dir.x() * axial_dir.x() + k_lat * lateral_dir.x() * lateral_dir.x();
             double k_yy = k_ax * axial_dir.y() * axial_dir.y() + k_lat * lateral_dir.y() * lateral_dir.y();
             double k_xy = k_ax * axial_dir.x() * axial_dir.y() + k_lat * lateral_dir.x() * lateral_dir.y();
@@ -123,8 +126,8 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
                 triplets.push_back(Eigen::Triplet<double>(eq_y, eq_x, k_xy));
             }
         } else {
-            // Contato perdido: zera o estado de atrito, igual ao ANFLEX real
-            // (soil_uncoupled.cpp:update, ramo "else" quando pen<=0).
+            // Contact lost: reset friction state, mirroring real ANFLEX
+            // (soil_uncoupled.cpp:update, "else" branch when pen<=0).
             node->friction_force.setZero();
         }
     }

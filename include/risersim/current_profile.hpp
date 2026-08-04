@@ -1,3 +1,7 @@
+/**
+ * @file current_profile.hpp
+ * @brief Steady ocean current profile (power-law velocity with depth) and static drag load.
+ */
 #ifndef RISERSIM_CURRENT_PROFILE_HPP
 #define RISERSIM_CURRENT_PROFILE_HPP
 
@@ -7,18 +11,25 @@
 
 namespace risersim {
 
+/**
+ * @brief Power-law current velocity profile and per-length steady drag force.
+ */
 class CurrentProfile {
 public:
-    double v_surface;     // Current velocity at sea surface z=0 (m/s)
-    double seabed_depth;  // Seabed depth z_seabed (m, e.g. -80.0)
-    double heading_deg;   // Current direction in degrees (0 = +X, 90 = +Y)
-    double power_exponent;// Power law exponent alpha (default 1/7 = 0.1428)
-    double Cd;            // Drag coefficient (default 1.0)
+    double v_surface;     ///< Current velocity at sea surface z=0 (m/s).
+    double seabed_depth;  ///< Seabed depth z_seabed (m, e.g. -80.0).
+    double heading_deg;   ///< Current direction in degrees (0 = +X, 90 = +Y).
+    double power_exponent;///< Power law exponent alpha (default 1/7 = 0.1428).
+    double Cd;            ///< Drag coefficient (default 1.0).
 
     CurrentProfile(double v_surf = 1.5, double seabed_z = -80.0, double heading = 90.0, double alpha = 0.1428, double cd = 1.0)
         : v_surface(v_surf), seabed_depth(seabed_z), heading_deg(heading), power_exponent(alpha), Cd(cd) {}
 
-    // Calculate current velocity magnitude at depth z (m/s)
+    /**
+     * @brief Current velocity magnitude at depth z, via power-law interpolation between seabed (0) and surface.
+     * @param z Elevation (m), 0 at the surface, negative below it.
+     * @return Velocity magnitude (m/s); `v_surface` at/above z=0, 0 at/below `seabed_depth`.
+     */
     double get_velocity(double z) const {
         if (z >= 0.0) return v_surface;
         if (z <= seabed_depth) return 0.0;
@@ -33,7 +44,14 @@ public:
         return v_surface * std::pow(ratio, power_exponent);
     }
 
-    // Calculate static drag force vector per meter at depth z (N/m)
+    /**
+     * @brief Static (quadratic) drag force per unit length at depth z, resolved into X/Y by `heading_deg`.
+     * @param z Elevation (m).
+     * @param D_outer Outer diameter used for the projected area (m).
+     * @param rho_water Seawater density (kg/m^3).
+     * @param[out] F_drag_x Drag force per meter along X (N/m).
+     * @param[out] F_drag_y Drag force per meter along Y (N/m).
+     */
     void get_drag_force_per_meter(double z, double D_outer, double rho_water, double& F_drag_x, double& F_drag_y) const {
         double v = get_velocity(z);
         double f_mag = 0.5 * rho_water * Cd * D_outer * v * v;

@@ -1,3 +1,7 @@
+/**
+ * @file rcm_reorder.hpp
+ * @brief Reverse Cuthill-McKee bandwidth-reduction reordering for equation numbering.
+ */
 #ifndef RISERSIM_RCM_REORDER_HPP
 #define RISERSIM_RCM_REORDER_HPP
 
@@ -9,16 +13,25 @@
 
 namespace risersim {
 
-// Reverse Cuthill-McKee (RCM): reduz a banda da matriz de conectividade,
-// fiel ao ANFLEX real (cuthill_mckee_reorderer.cpp -- lá via Boost Graph
-// Library; aqui uma implementação direta, sem dependências externas, para
-// não trazer o Boost só por causa disso). O ANFLEX aplica isso por padrão
-// (model_builder_dat.cpp: reorderer default = "reverse_cuthill_mckee") antes
-// de montar o sistema, independente do solver escolhido depois.
-//
-// Retorna a ORDEM em que os nós de model.nodes devem ser processados para
-// numerar os graus de liberdade (não reordena model.nodes em si -- só
-// devolve os índices na ordem RCM, para uso em assign_equation_numbers()).
+/**
+ * @brief Computes a Reverse Cuthill-McKee (RCM) node visiting order to reduce the bandwidth of the assembled system matrix.
+ *
+ * Mirrors ANFLEX's real default (`cuthill_mckee_reorderer.cpp`, via the Boost Graph Library
+ * there; here a direct, dependency-free implementation, to avoid pulling in Boost just for
+ * this). ANFLEX applies this by default (`model_builder_dat.cpp`: reorderer default =
+ * `"reverse_cuthill_mckee"`) before assembling the system, independent of the chosen solver
+ * backend.
+ *
+ * Starting nodes are chosen from lowest to highest degree (a cheap approximation of a
+ * peripheral node, without a full pseudo-peripheral algorithm such as George-Liu) -- sufficient
+ * for the typically near-1D topology of riser/mooring lines. Neighbors are enqueued in ascending
+ * degree order within each BFS level. The resulting Cuthill-McKee order is reversed to get RCM.
+ *
+ * @param model The model whose node connectivity (via `model.elements`) defines the graph.
+ * @return The order in which `model.nodes` should be processed to number DOFs (indices into
+ *         `model.nodes`; does *not* reorder `model.nodes` itself). Intended for
+ *         Analysis::assign_equation_numbers().
+ */
 inline std::vector<int> compute_rcm_order(const RiserModel& model) {
     int n = static_cast<int>(model.nodes.size());
     std::vector<int> order;
@@ -43,10 +56,9 @@ inline std::vector<int> compute_rcm_order(const RiserModel& model) {
         neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
     }
 
-    // Candidatos a ponto de partida, do menor grau para o maior -- aproxima
-    // um nó "periférico" sem um algoritmo pseudo-periférico completo (ex.:
-    // George-Liu), suficiente para a topologia tipicamente quase-1D de
-    // linhas de ancoragem/risers.
+    // Starting-node candidates, from lowest to highest degree -- approximates a "peripheral"
+    // node without a full pseudo-peripheral algorithm (e.g. George-Liu), sufficient for the
+    // typically near-1D topology of riser/mooring lines.
     std::vector<int> by_degree(n);
     for (int i = 0; i < n; ++i) by_degree[i] = i;
     std::sort(by_degree.begin(), by_degree.end(),

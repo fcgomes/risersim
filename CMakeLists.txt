@@ -153,3 +153,18 @@ enable_testing()
 include(${catch2_SOURCE_DIR}/extras/Catch.cmake)
 catch_discover_tests(risersim_tests)
 
+# Doxygen API documentation (optional -- only registered if Doxygen is
+# installed on the host/build image). Reads Doxyfile at the source root;
+# output goes to docs/doxygen/html/index.html.
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating Doxygen API documentation"
+        VERBATIM
+    )
+else()
+    message(STATUS "Doxygen not found -- 'docs' target unavailable (see risersim/Doxyfile)")
+endif()
+

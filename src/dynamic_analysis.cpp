@@ -1,3 +1,7 @@
+/**
+ * @file dynamic_analysis.cpp
+ * @brief DynamicAnalysis: time-domain Newmark-beta integration with per-step Newton-Raphson.
+ */
 #include "risersim/dynamic_analysis.hpp"
 #include "risersim/rotation_utils.hpp"
 #include <iostream>
@@ -89,7 +93,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     int eq = node->eq_numbers[k];
                     if (eq >= 0) {
                         double new_disp_k = static_disps[i][k] + U_curr[eq];
-                        // Incremento desta iteracao (para a mola de atrito do solo).
+                        // This iteration's increment (for the seabed friction spring).
                         if (k < 2) node->delta_disp_xy[k] = new_disp_k - node->disp[k];
                         node->disp[k] = new_disp_k;
                     }
@@ -97,8 +101,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     int eq_rot = node->eq_numbers[k + 3];
                     if (eq_rot >= 0) { dyn_rot_perturbation[k] = U_curr[eq_rot]; has_rot_dof = true; }
                 }
-                // Composição própria da perturbação dinâmica sobre a rotação
-                // estática de base (não soma linear). Ver rotation_utils.hpp.
+                // Proper composition of the dynamic perturbation on top of the static base
+                // rotation (not a linear sum). See rotation_utils.hpp.
                 if (has_rot_dof) node->rot = compose_rotations(static_rots[i], dyn_rot_perturbation);
             }
 
@@ -185,7 +189,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 break;
             }
 
-            // Check de divergência: se resíduo cresceu significativamente, limitar correção
+            // Divergence check: if the residual grew significantly, bail out of this step's correction
             if (iter > 0 && res_norm > 10.0 * res_norm_prev) {
                 std::cerr << "  ⚠️ Dynamic NR divergence at step " << step
                           << " iter " << iter << " (res=" << res_norm << " > 10x prev=" << res_norm_prev << ")" << std::endl;

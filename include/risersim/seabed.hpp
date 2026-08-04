@@ -1,3 +1,7 @@
+/**
+ * @file seabed.hpp
+ * @brief Seabed vertical reaction and Coulomb friction models, modeled after ANFLEX's `soil.cpp`/`soil_uncoupled.cpp`.
+ */
 #ifndef RISERSIM_SEABED_HPP
 #define RISERSIM_SEABED_HPP
 
@@ -6,21 +10,27 @@
 
 namespace risersim {
 
+/**
+ * @brief Vertical (normal) reaction and axial/lateral Coulomb friction at the seabed.
+ */
 class SeabedInteraction {
 public:
-    double seabed_depth;   // Z coordinate of the seabed (e.g. -100.0 m)
-    double stiffness_z;    // Vertical soil stiffness (N/m^2 or N/m per node, default 1e5)
-    double friction_coeff; // Lateral/axial friction coefficient mu (default 0.5)
-    double elastic_deflection_limit; // Deslocamento que mobiliza o atrito limite (m)
-    double ultimate_bearing_force;   // Capacidade de suporte última do solo por nó (N)
+    double seabed_depth;   ///< Z coordinate of the seabed (e.g. -100.0 m).
+    double stiffness_z;    ///< Initial vertical soil stiffness k_inicial (N/m per node, default 1e5).
+    double friction_coeff; ///< Default/fallback friction coefficient mu (used if axial/lateral aren't overridden).
+    double elastic_deflection_limit; ///< Default/fallback displacement (m) that mobilizes the friction limit.
+    double ultimate_bearing_force;   ///< Ultimate vertical bearing capacity per node f_ultima (N).
 
-    // Direções axial (ao longo da linha) e lateral (perpendicular, no plano
-    // horizontal) distintas, fiel ao ANFLEX real (soil.h: m_axial_friction/
-    // m_lateral_friction, m_axial_elastic_deflection_limit/
-    // m_lateral_elastic_deflection_limit -- ex.: Exemplo_01a_A1.xml tem
-    // axial=0.92/0.03m vs lateral=0.95/0.279m, bem diferentes). Por padrão
-    // iguais a friction_coeff/elastic_deflection_limit; o chamador pode
-    // sobrescrever com os valores reais do modelo.
+    /**
+     * @brief Direction-specific friction coefficients and elastic deflection limits.
+     *
+     * Axial (along the line) and lateral (perpendicular, horizontal plane) are kept distinct,
+     * mirroring ANFLEX's `soil.h` (`m_axial_friction`/`m_lateral_friction`,
+     * `m_axial_elastic_deflection_limit`/`m_lateral_elastic_deflection_limit`). Real models can
+     * have very different values per direction -- e.g. `Exemplo_01a_A1.xml` uses axial =
+     * 0.92/0.03 m vs. lateral = 0.95/0.279 m. Default to `friction_coeff`/`elastic_deflection_limit`;
+     * the caller may overwrite them with a model's real values.
+     */
     double axial_friction;
     double lateral_friction;
     double axial_elastic_deflection_limit;
@@ -31,14 +41,21 @@ public:
           axial_friction(mu), lateral_friction(mu),
           axial_elastic_deflection_limit(u_limit), lateral_elastic_deflection_limit(u_limit) {}
 
-    // Calculate normal reaction force and stiffness contribution for a node.
-    // Modelo hiperbólico não-linear (mesma forma funcional das curvas P-Y/T-Z reais de
-    // geotecnia offshore): f(pen) = pen / (1/k_inicial + pen/f_ultima). A rigidez tangente
-    // começa em k_inicial=stiffness_z (suave) e satura assintoticamente em f_ultima à medida
-    // que a penetração cresce — em vez de um salto abrupto para a rigidez linear total assim
-    // que pen>0, o que causava "chattering"/mal-condicionamento com muitos nós entrando em
-    // contato quase simultaneamente (comum quando o leito marinho já toca boa parte da malha
-    // na configuração inicial).
+    /**
+     * @brief Computes the normal (vertical) seabed reaction force and its tangent stiffness.
+     *
+     * Nonlinear hyperbolic model, the same functional form used by real offshore geotechnical
+     * P-Y/T-Z curves: `f(pen) = pen / (1/k_inicial + pen/f_ultima)`. Tangent stiffness starts at
+     * `k_inicial = stiffness_z` (soft) and saturates asymptotically toward `f_ultima` as
+     * penetration grows -- instead of an abrupt jump to full linear stiffness the instant
+     * `pen > 0`, which caused contact "chattering"/ill-conditioning when many nodes touch down
+     * nearly simultaneously (common when the seabed already intersects much of the mesh in the
+     * initial configuration).
+     *
+     * @param z_current Current Z coordinate of the node.
+     * @param[out] f_normal Normal reaction force (0 if not penetrating).
+     * @param[out] k_normal Tangent stiffness df/dpen (0 if not penetrating).
+     */
     void calculate_seabed_reaction(double z_current, double& f_normal, double& k_normal) const {
         double pen = seabed_depth - z_current; // > 0 quando penetrando
         if (pen <= 0.0) {
@@ -53,22 +70,33 @@ public:
         k_normal = a / (denom * denom); // df/dpen
     }
 
-    // Mola de atrito de Coulomb elástico-plástica (1D) INCREMENTAL, fiel ao
-    // ANFLEX real (soil_uncoupled.cpp: calc_unidimensional_friction): regime
-    // elástico linear k = mu*|Fn|/u_limite, mas a força é acumulada
-    // incrementalmente a partir do estado persistente da iteração anterior
-    // (f_state, entra e sai por referência -- equivalente a m_forces[0]/[1]
-    // do ANFLEX) usando o incremento de deslocamento DESTA iteração (du,
-    // equivalente a get_delta_dx()) -- não o deslocamento total acumulado.
-    // Usar o total (versão anterior deste método) faz a força saturar
-    // permanentemente assim que o deslocamento total desde t=0 excede o
-    // limite elástico, mesmo que o nó não esteja de fato deslizando agora --
-    // fisicamente errado e uma causa real do "chattering" de contato
-    // encontrado ao combinar solo+corrente (ver mapa_classes_anflex_estatica.md).
-    // Quando o contato é perdido (f_normal=0), o chamador deve zerar f_state.
-    // mu/u_limit são passados explicitamente (em vez de usar friction_coeff/
-    // elastic_deflection_limit direto) para permitir chamar esta função uma
-    // vez para a direção axial e outra para a lateral, com valores distintos.
+    /**
+     * @brief Incremental elastic-plastic 1D Coulomb friction spring.
+     *
+     * Mirrors ANFLEX's real model (`soil_uncoupled.cpp::calc_unidimensional_friction`): linear
+     * elastic regime with `k = mu*|Fn|/u_limit`, but the force is accumulated incrementally from
+     * the persistent state carried over from the previous iteration (`f_state`, in/out --
+     * equivalent to ANFLEX's `m_forces[0]`/`m_forces[1]`) using *this iteration's* displacement
+     * increment (`du`, equivalent to `get_delta_dx()`) -- not the total accumulated displacement.
+     *
+     * Using the total displacement (an earlier version of this method) makes the force saturate
+     * permanently once the total displacement since t=0 exceeds the elastic limit, even if the
+     * node isn't actually slipping right now -- physically wrong, and a real cause of the contact
+     * "chattering" found when combining seabed + current loading (see
+     * `docs/mapa_classes_anflex_estatica.md`).
+     *
+     * When contact is lost (`f_normal == 0`), the caller must reset `f_state` to zero.
+     * `mu`/`u_limit` are passed explicitly (rather than reading `friction_coeff`/
+     * `elastic_deflection_limit` directly) so this function can be called once for the axial
+     * direction and once for the lateral direction, with distinct values each time.
+     *
+     * @param mu Friction coefficient for this direction (axial_friction or lateral_friction).
+     * @param u_limit Elastic deflection limit for this direction.
+     * @param f_normal Current normal reaction force (defines the plastic cap `mu*|f_normal|`).
+     * @param du This iteration's displacement increment along this direction.
+     * @param[in,out] f_state Persistent friction force state for this direction.
+     * @param[out] k_friction Tangent stiffness (0 once the plastic cap is reached).
+     */
     void calculate_friction_1d(double mu, double u_limit, double f_normal, double du, double& f_state, double& k_friction) const {
         double fl = mu * std::fabs(f_normal);
         if (fl < 1.0e-9 || u_limit < 1.0e-9) {

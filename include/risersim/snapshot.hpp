@@ -1,3 +1,7 @@
+/**
+ * @file snapshot.hpp
+ * @brief Per-step result snapshot recorded into Analysis::history.
+ */
 #ifndef RISERSIM_SNAPSHOT_HPP
 #define RISERSIM_SNAPSHOT_HPP
 
@@ -6,6 +10,7 @@
 
 namespace risersim {
 
+/** @brief A single converged analysis step's results, recorded for post-processing/export. */
 struct StepSnapshot {
     int step_index;
     double load_factor;

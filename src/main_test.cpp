@@ -1,3 +1,7 @@
+/**
+ * @file main_test.cpp
+ * @brief Standalone CLI entry point: loads a structured model JSON (or a synthetic fallback), runs static + dynamic analysis, and exports results.
+ */
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -69,7 +73,7 @@ int main(int argc, char* argv[]) {
     double dyn_wave_gamma = 3.3;
     std::string dyn_wave_type = "regular";
 
-    // Carrega JSON estruturado se fornecido
+    // Load a structured JSON model, if one was provided
     auto* model = new risersim::RiserModel();
     bool parsed_from_json = false;
 
@@ -79,9 +83,9 @@ int main(int argc, char* argv[]) {
             try {
                 json j;
                 ifs >> j;
-                std::cout << "📄 Carregando configuração estruturada de entrada: " << input_json_path << std::endl;
+                std::cout << "Loading structured input configuration: " << input_json_path << std::endl;
 
-                // 1. Carrega Nós
+                // 1. Load nodes
                 if (j.contains("model") && j["model"].contains("nodes")) {
                     auto nodes_json = j["model"]["nodes"];
                     for (auto& n_j : nodes_json) {
@@ -91,7 +95,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // 2. Carrega Elementos
+                // 2. Load elements
                 if (j.contains("model") && j["model"].contains("elements") && !model->nodes.empty()) {
                     auto elems_json = j["model"]["elements"];
                     for (auto& e_j : elems_json) {
@@ -110,18 +114,18 @@ int main(int argc, char* argv[]) {
                             elem_props.Ca = sp.value("Ca", elem_props.Ca);
                             elem_props.EI = sp.value("EI", 21700.0);
 
-                            // Mapeia densidade baseada diretamente no peso submerso real do XML para consistência física pura
-                            double weight_wet_N = 439.5; // Default de 0.4395 kN/m em Newtons
+                            // Maps density directly from the XML's real submerged weight, for pure physical consistency
+                            double weight_wet_N = 439.5; // Default of 0.4395 kN/m in Newtons
                             if (sp.contains("weight_wet_kNm")) {
                                 weight_wet_N = sp.value("weight_wet_kNm", 0.4395) * 1000.0;
                             } else if (sp.contains("rho") && sp.contains("A")) {
                                 weight_wet_N = sp.value("rho", elem_props.rho) * sp.value("A", elem_props.A) * 9.81;
                             }
-                            
-                            elem_props.rho = (weight_wet_N / 9.81) / (elem_props.A > 0.0 ? elem_props.A : 0.0282);
-                            elem_props.rho_fluid = 0.0; // Peso líquido já embutido no peso submerso
 
-                            // Define IY e IZ efetivos a partir da rigidez fletora real EI do AML
+                            elem_props.rho = (weight_wet_N / 9.81) / (elem_props.A > 0.0 ? elem_props.A : 0.0282);
+                            elem_props.rho_fluid = 0.0; // Net weight already embedded in the submerged weight
+
+                            // Derives effective IY/IZ from the AML's real bending stiffness EI
                             double I_eff = elem_props.EI / elem_props.E;
                             elem_props.IY = I_eff;
                             elem_props.IZ = I_eff;
@@ -138,7 +142,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // 3. Condições de Contorno
+                // 3. Boundary conditions
                 std::vector<bool> is_constrained(model->nodes.size(), false);
                 if (j.contains("boundary_conditions")) {
                     auto bc = j["boundary_conditions"];
@@ -165,20 +169,20 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Configura DOFs para nós livres (intermediários)
-                // Node3D já inicializa eq_numbers com 6 entradas (nunca vazio), então
-                // a liberdade dos DOFs precisa ser rastreada via is_constrained, não via .empty()
+                // Sets DOFs for free (intermediate) nodes.
+                // Node3D always initializes eq_numbers with 6 entries (never empty), so DOF
+                // freedom must be tracked via is_constrained, not via .empty()
                 for (size_t i = 0; i < model->nodes.size(); ++i) {
                     if (!is_constrained[i]) {
-                        model->nodes[i]->eq_numbers = {0, 1, 2, 3, 4, 5}; // Translações e rotações livres
+                        model->nodes[i]->eq_numbers = {0, 1, 2, 3, 4, 5}; // Free translations and rotations
                     }
                 }
 
-                // 3.5. Warm Start (geometria de equilíbrio calculada externamente,
-                // ex.: MoorPy via risersim/tools/moorpy_warm_start.py) --
-                // opcional; sem essa seção, comportamento idêntico ao atual.
-                // Ajusta apenas `disp` (nunca `coords`), preservando o
-                // comprimento não-esticado de cada elemento calculado acima.
+                // 3.5. Warm start (equilibrium geometry computed externally,
+                // e.g. MoorPy via risersim/tools/moorpy_warm_start.py) --
+                // optional; without this section, behavior is unchanged.
+                // Only adjusts `disp` (never `coords`), preserving each
+                // element's unstretched length computed above.
                 if (j.contains("warm_start") && j["warm_start"].contains("node_positions")) {
                     std::map<int, risersim::Node3D*> node_by_id;
                     for (auto* node : model->nodes) node_by_id[node->id] = node;
@@ -194,11 +198,11 @@ int main(int argc, char* argv[]) {
                             warm_applied++;
                         }
                     }
-                    std::cout << "🔥 Warm start aplicado: " << warm_applied << " nós (fonte: "
+                    std::cout << "Warm start applied: " << warm_applied << " nodes (source: "
                               << j["warm_start"].value("source", "?") << ")" << std::endl;
                 }
 
-                // 4. Parâmetros Ambientais
+                // 4. Environmental parameters
                 if (j.contains("environmental")) {
                     auto env = j["environmental"];
                     if (env.contains("seabed")) {
@@ -206,14 +210,14 @@ int main(int argc, char* argv[]) {
                         seabed_stiffness = sb.value("stiffness_Nm", seabed_stiffness);
                         seabed_friction = sb.value("friction_coeff", seabed_friction);
                     }
-                    
-                    // Alinha o seabed com o Z mínimo real dos nós lidos do H5
+
+                    // Aligns the seabed with the real minimum Z of the nodes read from the H5
                     double min_z = 1e9;
                     for (auto* node : model->nodes) {
                         if (node->coords.z() < min_z) min_z = node->coords.z();
                     }
                     total_depth_z = min_z;
-                    std::cout << "⚓ Seabed posicionado no Z real dos nós: " << total_depth_z << " m" << std::endl;
+                    std::cout << "Seabed positioned at the nodes' real Z: " << total_depth_z << " m" << std::endl;
                     if (env.contains("current")) {
                         auto curr = env["current"];
                         auto vels = curr.value("velocities_ms", std::vector<double>{});
@@ -234,7 +238,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // 5. Parâmetros de Solver (Static / Dynamic Options)
+                // 5. Solver parameters (static / dynamic options)
                 if (j.contains("analysis_options")) {
                     auto opts = j["analysis_options"];
                     if (opts.contains("static")) {
@@ -279,14 +283,14 @@ int main(int argc, char* argv[]) {
                 parsed_from_json = true;
 
             } catch (const std::exception& e) {
-                std::cerr << "⚠️ Erro ao parsear JSON estruturado: " << e.what() << ". Revertendo para fallback padrão." << std::endl;
+                std::cerr << "Error parsing structured JSON: " << e.what() << ". Falling back to the default synthetic model." << std::endl;
             }
         }
     }
 
-    // Se não carregou do JSON, cria a geometria catenária analítica fictícia de teste (fallback)
+    // If nothing was loaded from JSON, build a synthetic analytical catenary test geometry (fallback)
     if (!parsed_from_json) {
-        std::cout << "ℹ️ Gerando geometria parabólica padrão de testes..." << std::endl;
+        std::cout << "Generating default parabolic test geometry..." << std::endl;
         const int num_nodes = num_elements + 1;
         double h_water = std::abs(total_depth_z); // 265.0 m
         double L_total = total_length;            // 500.0 m
@@ -325,11 +329,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Configuração Estática
+    // Static configuration
     risersim::StaticAnalysis static_analysis;
     static_analysis.model = model;
     static_analysis.water_density = parsed_from_json ? 0.0 : water_density;
-    static_analysis.water_density_for_mass = 1025.0;  // Sempre real para massa adicionada
+    static_analysis.water_density_for_mass = 1025.0;  // Always the real value, for added mass
     static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, seabed_stiffness, seabed_friction);
     static_analysis.load_steps = static_steps;
     static_analysis.max_iter_per_step = static_max_iter;
@@ -342,22 +346,22 @@ int main(int argc, char* argv[]) {
         static_analysis.current = risersim::CurrentProfile(curr_v_surface, total_depth_z, curr_heading, curr_alpha, model->elements.front()->props.Ca);
     }
 
-    std::cout << "\n--- Executando Análise Estática ---" << std::endl;
+    std::cout << "\n--- Running Static Analysis ---" << std::endl;
     bool success_static = static_analysis.solve();
 
     if (success_static) {
-        std::cout << "✅ Análise Estática Convergida com Sucesso!" << std::endl;
-        std::cout << "  [TOPO] X=" << model->nodes.front()->current_coords().x()
+        std::cout << "Static Analysis Converged Successfully!" << std::endl;
+        std::cout << "  [TOP] X=" << model->nodes.front()->current_coords().x()
                   << " m, Z=" << model->nodes.front()->current_coords().z() << " m" << std::endl;
-        std::cout << "  [T_eff TOPO] " << (model->elements.front()->tension_effective / 1000.0) << " kN" << std::endl;
+        std::cout << "  [T_eff TOP] " << (model->elements.front()->tension_effective / 1000.0) << " kN" << std::endl;
     }
 
-    // Configuração Dinâmica
+    // Dynamic configuration
     risersim::DynamicAnalysis dynamic_analysis(static_analysis);
     bool success_dynamic = true;
 
     if (run_dynamic && !success_static) {
-        std::cout << "\n⏭️ Análise Dinâmica pulada: a Análise Estática não convergiu." << std::endl;
+        std::cout << "\nSkipping Dynamic Analysis: Static Analysis did not converge." << std::endl;
         success_dynamic = false;
     } else if (run_dynamic) {
         dynamic_analysis.duration_s = dyn_duration;
@@ -371,22 +375,22 @@ int main(int argc, char* argv[]) {
         dynamic_analysis.max_nr_iters = dyn_max_nr_iters;
         dynamic_analysis.nr_tolerance = dyn_nr_tolerance;
 
-        std::cout << "\n--- Executando Análise Dinâmica ---" << std::endl;
-        std::cout << "  🌊 Wave: type=" << dyn_wave_type << " | angle=" << dyn_wave_angle_deg
+        std::cout << "\n--- Running Dynamic Analysis ---" << std::endl;
+        std::cout << "  Wave: type=" << dyn_wave_type << " | angle=" << dyn_wave_angle_deg
                   << " deg | gamma=" << dyn_wave_gamma << std::endl;
         success_dynamic = dynamic_analysis.solve();
         if (success_dynamic) {
-            std::cout << "✅ Análise Dinâmica Concluída com Sucesso!" << std::endl;
+            std::cout << "Dynamic Analysis Completed Successfully!" << std::endl;
         }
     }
 
-    // Exportação dos Resultados
+    // Results export
     std::string json_out = output_dir + "/catenary_results.json";
     std::string h5_out = output_dir + "/catenary_results.h5";
     risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, json_out);
     risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, h5_out);
 
-    std::cout << "\n💾 Resultados exportados para:" << std::endl;
+    std::cout << "\nResults exported to:" << std::endl;
     std::cout << "   " << json_out << std::endl;
 
     delete model;
