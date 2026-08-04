@@ -17,12 +17,13 @@ public:
     SeabedInteraction seabed;
     CurrentProfile current;
     bool enable_current;
-    double water_density;
+    double water_density;           // Para empuxo no F_ext (0 quando rho já embute peso submerso)
+    double water_density_for_mass;  // Para massa adicionada na M e drag (sempre 1025.0)
     int num_dofs;
 
     std::vector<StepSnapshot> history;
 
-    Analysis() : model(nullptr), seabed(-80.0), enable_current(false), water_density(1025.0), num_dofs(0) {}
+    Analysis() : model(nullptr), seabed(-80.0), enable_current(false), water_density(1025.0), water_density_for_mass(1025.0), num_dofs(0) {}
     virtual ~Analysis() = default;
 
     virtual void assign_equation_numbers() {

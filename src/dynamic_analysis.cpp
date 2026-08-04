@@ -72,8 +72,9 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         Eigen::VectorXd U_curr = U_prev + dt_s * V_prev + 0.5 * dt_s * dt_s * (1.0 - 2.0 * beta_newmark) * A_prev;
 
         // Newton-Raphson Iterations per Dynamic Time Step
-        int max_iters = 12;
-        for (int iter = 0; iter < max_iters; ++iter) {
+        int nr_converged_iter = -1;
+        double res_norm_prev = 1.0e30;
+        for (int iter = 0; iter < max_nr_iters; ++iter) {
             // Update Node Displacements (Static + Current Dynamic Perturbation)
             for (size_t i = 0; i < model->nodes.size(); ++i) {
                 auto* node = model->nodes[i];
@@ -112,7 +113,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 if (enable_current) {
                     double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
                     double f_drag_x = 0.0, f_drag_y = 0.0;
-                    current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density, f_drag_x, f_drag_y);
+                    current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density_for_mass, f_drag_x, f_drag_y);
 
                     int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
                     int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
@@ -133,7 +134,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             Eigen::SparseMatrix<double> M_global(num_dofs, num_dofs);
             std::vector<Eigen::Triplet<double>> m_triplets;
             for (auto* elem : model->elements) {
-                Eigen::Matrix<double, 12, 12> m_elem = elem->global_mass(water_density);
+                Eigen::Matrix<double, 12, 12> m_elem = elem->global_mass(water_density_for_mass);
                 std::vector<int> eq_map = {
                     elem->node1->eq_numbers[0], elem->node1->eq_numbers[1], elem->node1->eq_numbers[2],
                     elem->node1->eq_numbers[3], elem->node1->eq_numbers[4], elem->node1->eq_numbers[5],
@@ -163,9 +164,21 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             Eigen::VectorXd Residual = F_ext - F_int - F_iner - F_damp;
 
             double res_norm = Residual.norm();
-            if (res_norm < 1.0e-3) {
+            double f_ext_norm = F_ext.norm() + 1.0;
+            double rel_res = res_norm / f_ext_norm;
+
+            if (rel_res < nr_tolerance) {
+                nr_converged_iter = iter;
                 break;
             }
+
+            // Check de divergência: se resíduo cresceu significativamente, limitar correção
+            if (iter > 0 && res_norm > 10.0 * res_norm_prev) {
+                std::cerr << "  ⚠️ Dynamic NR divergence at step " << step
+                          << " iter " << iter << " (res=" << res_norm << " > 10x prev=" << res_norm_prev << ")" << std::endl;
+                break;
+            }
+            res_norm_prev = res_norm;
 
             // Solve for Displacement Correction delta_U
             Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
@@ -185,6 +198,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         U = U_curr;
         V = V_curr;
         A = A_curr;
+
+        if (nr_converged_iter < 0 && step > 0) {
+            std::cerr << "  ⚠️ Dynamic NR did not converge at step " << step
+                      << " (t=" << time << "s, last res_norm=" << res_norm_prev << ")" << std::endl;
+        }
 
         // Record Snapshot for Web Visualizer
         if (step % 1 == 0) {

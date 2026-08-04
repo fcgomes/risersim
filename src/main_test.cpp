@@ -62,6 +62,11 @@ int main(int argc, char* argv[]) {
     double dyn_wave_period = 10.0;
     double dyn_alpha_rayleigh = 0.05;
     double dyn_beta_rayleigh = 0.01;
+    int dyn_max_nr_iters = 20;
+    double dyn_nr_tolerance = 1.0e-4;
+    double dyn_wave_angle_deg = 0.0;
+    double dyn_wave_gamma = 3.3;
+    std::string dyn_wave_type = "regular";
 
     // Carrega JSON estruturado se fornecido
     auto* model = new risersim::RiserModel();
@@ -194,6 +199,9 @@ int main(int argc, char* argv[]) {
                         auto wave = env["wave"];
                         dyn_wave_period = wave.value("period_s", dyn_wave_period);
                         dyn_wave_amp = wave.value("amplitude_m", wave.value("height_m", 5.0) / 2.0);
+                        dyn_wave_angle_deg = wave.value("angle_deg", dyn_wave_angle_deg);
+                        dyn_wave_gamma = wave.value("gamma", dyn_wave_gamma);
+                        dyn_wave_type = wave.value("type", dyn_wave_type);
                     }
                 }
 
@@ -228,6 +236,8 @@ int main(int argc, char* argv[]) {
                         run_dynamic = dy.value("enabled", true);
                         dyn_duration = dy.value("duration_s", dyn_duration);
                         dyn_dt = dy.value("dt_s", dyn_dt);
+                        dyn_max_nr_iters = dy.value("max_iterations", dyn_max_nr_iters);
+                        dyn_nr_tolerance = dy.value("tolerance", dyn_nr_tolerance);
                         
                         if (dy.contains("rayleigh_damping")) {
                             auto ray = dy["rayleigh_damping"];
@@ -290,6 +300,7 @@ int main(int argc, char* argv[]) {
     risersim::StaticAnalysis static_analysis;
     static_analysis.model = model;
     static_analysis.water_density = parsed_from_json ? 0.0 : water_density;
+    static_analysis.water_density_for_mass = 1025.0;  // Sempre real para massa adicionada
     double penalty_seabed_stiffness = std::max(seabed_stiffness, 1.0e6);
     static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, penalty_seabed_stiffness, seabed_friction);
     static_analysis.load_steps = static_steps;
@@ -322,10 +333,16 @@ int main(int argc, char* argv[]) {
         dynamic_analysis.dt_s = dyn_dt;
         dynamic_analysis.wave_amplitude = dyn_wave_amp;
         dynamic_analysis.wave_period = dyn_wave_period;
+        dynamic_analysis.wave_angle_deg = dyn_wave_angle_deg;
+        dynamic_analysis.wave_gamma = dyn_wave_gamma;
         dynamic_analysis.alpha_rayleigh = dyn_alpha_rayleigh;
         dynamic_analysis.beta_rayleigh = dyn_beta_rayleigh;
+        dynamic_analysis.max_nr_iters = dyn_max_nr_iters;
+        dynamic_analysis.nr_tolerance = dyn_nr_tolerance;
 
         std::cout << "\n--- Executando Análise Dinâmica ---" << std::endl;
+        std::cout << "  🌊 Wave: type=" << dyn_wave_type << " | angle=" << dyn_wave_angle_deg
+                  << " deg | gamma=" << dyn_wave_gamma << std::endl;
         success_dynamic = dynamic_analysis.solve();
         if (success_dynamic) {
             std::cout << "✅ Análise Dinâmica Concluída com Sucesso!" << std::endl;

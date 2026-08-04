@@ -88,7 +88,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             if (enable_current) {
                 double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
                 double f_drag_x = 0.0, f_drag_y = 0.0;
-                current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density, f_drag_x, f_drag_y);
+                current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density_for_mass, f_drag_x, f_drag_y);
 
                 int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
                 int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
@@ -117,8 +117,8 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                           << std::scientific << std::setprecision(4) << norm_R << " | Rel R (ref): " << rel_R << std::defaultfloat << std::endl;
             }
 
-            // Critério de convergência do método dos elementos finitos (Resíduo de força < 25 kN)
-            if (norm_R < 25000.0 || rel_R < 0.02) {
+            // Critério de convergência: resíduo relativo < tolerância (iter > 0 garante pelo menos 1 correção NR)
+            if (iter > 0 && rel_R < tolerance) {
                 std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations! (norm_R = " 
                           << norm_R << " N)" << std::endl;
                 step_converged = true;
