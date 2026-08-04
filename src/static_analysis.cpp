@@ -69,7 +69,8 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     }
 
     auto apply_scaled = [&](double alpha) {
-        for (auto* node : model->nodes) {
+        for (const auto& node_ptr : model->nodes) {
+            Node3D* node = node_ptr.get();
             if (node == excluded_node) continue;
             Eigen::Vector3d delta_rot = Eigen::Vector3d::Zero();
             bool has_rot_dof = false;
@@ -98,7 +99,7 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     for (int bt = 0; bt <= max_backtracks; ++bt) {
         restore();
         apply_scaled(alpha);
-        for (auto* elem : model->elements) elem->update_effective_tension();
+        for (const auto& elem : model->elements) elem->update_effective_tension();
 
         Eigen::SparseMatrix<double> K_trial;
         Eigen::VectorXd F_int_trial;
@@ -120,7 +121,7 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     // the next assemble (at the top of the following iteration, outside this function)
     // doesn't reapply the SAME increment a second time -- without this, the friction
     // force gets double-counted every iteration.
-    for (auto* node : model->nodes) node->delta_disp_xy.setZero();
+    for (const auto& node : model->nodes) node->delta_disp_xy.setZero();
 
     return accepted_dU;
 }
@@ -170,11 +171,11 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     StepSnapshot step0;
     step0.step_index = 0;
     step0.load_factor = 0.0;
-    for (auto* node : model->nodes) step0.node_coords.push_back(node->current_coords());
+    for (const auto& node : model->nodes) step0.node_coords.push_back(node->current_coords());
     for (size_t i = 0; i < model->elements.size(); ++i) {
-        auto* elem = model->elements[i];
-        const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
-        const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
+        auto* elem = model->elements[i].get();
+        const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
+        const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
 
         elem->update_effective_tension();
         auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -188,7 +189,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     // Total reference force at 100% load, used for a strict normalization
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
-    for (auto* elem : model->elements) {
+    for (const auto& elem : model->elements) {
         double L = elem->initial_length;
         double g = 9.81;
         double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
@@ -238,7 +239,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
         // cIntegrator::get_translation_inc_norm / get_rotation_inc_norm.
         auto split_norms = [&](const Eigen::VectorXd& v, double& transl_norm, double& rot_norm) {
             double t = 0.0, r = 0.0;
-            for (auto* node : model->nodes) {
+            for (const auto& node : model->nodes) {
                 for (int i = 0; i < 3; ++i) {
                     int eq = node->eq_numbers[i];
                     if (eq >= 0) t += v[eq] * v[eq];
@@ -311,11 +312,11 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 StepSnapshot snap;
                 snap.step_index = step;
                 snap.load_factor = load_factor;
-                for (auto* node : model->nodes) snap.node_coords.push_back(node->current_coords());
+                for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
                 for (size_t i = 0; i < model->elements.size(); ++i) {
-                    auto* elem = model->elements[i];
-                    const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
-                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
+                    auto* elem = model->elements[i].get();
+                    const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
+                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
 
                     elem->update_effective_tension();
                     auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -353,7 +354,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
     if (!model) return false;
 
-    Node3D* top_node = model->nodes.front();
+    Node3D* top_node = model->nodes.front().get();
 
     for (int step = 1; step <= steps; ++step) {
         double offset_factor = static_cast<double>(step) / static_cast<double>(steps);
@@ -369,7 +370,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
 
-        for (auto* elem : model->elements) {
+        for (const auto& elem : model->elements) {
             double L = elem->initial_length;
             double g = 9.81;
             double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
@@ -408,11 +409,11 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 StepSnapshot snap;
                 snap.step_index = steps + step;
                 snap.load_factor = 1.0 + offset_factor;
-                for (auto* node : model->nodes) snap.node_coords.push_back(node->current_coords());
+                for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
                 for (size_t i = 0; i < model->elements.size(); ++i) {
-                    auto* elem = model->elements[i];
-                    const auto* prev = (i > 0) ? model->elements[i - 1] : nullptr;
-                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1] : nullptr;
+                    auto* elem = model->elements[i].get();
+                    const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
+                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
 
                     elem->update_effective_tension();
                     auto sc = elem->compute_stress_and_curvature(prev, next);

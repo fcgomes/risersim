@@ -21,38 +21,43 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     // directions -- mirroring real ANFLEX (soil.cpp:calc_transf_matrix) -- instead
     // of global X/Y.
     std::unordered_map<Node3D*, Eigen::Vector3d> node_tangent_sum;
-    for (auto* elem : model->elements) {
+    for (const auto& elem : model->elements) {
         Eigen::Vector3d ex = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
         node_tangent_sum[elem->node1] += ex;
         node_tangent_sum[elem->node2] += ex;
     }
 
-    for (auto* elem : model->elements) {
+    for (const auto& elem : model->elements) {
         elem->update_effective_tension();
 
         // Stiffness and internal force from the consistent corotational state (each
         // node's LOCAL/deformational rotation relative to the element's ghost frame --
         // not the total rotation accumulated since t=0). See
         // compute_corotational_forces() / mapa_classes_anflex_estatica.md.
-        Eigen::Matrix<double, 12, 12> K_elem;
-        Eigen::Matrix<double, 12, 1> F_int_elem;
-        elem->compute_corotational_forces(K_elem, F_int_elem);
+        //
+        // Goes through the Element interface (num_nodes()/node()/assemble()) rather than
+        // hardcoding node1/node2 and a 12x12 size, so this loop works unchanged for any
+        // future element type with a different node/DOF count -- see element.hpp.
+        Eigen::MatrixXd K_elem;
+        Eigen::VectorXd F_int_elem;
+        elem->assemble(K_elem, F_int_elem);
 
-        std::vector<int> dofs(12);
-        for (int i = 0; i < 6; ++i) {
-            dofs[i] = elem->node1->eq_numbers[i];
-            dofs[i + 6] = elem->node2->eq_numbers[i];
+        int n_dof = elem->num_nodes() * 6;
+        std::vector<int> dofs(n_dof);
+        for (int n = 0; n < elem->num_nodes(); ++n) {
+            Node3D* nd = elem->node(n);
+            for (int i = 0; i < 6; ++i) dofs[n * 6 + i] = nd->eq_numbers[i];
         }
 
-        for (int i = 0; i < 12; ++i) {
+        for (int i = 0; i < n_dof; ++i) {
             if (dofs[i] < 0) continue;
-            for (int j = 0; j < 12; ++j) {
+            for (int j = 0; j < n_dof; ++j) {
                 if (dofs[j] < 0) continue;
                 triplets.push_back(Eigen::Triplet<double>(dofs[i], dofs[j], K_elem(i, j)));
             }
         }
 
-        for (int i = 0; i < 12; ++i) {
+        for (int i = 0; i < n_dof; ++i) {
             if (dofs[i] >= 0) {
                 F_int[dofs[i]] += F_int_elem[i];
             }
@@ -60,7 +65,8 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     }
 
     // Apply Seabed Interaction (Bilinear Soil Springs at TDZ)
-    for (auto* node : model->nodes) {
+    for (const auto& node_ptr : model->nodes) {
+        Node3D* node = node_ptr.get();
         double f_seabed = 0.0, k_seabed = 0.0;
         seabed.calculate_seabed_reaction(node->current_coords().z(), f_seabed, k_seabed);
 

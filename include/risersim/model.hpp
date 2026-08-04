@@ -8,56 +8,60 @@
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
 #include <vector>
+#include <memory>
+#include <utility>
 
 namespace risersim {
 
 /**
  * @brief Owning container of a riser/mooring model's nodes and elements, equivalent to ANFLEX's `cDomain`.
  *
- * Owns its Node3D/CorotationalBeam3D instances via raw pointer + manual `delete` in clear()
- * (copy disabled, move enabled) rather than `std::unique_ptr`, for compatibility with the
- * pybind11 bindings layer, which hands out raw pointers into `nodes`/`elements` for Python-side
- * introspection.
+ * Owns its Node3D/CorotationalBeam3D instances via `std::unique_ptr` (roadmap step 6, see
+ * `docs/mapa_classes_anflex_estatica.md`). Other code holds non-owning raw pointers into this
+ * storage (e.g. `CorotationalBeam3D::node1`/`node2`, or a `Node3D*` returned by add_node()) --
+ * safe as long as those pointers don't outlive the owning RiserModel, exactly like ANFLEX's own
+ * `cDomain` node/element arrays. The pybind11 bindings expose `nodes`/`elements` as read-only
+ * projections of raw pointers (Python can't safely take ownership away from a `unique_ptr`
+ * member's default holder), plus add_node()/add_element() for Python-side model construction --
+ * see `bindings.cpp`.
  */
 class RiserModel {
 public:
-    std::vector<Node3D*> nodes;
-    std::vector<CorotationalBeam3D*> elements;
+    std::vector<std::unique_ptr<Node3D>> nodes;
+    std::vector<std::unique_ptr<CorotationalBeam3D>> elements;
 
     RiserModel() = default;
 
-    /** @brief Releases all owned nodes and elements. */
-    ~RiserModel() {
-        clear();
-    }
-
-    // Copy disabled to avoid accidental double-free of owned pointers.
+    // Copy disabled (unique_ptr members aren't copyable); move is the implicitly-generated
+    // one, which is already correct here -- no hand-written move ctor/assignment needed.
     RiserModel(const RiserModel&) = delete;
     RiserModel& operator=(const RiserModel&) = delete;
+    RiserModel(RiserModel&&) noexcept = default;
+    RiserModel& operator=(RiserModel&&) noexcept = default;
 
-    // Move semantics allowed.
-    RiserModel(RiserModel&& other) noexcept
-        : nodes(std::move(other.nodes)), elements(std::move(other.elements)) {}
-
-    RiserModel& operator=(RiserModel&& other) noexcept {
-        if (this != &other) {
-            clear();
-            nodes = std::move(other.nodes);
-            elements = std::move(other.elements);
-        }
-        return *this;
+    /**
+     * @brief Constructs a Node3D owned by this model and returns a non-owning pointer to it.
+     * @param args Forwarded to Node3D's constructor.
+     */
+    template <typename... Args>
+    Node3D* add_node(Args&&... args) {
+        nodes.push_back(std::make_unique<Node3D>(std::forward<Args>(args)...));
+        return nodes.back().get();
     }
 
-    /** @brief Deletes all owned nodes and elements and empties both containers. */
-    void clear() {
-        for (auto* elem : elements) {
-            delete elem;
-        }
-        elements.clear();
+    /**
+     * @brief Constructs a CorotationalBeam3D owned by this model and returns a non-owning pointer to it.
+     * @param args Forwarded to CorotationalBeam3D's constructor.
+     */
+    template <typename... Args>
+    CorotationalBeam3D* add_element(Args&&... args) {
+        elements.push_back(std::make_unique<CorotationalBeam3D>(std::forward<Args>(args)...));
+        return elements.back().get();
+    }
 
-        for (auto* node : nodes) {
-            delete node;
-        }
+    /** @brief Destroys all owned nodes and elements and empties both containers. */
+    void clear() {
+        elements.clear();
         nodes.clear();
     }
 };

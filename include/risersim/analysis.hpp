@@ -58,7 +58,7 @@ public:
         num_dofs = 0;
         if (!model) return;
         for (int idx : compute_rcm_order(*model)) {
-            Node3D* node = model->nodes[idx];
+            Node3D* node = model->nodes[idx].get();
             for (int i = 0; i < 6; ++i) {
                 if (node->eq_numbers[i] >= 0) {
                     node->eq_numbers[i] = num_dofs++;

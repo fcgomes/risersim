@@ -8,6 +8,7 @@
 #include "risersim/config.hpp"
 #include "risersim/node.hpp"
 #include "risersim/rotation_utils.hpp"
+#include "risersim/element.hpp"
 #include <Eigen/Dense>
 
 namespace risersim {
@@ -41,8 +42,15 @@ struct BeamMaterialProps {
  * local/deformational strain that actually feeds the linear beam stiffness. This mirrors
  * ANFLEX's `calc_transformation_mt`/`calc_relative_rotations`/`calc_fe` pipeline
  * (`element.cpp`/`matrix.cpp`/`beam.cpp`) rather than a naive total-Lagrangian formulation.
+ *
+ * Implements the Element interface directly (mirroring how ANFLEX's `cBeam` derives from
+ * `cElement`), rather than through a separate wrapper class: an earlier version of the
+ * modernization roadmap (`docs/mapa_classes_anflex_estatica.md`) envisioned a `BeamElement`
+ * wrapper specifically to bolt on the fixed reference triad, but that triad ended up being
+ * added directly to this class instead (as the fix for the corotational divergence bug), so
+ * a separate wrapper would have had nothing left to do beyond forwarding calls.
  */
-class CorotationalBeam3D {
+class CorotationalBeam3D : public Element {
 public:
     int id;
     Node3D* node1;
@@ -188,6 +196,29 @@ public:
      */
     void compute_corotational_forces(Eigen::Matrix<double, 12, 12>& K_global,
                                       Eigen::Matrix<double, 12, 1>& F_int_global) const;
+
+    // --- Element interface ---------------------------------------------------------------
+
+    /** @brief Always 2 for a beam element. */
+    int num_nodes() const override { return 2; }
+
+    /** @brief `node(0)` is node1, `node(1)` is node2. */
+    Node3D* node(int local_index) const override { return local_index == 0 ? node1 : node2; }
+
+    /**
+     * @brief Element::assemble() implementation: thin dynamically-sized wrapper around compute_corotational_forces().
+     *
+     * Does not duplicate or re-derive any math -- copies the same fixed-size 12x12/12x1 result
+     * into dynamically-sized matrices, so this and compute_corotational_forces() always agree
+     * bit-for-bit (validated in `tests/test_element.cpp`).
+     */
+    void assemble(Eigen::MatrixXd& K_local, Eigen::VectorXd& F_int_local) const override;
+
+    /**
+     * @brief Element::mass_matrix() implementation: thin dynamically-sized wrapper around global_mass().
+     * @param rho_water Seawater density used for the added-mass term (kg/m^3).
+     */
+    Eigen::MatrixXd mass_matrix(double rho_water) const override;
 
     /** @brief Bending moment, curvature, minimum-bend-radius check, and combined von Mises stress at an element. */
     struct StressAndCurvatureResults {

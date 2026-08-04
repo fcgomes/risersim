@@ -44,19 +44,18 @@ Python module for offshore riser analysis using 3D corotational beam elements.
 Minimal usage example:
     import risersim, math
 
+    model = risersim.RiserModel()
+    node1 = model.add_node(1, 0.0, 0.0,   0.0)
+    node2 = model.add_node(2, 5.0, 0.0, -10.0)
+    node1.fix_all()
+
     props = risersim.BeamMaterialProps()
     props.E = 2.0e9
     props.D_outer = 0.25
-
-    node1 = risersim.Node3D(1, 0.0, 0.0,   0.0)
-    node2 = risersim.Node3D(2, 5.0, 0.0, -10.0)
-    node1.fix_all()
-
-    elem = risersim.CorotationalBeam3D(1, node1, node2, props)
+    elem = model.add_element(1, node1, node2, props)
 
     sa = risersim.StaticAnalysis()
-    sa.nodes    = [node1, node2]
-    sa.elements = [elem]
+    sa.model = model
     sa.solve()
 )";
 
@@ -285,10 +284,40 @@ Minimal usage example:
     // =========================================================================
     // RiserModel
     // =========================================================================
+    // nodes/elements are owned by the model via std::unique_ptr (see model.hpp) --
+    // pybind11 can't safely expose a vector<unique_ptr<T>> as a writable property
+    // (there's no automatic way to steal ownership away from an existing Python-side
+    // object into a fresh unique_ptr), so they're exposed read-only here, as plain
+    // non-owning pointer lists. Use add_node()/add_element() to build a model from
+    // Python -- they construct the instance directly inside the model's own storage.
     py::class_<RiserModel>(m, "RiserModel", "Structural model containing beam nodes and elements.")
         .def(py::init<>())
-        .def_readwrite("nodes",          &RiserModel::nodes)
-        .def_readwrite("elements",       &RiserModel::elements)
+        .def_property_readonly("nodes", [](const RiserModel& model) {
+            std::vector<Node3D*> v;
+            v.reserve(model.nodes.size());
+            for (const auto& n : model.nodes) v.push_back(n.get());
+            return v;
+        }, "Read-only list of the model's nodes (owned by the model -- see add_node()).")
+        .def_property_readonly("elements", [](const RiserModel& model) {
+            std::vector<CorotationalBeam3D*> v;
+            v.reserve(model.elements.size());
+            for (const auto& e : model.elements) v.push_back(e.get());
+            return v;
+        }, "Read-only list of the model's elements (owned by the model -- see add_element()).")
+        .def("add_node", [](RiserModel& model, int id, double x, double y, double z) {
+                return model.add_node(id, x, y, z);
+            },
+            py::arg("id"), py::arg("x"), py::arg("y"), py::arg("z"),
+            py::return_value_policy::reference_internal,
+            "Constructs a node owned by this model and returns it.")
+        .def("add_element", [](RiserModel& model, int id, Node3D* node1, Node3D* node2,
+                                const BeamMaterialProps& props, double L_unstretched) {
+                return model.add_element(id, node1, node2, props, L_unstretched);
+            },
+            py::arg("id"), py::arg("node1"), py::arg("node2"), py::arg("props"),
+            py::arg("L_unstretched") = 0.0,
+            py::return_value_policy::reference_internal,
+            "Constructs a beam element owned by this model and returns it.")
         .def("clear",                  &RiserModel::clear);
 
     // =========================================================================
@@ -322,8 +351,9 @@ Minimal usage example:
 
 Usage sequence:
     model = risersim.RiserModel()
-    model.nodes    = [n1, n2, ...]
-    model.elements = [e1, e2, ...]
+    n1 = model.add_node(1, 0.0, 0.0, 0.0)
+    n2 = model.add_node(2, 5.0, 0.0, -10.0)
+    e1 = model.add_element(1, n1, n2, risersim.BeamMaterialProps())
 
     sa = risersim.StaticAnalysis()
     sa.model    = model
@@ -459,6 +489,10 @@ Returns a list of heap-allocated Node3D* (ownership transferred to Python).
 Top (front) and bottom (back) nodes are fixed automatically.
 Intermediate nodes have free translations and fixed rotations.
 
+Standalone utility, independent of RiserModel: these nodes are owned directly by
+Python, not by a model, so they can't be assigned into RiserModel.nodes (read-only --
+see RiserModel.add_node()). Useful for quick introspection/scripting without a full model.
+
 Args:
     num_elements: number of finite elements
     total_length_m: unstretched line length (m)
@@ -497,6 +531,8 @@ Args:
 
 Returns a list of CorotationalBeam3D* (ownership transferred to Python).
 Each element's unstretched length is computed automatically.
+
+Standalone utility, independent of RiserModel -- see the note on build_catenary_nodes().
 )");
 
     // Module version

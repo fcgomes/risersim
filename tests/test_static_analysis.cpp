@@ -54,7 +54,7 @@ risersim::RiserModel* build_synthetic_catenary_model() {
             x = X_tdp + s_seabed;
             z = -h_water;
         }
-        model->nodes.push_back(new risersim::Node3D(i + 1, x, 0.0, z));
+        model->add_node(i + 1, x, 0.0, z);
     }
 
     model->nodes.front()->eq_numbers = std::vector<int>(6, -1);
@@ -66,8 +66,7 @@ risersim::RiserModel* build_synthetic_catenary_model() {
     risersim::BeamMaterialProps props;
     const double L_unstretched = total_length / static_cast<double>(num_elements);
     for (int i = 0; i < num_elements; ++i) {
-        auto* elem = new risersim::CorotationalBeam3D(i + 1, model->nodes[i], model->nodes[i + 1], props, L_unstretched);
-        model->elements.push_back(elem);
+        model->add_element(i + 1, model->nodes[i].get(), model->nodes[i + 1].get(), props, L_unstretched);
     }
 
     return model;

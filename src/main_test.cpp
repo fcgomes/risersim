@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
                     for (auto& n_j : nodes_json) {
                         int id = n_j["id"];
                         auto coords = n_j["coords"].get<std::vector<double>>();
-                        model->nodes.push_back(new risersim::Node3D(id, coords[0], coords[1], coords[2]));
+                        model->add_node(id, coords[0], coords[1], coords[2]);
                     }
                 }
 
@@ -138,8 +138,7 @@ int main(int argc, char* argv[]) {
                         }
 
                         double L_unstretched = (model->nodes[n2_idx]->coords - model->nodes[n1_idx]->coords).norm();
-                        auto* elem = new risersim::CorotationalBeam3D(id, model->nodes[n1_idx], model->nodes[n2_idx], elem_props, L_unstretched);
-                        model->elements.push_back(elem);
+                        model->add_element(id, model->nodes[n1_idx].get(), model->nodes[n2_idx].get(), elem_props, L_unstretched);
                     }
                 }
 
@@ -186,7 +185,7 @@ int main(int argc, char* argv[]) {
                 // element's unstretched length computed above.
                 if (j.contains("warm_start") && j["warm_start"].contains("node_positions")) {
                     std::map<int, risersim::Node3D*> node_by_id;
-                    for (auto* node : model->nodes) node_by_id[node->id] = node;
+                    for (const auto& node : model->nodes) node_by_id[node->id] = node.get();
 
                     int warm_applied = 0;
                     for (auto& wp : j["warm_start"]["node_positions"]) {
@@ -214,7 +213,7 @@ int main(int argc, char* argv[]) {
 
                     // Aligns the seabed with the real minimum Z of the nodes read from the H5
                     double min_z = 1e9;
-                    for (auto* node : model->nodes) {
+                    for (const auto& node : model->nodes) {
                         if (node->coords.z() < min_z) min_z = node->coords.z();
                     }
                     total_depth_z = min_z;
@@ -313,7 +312,7 @@ int main(int argc, char* argv[]) {
                 x = X_tdp + s_seabed;
                 z = -h_water;
             }
-            model->nodes.push_back(new risersim::Node3D(i + 1, x, 0.0, z));
+            model->add_node(i + 1, x, 0.0, z);
         }
 
         model->nodes.front()->eq_numbers = std::vector<int>(6, -1);
@@ -325,8 +324,7 @@ int main(int argc, char* argv[]) {
 
         const double L_unstretched = total_length / static_cast<double>(num_elements);
         for (int i = 0; i < num_elements; ++i) {
-            auto* elem = new risersim::CorotationalBeam3D(i + 1, model->nodes[i], model->nodes[i + 1], props, L_unstretched);
-            model->elements.push_back(elem);
+            model->add_element(i + 1, model->nodes[i].get(), model->nodes[i + 1].get(), props, L_unstretched);
         }
     }
 

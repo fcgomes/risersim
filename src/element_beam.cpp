@@ -218,6 +218,18 @@ void CorotationalBeam3D::compute_corotational_forces(Eigen::Matrix<double, 12, 1
     F_int_global = T.transpose() * (K_local * local_disp);
 }
 
+void CorotationalBeam3D::assemble(Eigen::MatrixXd& K_local, Eigen::VectorXd& F_int_local) const {
+    Eigen::Matrix<double, 12, 12> K;
+    Eigen::Matrix<double, 12, 1> F;
+    compute_corotational_forces(K, F);
+    K_local = K;
+    F_int_local = F;
+}
+
+Eigen::MatrixXd CorotationalBeam3D::mass_matrix(double rho_water) const {
+    return global_mass(rho_water);
+}
+
 CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress_and_curvature(
     const CorotationalBeam3D* prev_elem,
     const CorotationalBeam3D* next_elem,

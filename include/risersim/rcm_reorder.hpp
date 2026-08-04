@@ -40,10 +40,10 @@ inline std::vector<int> compute_rcm_order(const RiserModel& model) {
 
     std::unordered_map<Node3D*, int> index_of;
     index_of.reserve(n);
-    for (int i = 0; i < n; ++i) index_of[model.nodes[i]] = i;
+    for (int i = 0; i < n; ++i) index_of[model.nodes[i].get()] = i;
 
     std::vector<std::vector<int>> adj(n);
-    for (auto* elem : model.elements) {
+    for (const auto& elem : model.elements) {
         auto it1 = index_of.find(elem->node1);
         auto it2 = index_of.find(elem->node2);
         if (it1 == index_of.end() || it2 == index_of.end()) continue;

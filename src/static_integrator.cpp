@@ -13,7 +13,7 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double load_factor) const
     auto* model = analysis->model;
     if (!model) return F_ext;
 
-    for (auto* elem : model->elements) {
+    for (const auto& elem : model->elements) {
         double L = elem->initial_length;
         double g = 9.81;
 
@@ -57,7 +57,7 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
     // Artificial stiffness (Tikhonov regularization), the same technique used by
     // real ANFLEX (beam.cpp:calc_artificial_stiffness / static_integrator.cpp).
     double avg_EA_L = 0.0;
-    for (auto* elem : model->elements) {
+    for (const auto& elem : model->elements) {
         double L = elem->current_length();
         if (L > 1.0e-9) avg_EA_L += (elem->props.E * elem->props.A) / L;
     }
@@ -78,7 +78,7 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
     double k_rotational = k_transversal * 0.05;
 
     std::vector<Eigen::Triplet<double>> artif_triplets;
-    for (auto* node : model->nodes) {
+    for (const auto& node : model->nodes) {
         for (int i = 0; i < 3; ++i) {
             int eq = node->eq_numbers[i];
             if (eq >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq, eq, k_transversal));

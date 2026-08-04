@@ -75,16 +75,14 @@ int main(int argc, char** argv) {
 
         if (!node_by_id.count(n1_id)) {
             auto& c = coords_by_id[n1_id];
-            auto* nn = new risersim::Node3D(n1_id, c[0], c[1], c[2]);
+            auto* nn = model->add_node(n1_id, c[0], c[1], c[2]);
             node_by_id[n1_id] = nn;
-            model->nodes.push_back(nn);
             node_order.push_back(n1_id);
         }
         if (!node_by_id.count(n2_id)) {
             auto& c = coords_by_id[n2_id];
-            auto* nn = new risersim::Node3D(n2_id, c[0], c[1], c[2]);
+            auto* nn = model->add_node(n2_id, c[0], c[1], c[2]);
             node_by_id[n2_id] = nn;
-            model->nodes.push_back(nn);
             node_order.push_back(n2_id);
         }
 
@@ -112,8 +110,7 @@ int main(int argc, char** argv) {
         Eigen::Vector3d c2(coords_by_id[n2_id][0], coords_by_id[n2_id][1], coords_by_id[n2_id][2]);
         double L_unstretched = (c2 - c1).norm();
 
-        auto* elem = new risersim::CorotationalBeam3D(eid, node_by_id[n1_id], node_by_id[n2_id], props, L_unstretched);
-        model->elements.push_back(elem);
+        model->add_element(eid, node_by_id[n1_id], node_by_id[n2_id], props, L_unstretched);
     }
 
     if (model->nodes.size() < 2) {
@@ -131,7 +128,8 @@ int main(int argc, char** argv) {
     risersim::Node3D* last_node = node_by_id[node_order.back()];
     first_node->eq_numbers = std::vector<int>(6, -1);
     if (fix_mode == 0) last_node->eq_numbers = std::vector<int>(6, -1);
-    for (auto* node : model->nodes) {
+    for (const auto& node_ptr : model->nodes) {
+        risersim::Node3D* node = node_ptr.get();
         if (node != first_node && (fix_mode == 0 ? node != last_node : true)) {
             node->eq_numbers = {0, 1, 2, 3, 4, 5};
         }
@@ -147,7 +145,7 @@ int main(int argc, char** argv) {
     std::cout << "End node 2 (id " << last_node->id << "): "
               << last_node->coords.x() << ", " << last_node->coords.y() << ", " << last_node->coords.z() << std::endl;
     double L_total = 0.0;
-    for (auto* e : model->elements) L_total += e->initial_length;
+    for (const auto& e : model->elements) L_total += e->initial_length;
     std::cout << "Total segment length: " << L_total << " m" << std::endl;
 
     risersim::StaticAnalysis sa;
