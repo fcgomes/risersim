@@ -106,12 +106,7 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_mass_matrix(double rho_w
     return M;
 }
 
-Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const {
-    Eigen::Matrix<double, 12, 12> T = Eigen::Matrix<double, 12, 12>::Zero();
-    Eigen::Vector3d dx = node2->current_coords() - node1->current_coords();
-    double L = dx.norm();
-    
-    Eigen::Vector3d ex = dx / L;
+Eigen::Matrix3d CorotationalBeam3D::build_frame_from_chord(const Eigen::Vector3d& ex) {
     // Escolhe o eixo global menos alinhado com ex (em vez de um limiar fixo em Z),
     // para evitar uma troca descontínua de referência quando muitos elementos ficam
     // perto de um limiar único (ex: elementos quase verticais todos perto de |ex.z|=0.99,
@@ -131,6 +126,15 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const 
     R.row(0) = ex.transpose();
     R.row(1) = ey.transpose();
     R.row(2) = ez.transpose();
+    return R;
+}
+
+Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const {
+    Eigen::Matrix<double, 12, 12> T = Eigen::Matrix<double, 12, 12>::Zero();
+    Eigen::Vector3d dx = node2->current_coords() - node1->current_coords();
+    double L = dx.norm();
+    Eigen::Vector3d ex = dx / L;
+    Eigen::Matrix3d R = build_frame_from_chord(ex);
 
     T.block<3, 3>(0, 0) = R;
     T.block<3, 3>(3, 3) = R;
@@ -138,6 +142,71 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const 
     T.block<3, 3>(9, 9) = R;
 
     return T;
+}
+
+// Extrai a rotacao LOCAL (pequenos angulos) entre duas triades A e B --
+// mismatch(A relativo a B). Replica calc_relative_rotations, i_form=0
+// ("Formulacao tradicional do Anflex"), matrix.cpp:518-528.
+static Eigen::Vector3d extract_relative_rotation(const Eigen::Matrix3d& A, const Eigen::Matrix3d& B) {
+    Eigen::Vector3d defor;
+    defor[0] = A.row(1).dot(B.row(2));
+    defor[1] = A.row(2).dot(B.row(0));
+    defor[2] = A.row(0).dot(B.row(1));
+    return defor;
+}
+
+void CorotationalBeam3D::compute_corotational_forces(Eigen::Matrix<double, 12, 12>& K_global,
+                                                       Eigen::Matrix<double, 12, 1>& F_int_global) const {
+    Eigen::Vector3d dx = node2->current_coords() - node1->current_coords();
+    double L = dx.norm();
+    Eigen::Vector3d ex = L > 0.0 ? (dx / L).eval() : Eigen::Vector3d(1, 0, 0);
+
+    // Triade atual de cada no = triade de referencia fixa (t=0) composta com a
+    // rotacao TOTAL acumulada do no (calc_init_rot_mt + update_transformations_matrices
+    // do ANFLEX real: m_node_tm = m_node_init_tm * trans(gen_mat_3d(rot_total))).
+    Eigen::Matrix3d node1_tm = node1_init_triad * rodrigues(node1->rot).transpose();
+    Eigen::Matrix3d node2_tm = node2_init_triad * rodrigues(node2->rot).transpose();
+
+    // Ghost frame de Crisfield: rotacao "media" entre as duas triades dos nos,
+    // reorthogonalizada para que seu eixo x coincida exatamente com a corda
+    // atual (element.cpp:215-257 do ANFLEX real).
+    Eigen::Matrix3d Rrel = node2_tm.transpose() * node1_tm;
+    Eigen::AngleAxisd aa_rel(Rrel);
+    Eigen::Vector3d gamma_half = 0.5 * aa_rel.angle() * aa_rel.axis();
+    Eigen::Matrix3d halfR = rodrigues(gamma_half);
+    Eigen::Matrix3d P = halfR * node1_tm.transpose();
+    Eigen::Vector3d PX = P.col(0), PY = P.col(1), PZ = P.col(2);
+
+    double A1 = PX.dot(ex), A2 = PY.dot(ex), A3 = PZ.dot(ex);
+    Eigen::Vector3d I2 = PY - (A2 / (1.0 + A1)) * (PX + ex);
+    Eigen::Vector3d I3 = PZ - (A3 / (1.0 + A1)) * (PX + ex);
+
+    Eigen::Matrix3d ghost;
+    ghost.row(0) = ex.transpose();
+    ghost.row(1) = I2.transpose();
+    ghost.row(2) = I3.transpose();
+
+    // Rotacoes locais/deformacionais (mismatch entre a triade do no e o ghost
+    // frame) -- isto, e nao a rotacao total acumulada, e o que efetivamente
+    // flete o elemento.
+    Eigen::Vector3d local_rot1 = extract_relative_rotation(node1_tm, ghost);
+    Eigen::Vector3d local_rot2 = extract_relative_rotation(node2_tm, ghost);
+
+    Eigen::Matrix<double, 12, 1> local_disp = Eigen::Matrix<double, 12, 1>::Zero();
+    local_disp.segment<3>(3) = local_rot1;
+    local_disp.segment<3>(9) = local_rot2;
+    local_disp[6] = L - initial_length;
+
+    Eigen::Matrix<double, 12, 12> T = Eigen::Matrix<double, 12, 12>::Zero();
+    T.block<3, 3>(0, 0) = ghost;
+    T.block<3, 3>(3, 3) = ghost;
+    T.block<3, 3>(6, 6) = ghost;
+    T.block<3, 3>(9, 9) = ghost;
+
+    Eigen::Matrix<double, 12, 12> K_local = local_material_stiffness() + local_geometric_stiffness();
+
+    K_global = T.transpose() * K_local * T;
+    F_int_global = T.transpose() * (K_local * local_disp);
 }
 
 CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress_and_curvature(

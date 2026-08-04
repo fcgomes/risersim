@@ -12,7 +12,15 @@ public:
     Eigen::Vector3d coords;      // Initial position (X, Y, Z)
     Eigen::Vector3d disp;        // Displacement vector (u_x, u_y, u_z)
     Eigen::Vector3d rot;         // Rotation vector (theta_x, theta_y, theta_z)
-    
+
+    // Estado persistente da mola de atrito do solo (elástico-plástica
+    // incremental, fiel ao ANFLEX real -- ver seabed.hpp:calculate_friction_1d).
+    // friction_force: forca de atrito acumulada (x,y), equivalente a m_forces[0]/[1].
+    // delta_disp_xy: incremento de deslocamento (x,y) da ULTIMA atualizacao de NR,
+    // usado como "du" na proxima chamada -- equivalente a get_delta_dx()/dy().
+    Eigen::Vector2d friction_force = Eigen::Vector2d::Zero();
+    Eigen::Vector2d delta_disp_xy = Eigen::Vector2d::Zero();
+
     // Global equation numbers for 6 DOFs (-1 if constrained)
     std::vector<int> eq_numbers;
 

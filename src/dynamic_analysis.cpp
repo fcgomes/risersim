@@ -1,4 +1,5 @@
 #include "risersim/dynamic_analysis.hpp"
+#include "risersim/rotation_utils.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -82,13 +83,23 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 auto* node = model->nodes[i];
                 if (node == top_node) continue;
 
+                Eigen::Vector3d dyn_rot_perturbation = Eigen::Vector3d::Zero();
+                bool has_rot_dof = false;
                 for (int k = 0; k < 3; ++k) {
                     int eq = node->eq_numbers[k];
-                    if (eq >= 0) node->disp[k] = static_disps[i][k] + U_curr[eq];
+                    if (eq >= 0) {
+                        double new_disp_k = static_disps[i][k] + U_curr[eq];
+                        // Incremento desta iteracao (para a mola de atrito do solo).
+                        if (k < 2) node->delta_disp_xy[k] = new_disp_k - node->disp[k];
+                        node->disp[k] = new_disp_k;
+                    }
 
                     int eq_rot = node->eq_numbers[k + 3];
-                    if (eq_rot >= 0) node->rot[k] = static_rots[i][k] + U_curr[eq_rot];
+                    if (eq_rot >= 0) { dyn_rot_perturbation[k] = U_curr[eq_rot]; has_rot_dof = true; }
                 }
+                // Composição própria da perturbação dinâmica sobre a rotação
+                // estática de base (não soma linear). Ver rotation_utils.hpp.
+                if (has_rot_dof) node->rot = compose_rotations(static_rots[i], dyn_rot_perturbation);
             }
 
             // Update Element Effective Tensions based on deformed geometry

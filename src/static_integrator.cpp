@@ -59,6 +59,23 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
     }
     avg_EA_L /= static_cast<double>(model->elements.size());
 
+    // NOTA: testado com constante 5.0 (em vez de 1.25) como forma de manter a
+    // rigidez artificial relevante por mais iteracoes -- isso de fato evita a
+    // explosao do residuo em cadeias muito longas (~300+ elementos), mas tem
+    // contrapartida: cadeias curtas convergem mais devagar (mais iteracoes
+    // necessarias) dentro do mesmo orcamento, uma regressao real. Revertido
+    // para 1.25 (comportamento original) ate um esquema adaptativo (ex.:
+    // escalar com o numero de elementos/DOFs da cadeia) ser projetado.
+    // Ver mapa_classes_anflex_estatica.md, secao sobre o limiar ~300 elementos.
+    // NOTA: testado com constante 5.0 (em vez de 1.25) como forma de manter a
+    // rigidez artificial relevante por mais iteracoes -- isso de fato evita a
+    // explosao do residuo em cadeias muito longas (~300+ elementos) e foi
+    // usado para isolar a causa real da divergencia do modelo completo (ver
+    // secao "Causa real isolada" em mapa_classes_anflex_estatica.md: a
+    // combinacao solo+corrente, nao o comprimento da cadeia). Tem contrapartida
+    // real: cadeias curtas convergem mais devagar dentro do mesmo orcamento de
+    // iteracoes. Revertido para 1.25 (comportamento original) ate um esquema
+    // adaptativo (ex.: escalar com o numero de elementos/DOFs) ser projetado.
     double decay = std::exp(-static_cast<double>(iter) / 1.25);
     double k_transversal = avg_EA_L * decay;
     double k_rotational = k_transversal * 0.05;

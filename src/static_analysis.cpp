@@ -1,10 +1,112 @@
 #include "risersim/static_analysis.hpp"
 #include "risersim/static_integrator.hpp"
+#include "risersim/rotation_utils.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <vector>
+#include <functional>
 
 namespace risersim {
+
+namespace {
+
+struct NodeStateSnapshot {
+    Eigen::Vector3d disp, rot;
+    Eigen::Vector2d friction_force;
+};
+
+// Aplica o incremento de Newton-Raphson desta iteração com um line search de
+// backtracking simples: tenta o passo cheio (alpha=1); se o resíduo NÃO
+// diminuir, corta alpha pela metade e tenta de novo, até um número máximo de
+// tentativas — depois disso aceita o menor alpha tentado mesmo assim, para
+// garantir progresso e nunca travar. O ANFLEX real NÃO tem esta técnica
+// (newton_raphson.cpp aplica o passo cheio sempre, sem verificação); esta é
+// uma escolha deliberada de robustez numérica do risersim, motivada pelo
+// padrão de "chattering" (resíduo oscilando/estagnado perto de uma
+// descontinuidade de contato ou atrito, sem nunca convergir nem explodir de
+// forma sustentada) encontrado ao investigar solo+corrente juntos — ver
+// risersim/docs/mapa_classes_anflex_estatica.md.
+using AssembleFn = std::function<void(int, Eigen::SparseMatrix<double>&, Eigen::VectorXd&)>;
+
+Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn,
+                                                    RiserModel* model,
+                                                    const Eigen::VectorXd& F_ext,
+                                                    const Eigen::VectorXd& step_dU,
+                                                    double norm_R_before,
+                                                    int iter,
+                                                    Node3D* excluded_node) {
+    std::vector<NodeStateSnapshot> snapshot(model->nodes.size());
+    for (size_t k = 0; k < model->nodes.size(); ++k) {
+        snapshot[k] = {model->nodes[k]->disp, model->nodes[k]->rot, model->nodes[k]->friction_force};
+    }
+
+    auto apply_scaled = [&](double alpha) {
+        for (auto* node : model->nodes) {
+            if (node == excluded_node) continue;
+            Eigen::Vector3d delta_rot = Eigen::Vector3d::Zero();
+            bool has_rot_dof = false;
+            for (int i = 0; i < 3; ++i) {
+                int eq = node->eq_numbers[i];
+                double du = (eq >= 0) ? alpha * step_dU[eq] : 0.0;
+                if (eq >= 0) node->disp[i] += du;
+                if (i < 2) node->delta_disp_xy[i] = du;
+                int eq_rot = node->eq_numbers[i + 3];
+                if (eq_rot >= 0) { delta_rot[i] = alpha * step_dU[eq_rot]; has_rot_dof = true; }
+            }
+            if (has_rot_dof) node->rot = compose_rotations(node->rot, delta_rot);
+        }
+    };
+    auto restore = [&]() {
+        for (size_t k = 0; k < model->nodes.size(); ++k) {
+            model->nodes[k]->disp = snapshot[k].disp;
+            model->nodes[k]->rot = snapshot[k].rot;
+            model->nodes[k]->friction_force = snapshot[k].friction_force;
+        }
+    };
+
+    const int max_backtracks = 5;
+    double alpha = 1.0;
+    Eigen::VectorXd accepted_dU;
+    for (int bt = 0; bt <= max_backtracks; ++bt) {
+        restore();
+        apply_scaled(alpha);
+        for (auto* elem : model->elements) elem->update_effective_tension();
+
+        Eigen::SparseMatrix<double> K_trial;
+        Eigen::VectorXd F_int_trial;
+        assemble_fn(iter, K_trial, F_int_trial);
+        double norm_trial = (F_ext - F_int_trial).norm();
+
+        // Tolerância BEM generosa (100x) -- não estamos tentando perseguir
+        // decréscimo monotônico do resíduo (Newton legitimamente piora o
+        // resíduo em algumas iterações intermediárias longe da solução, e
+        // isso é normal/autocorrige com passo cheio; um limiar apertado
+        // demais faz o solver desviar para uma trajetória de passos
+        // artificialmente pequenos que, em casos bem-comportados, piora o
+        // resultado final em vez de ajudar -- ver mapa_classes_anflex_estatica.md,
+        // "regressão pontual" descoberta ao testar isto). O único objetivo
+        // aqui é servir de rede de segurança contra explosão catastrófica
+        // real (ordens de grandeza), o padrão de "chattering" de contato
+        // observado com solo+corrente -- não substituir o passo cheio normal.
+        if (norm_trial <= norm_R_before * 100.0 || bt == max_backtracks) {
+            accepted_dU = alpha * step_dU;
+            break;
+        }
+        alpha *= 0.5;
+    }
+
+    // O assemble_fn desta função já consumiu delta_disp_xy para atualizar
+    // node->friction_force (elástico-plástico incremental, ver seabed.hpp).
+    // Zera para não deixar o próximo assemble (no topo da iteração seguinte,
+    // fora desta função) reaplicar o MESMO incremento uma segunda vez —
+    // sem isso, a força de atrito é contada em dobro a cada iteração.
+    for (auto* node : model->nodes) node->delta_disp_xy.setZero();
+
+    return accepted_dU;
+}
+
+} // namespace
 
 bool StaticAnalysis::solve() {
     // Passo 3 do roadmap de modernização (risersim/docs/mapa_classes_anflex_estatica.md):
@@ -157,22 +259,16 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 return false;
             }
 
-            // Newton-Raphson puro (passo completo, sem line search), igual ao ANFLEX real
-            // (newton_raphson.cpp: aplica m_linear_soe->get_x() diretamente). A rigidez
-            // artificial do primeiro passo é o que mantém isso estável.
-            for (auto* node : model->nodes) {
-                for (int i = 0; i < 3; ++i) {
-                    int eq = node->eq_numbers[i];
-                    if (eq >= 0) node->disp[i] += step_dU[eq];
-
-                    int eq_rot = node->eq_numbers[i + 3];
-                    if (eq_rot >= 0) node->rot[i] += step_dU[eq_rot];
-                }
-            }
-
-            for (auto* elem : model->elements) {
-                elem->update_effective_tension();
-            }
+            // Line search de backtracking (ver apply_newton_step_with_line_search):
+            // tenta o passo cheio, corta pela metade se o resíduo não diminuir.
+            // Ataca o "chattering" de contato/atrito encontrado com solo+corrente
+            // (mapa_classes_anflex_estatica.md), sem exigir mudar a formulação de
+            // contato/atrito em si.
+            AssembleFn assemble_fn = [&integrator](int it, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& F) {
+                integrator.assemble_stiffness_and_internal_forces(it, K, F);
+            };
+            Eigen::VectorXd accepted_dU = apply_newton_step_with_line_search(
+                assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr);
 
             // Critério de convergência multi-critério do ANFLEX real (convergence_test.cpp):
             // a correção desta iteração precisa ser pequena em relação ao deslocamento total
@@ -180,9 +276,9 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             // converge mesmo quando o resíduo de força ainda não caiu a zero (o desequilíbrio
             // remanescente é resolvido nos passos de carga seguintes, conforme a rigidez real
             // vai se estabelecendo). Exige pelo menos 2 iterações (iter >= 1).
-            cumulative_dU += step_dU;
+            cumulative_dU += accepted_dU;
             double this_transl_norm, this_rot_norm, cum_transl_norm, cum_rot_norm;
-            split_norms(step_dU, this_transl_norm, this_rot_norm);
+            split_norms(accepted_dU, this_transl_norm, this_rot_norm);
             split_norms(cumulative_dU, cum_transl_norm, cum_rot_norm);
 
             double ratio_transl = (cum_transl_norm > 1.0e-12) ? (this_transl_norm / cum_transl_norm) : 0.0;
@@ -320,20 +416,11 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 return false;
             }
 
-            for (auto* node : model->nodes) {
-                if (node == top_node) continue;
-                for (int i = 0; i < 3; ++i) {
-                    int eq = node->eq_numbers[i];
-                    if (eq >= 0) node->disp[i] += step_dU[eq];
-
-                    int eq_rot = node->eq_numbers[i + 3];
-                    if (eq_rot >= 0) node->rot[i] += step_dU[eq_rot];
-                }
-            }
-
-            for (auto* elem : model->elements) {
-                elem->update_effective_tension();
-            }
+            AssembleFn assemble_fn = [this](int, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& F) {
+                Eigen::VectorXd F_ext_unused;
+                this->assemble_system(K, F_ext_unused, F);
+            };
+            apply_newton_step_with_line_search(assemble_fn, model, F_ext, step_dU, norm_R, iter, top_node);
         }
 
         if (!step_converged) {

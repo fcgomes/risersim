@@ -89,12 +89,33 @@ TEST_CASE("StaticAnalysis converges on the synthetic fallback catenary", "[stati
 
     REQUIRE(converged);
 
-    // Valor de referencia capturado rodando o pipeline atual (pre-refactor)
-    // no Exemplo_01a fallback, via Docker: T_eff = 2121596.50726 kN no
-    // elemento do topo. Tolerancia generosa (0.5%) para absorver diferencas
-    // de ultimo digito entre plataformas/otimizacoes, sem mascarar uma
-    // mudanca real de comportamento.
-    const double expected_tension_effective_N = 2121596.50726 * 1000.0;
+    // Valor de referencia ATUALIZADO apos a correcao da causa raiz da
+    // divergencia (mapa_classes_anflex_estatica.md, secao "Causa raiz
+    // encontrada e corrigida"): a forca interna passou a usar a rotacao
+    // LOCAL/deformacional de cada no (relativa ao ghost frame do elemento)
+    // em vez da rotacao total acumulada. Neste caso sintetico (DOFs de
+    // rotacao travados em 0 em todos os nos), isso muda o comportamento de
+    // forma intencional e correta: antes, rotacao=0 sempre => rigidez de
+    // flexao nunca contribuia (equivalente a um cabo sem flexao); agora, o
+    // "ghost frame" acompanha a corda atual enquanto o no fica congelado na
+    // orientacao inicial, entao a flexao real passa a resistir a deformacao
+    // -- daí a tensao de equilibrio bem menor. Valor ATUALIZADO DE NOVO apos
+    // trocar a mola de atrito do solo por uma versao elastico-plastica
+    // incremental (com estado persistente por no), fiel ao ANFLEX real
+    // (soil_uncoupled.cpp) -- a versao anterior usava o deslocamento TOTAL
+    // acumulado em vez do incremento por iteracao, o que satura a forca de
+    // atrito de forma fisicamente incorreta. Este caso sintetico tem solo
+    // habilitado (seabed com k=1e5, mu=0.5), entao a mudanca de modelo de
+    // atrito afeta o resultado. Valor ATUALIZADO DE NOVO apos decompor o
+    // atrito nas direcoes axial/lateral LOCAIS da linha (em vez de X/Y
+    // globais), fiel ao ANFLEX real (soil.cpp:calc_transf_matrix). Valor
+    // ATUALIZADO DE NOVO apos adicionar um line search de backtracking ao
+    // Newton-Raphson (apply_newton_step_with_line_search em
+    // static_analysis.cpp) -- este caso tem solo habilitado, entao a
+    // trajetoria de iteracoes muda quando o passo cheio eventualmente diverge
+    // muito do residuo anterior. T_eff capturado via Docker apos a correcao:
+    // 3539.18588 kN no elemento do topo.
+    const double expected_tension_effective_N = 3539.1858815034814 * 1000.0;
     REQUIRE(model->elements.front()->tension_effective == Catch::Approx(expected_tension_effective_N).epsilon(0.005));
 
     delete model;

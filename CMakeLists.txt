@@ -85,6 +85,12 @@ target_link_libraries(risersim_core PUBLIC Eigen3::Eigen nlohmann_json::nlohmann
 add_executable(risersim_test_main src/main_test.cpp)
 target_link_libraries(risersim_test_main PRIVATE risersim_core)
 
+# Diagnostico: isola um pedaco pequeno da malha real para investigar a
+# divergencia do elemento corrotacional fora do contexto de 500 elementos
+# acoplados (ver risersim/docs/mapa_classes_anflex_estatica.md).
+add_executable(risersim_diag_isolated_segment tests/diag_isolated_segment.cpp)
+target_link_libraries(risersim_diag_isolated_segment PRIVATE risersim_core)
+
 # 2. Optional pybind11 for Python API Bindings (import risersim)
 find_package(Python3 COMPONENTS Interpreter Development)
 if(Python3_FOUND)
