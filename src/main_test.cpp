@@ -3,6 +3,7 @@
 #include <fstream>
 #include <string>
 #include <cmath>
+#include <map>
 #include <nlohmann/json.hpp>
 
 #include "risersim/node.hpp"
@@ -171,6 +172,30 @@ int main(int argc, char* argv[]) {
                     if (!is_constrained[i]) {
                         model->nodes[i]->eq_numbers = {0, 1, 2, 3, 4, 5}; // Translações e rotações livres
                     }
+                }
+
+                // 3.5. Warm Start (geometria de equilíbrio calculada externamente,
+                // ex.: MoorPy via risersim/tools/moorpy_warm_start.py) --
+                // opcional; sem essa seção, comportamento idêntico ao atual.
+                // Ajusta apenas `disp` (nunca `coords`), preservando o
+                // comprimento não-esticado de cada elemento calculado acima.
+                if (j.contains("warm_start") && j["warm_start"].contains("node_positions")) {
+                    std::map<int, risersim::Node3D*> node_by_id;
+                    for (auto* node : model->nodes) node_by_id[node->id] = node;
+
+                    int warm_applied = 0;
+                    for (auto& wp : j["warm_start"]["node_positions"]) {
+                        int n_id = wp["node_id"].get<int>();
+                        auto coords_w = wp["coords"].get<std::vector<double>>();
+                        auto it = node_by_id.find(n_id);
+                        if (it != node_by_id.end()) {
+                            Eigen::Vector3d warm_pos(coords_w[0], coords_w[1], coords_w[2]);
+                            it->second->disp = warm_pos - it->second->coords;
+                            warm_applied++;
+                        }
+                    }
+                    std::cout << "🔥 Warm start aplicado: " << warm_applied << " nós (fonte: "
+                              << j["warm_start"].value("source", "?") << ")" << std::endl;
                 }
 
                 // 4. Parâmetros Ambientais

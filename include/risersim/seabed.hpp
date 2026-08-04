@@ -12,30 +12,31 @@ public:
     double stiffness_z;    // Vertical soil stiffness (N/m^2 or N/m per node, default 1e5)
     double friction_coeff; // Lateral/axial friction coefficient mu (default 0.5)
     double elastic_deflection_limit; // Deslocamento que mobiliza o atrito limite (m)
-    double contact_ramp_zone;        // Faixa de penetração onde a rigidez normal é suavizada (m)
+    double ultimate_bearing_force;   // Capacidade de suporte última do solo por nó (N)
 
-    SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double ramp = 0.05)
-        : seabed_depth(depth), stiffness_z(kz), friction_coeff(mu), elastic_deflection_limit(u_limit), contact_ramp_zone(ramp) {}
+    SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double f_ult = 5000.0)
+        : seabed_depth(depth), stiffness_z(kz), friction_coeff(mu), elastic_deflection_limit(u_limit), ultimate_bearing_force(f_ult) {}
 
     // Calculate normal reaction force and stiffness contribution for a node.
-    // Suaviza a transição de contato numa pequena faixa (contact_ramp_zone) em vez de
-    // um degrau abrupto em pen=0: força e rigidez tangente ficam contínuas em pen=0 e
-    // em pen=contact_ramp_zone, evitando "chattering" quando um nó cruza o limiar do
-    // solo repetidamente entre iterações do Newton-Raphson (comum quando muitos nós
-    // começam praticamente encostados no fundo, como neste modelo).
+    // Modelo hiperbólico não-linear (mesma forma funcional das curvas P-Y/T-Z reais de
+    // geotecnia offshore): f(pen) = pen / (1/k_inicial + pen/f_ultima). A rigidez tangente
+    // começa em k_inicial=stiffness_z (suave) e satura assintoticamente em f_ultima à medida
+    // que a penetração cresce — em vez de um salto abrupto para a rigidez linear total assim
+    // que pen>0, o que causava "chattering"/mal-condicionamento com muitos nós entrando em
+    // contato quase simultaneamente (comum quando o leito marinho já toca boa parte da malha
+    // na configuração inicial).
     void calculate_seabed_reaction(double z_current, double& f_normal, double& k_normal) const {
         double pen = seabed_depth - z_current; // > 0 quando penetrando
         if (pen <= 0.0) {
             f_normal = 0.0;
             k_normal = 0.0;
-        } else if (contact_ramp_zone > 1.0e-9 && pen < contact_ramp_zone) {
-            // Rampa quadrática: f(0)=0, f'(0)=0, contínua com o regime linear em pen=ramp
-            k_normal = (stiffness_z / contact_ramp_zone) * pen;
-            f_normal = 0.5 * (stiffness_z / contact_ramp_zone) * pen * pen;
-        } else {
-            f_normal = stiffness_z * (pen - 0.5 * contact_ramp_zone);
-            k_normal = stiffness_z;
+            return;
         }
+        double a = 1.0 / stiffness_z;
+        double b = 1.0 / ultimate_bearing_force;
+        double denom = a + b * pen;
+        f_normal = pen / denom;
+        k_normal = a / (denom * denom); // df/dpen
     }
 
     // Mola de atrito de Coulomb elástico-plástica (1D), na mesma linha do

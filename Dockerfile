@@ -12,8 +12,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala versão mais recente do CMake e h5py via pip
-RUN pip3 install --no-cache-dir cmake h5py
+# Instala versão mais recente do CMake, h5py e MoorPy (spike de validação
+# em risersim/spikes/mooring_validation) via pip
+RUN pip3 install --no-cache-dir cmake h5py moorpy
 
 WORKDIR /app
 
