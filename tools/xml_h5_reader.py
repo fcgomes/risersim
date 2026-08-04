@@ -79,67 +79,83 @@ class ANFLEXXmlH5Reader:
         return elements
 
     def extract_material_properties(self):
-        """Extrai as propriedades físicas e mecânicas da linha do XML."""
-        # Encontra a tag de material flexível
-        mat_elem = self.root.find(".//FlexibleLines")
-        if mat_elem is None:
-            # Fallback para procurar em qualquer lugar
-            mat_elem = self.root.find(".//FlexibleLine")
+        """Extrai as propriedades físicas e mecânicas da linha do XML.
 
-        # Busca propriedades nos materiais flexíveis (RISE)
-        # No XML estão tipicamente no ramo de materiais
+        O material real fica em Groups/group1/Materials/<NomeDoSegmento> (nome
+        dinâmico por segmento, ex. "RISE_L1_seg001"), não em uma tag fixa
+        "FlexibleLine". Os campos do ANFLEX usam unidades de engenharia
+        (kN, kN/m², kN/m³), não SI puro — a conversão é feita explicitamente
+        abaixo.
+        """
+        mat = None
+        materials_group = self.root.find(".//Groups/group1/Materials")
+        if materials_group is not None and len(materials_group) > 0:
+            mat = materials_group[0]  # Pega o primeiro material do grupo
+
         material_data = {}
-        for mat in self.root.findall(".//FlexibleLine"):
-            mat_id = mat.find("id")
-            name = mat.tag
-            
-            di = float(mat.find("diameter_internal").text) if mat.find("diameter_internal") is not None else 0.2032
-            do = float(mat.find("diameter_external").text) if mat.find("diameter_external") is not None else 0.2779
-            dh = float(mat.find("diameter_hydrodynamic").text) if mat.find("diameter_hydrodynamic") is not None else do
-            w_dry = float(mat.find("weight_dry").text) if mat.find("weight_dry") is not None else 1.0494
-            w_wet = float(mat.find("weight_wet").text) if mat.find("weight_wet") is not None else 0.4395
-            
-            ea = float(mat.find("stiffness_axial").text) if mat.find("stiffness_axial") is not None else 3.6e5
-            ei = float(mat.find("stiffness_bending").text) if mat.find("stiffness_bending") is not None else 21.7
-            gj = float(mat.find("stiffness_torsional").text) if mat.find("stiffness_torsional") is not None else 3200.0
-            
-            cm = float(mat.find("morison_inertia").text) if mat.find("morison_inertia") is not None else 2.0
-            cd = float(mat.find("morison_drag").text) if mat.find("morison_drag") is not None else 1.0
-            cd_long = float(mat.find("morison_drag_longitudinal").text) if mat.find("morison_drag_longitudinal") is not None else 0.0
+        if mat is not None:
+            def mf(tag, default):
+                el = mat.find(tag)
+                try:
+                    return float(el.text) if el is not None and el.text else default
+                except ValueError:
+                    return default
 
-            # Conversão para SI
-            ea_N = ea * 1000.0
-            ei_Nm2 = ei * 1000.0
-            gj_Nm2 = gj * 1000.0
-            area_struct = (math.pi * (do**2 - di**2) / 4.0)
-            
-            # Estimativa de massa e E/G equivalente
-            dry_mass_kgm = w_dry * 1000.0 / 9.81
-            E = ea_N / area_struct if area_struct > 0 else 2.1e11
-            G = gj_Nm2 / (2.0 * (E * (math.pi * (do**4 - di**4) / 64.0))) if area_struct > 0 else 8.0e10
-            
+            di = mf("internal_diameter", 0.2032)
+            do = mf("external_diameter", 0.2779)
+            dh = mf("hidro_diameter", do)
+            area = mf("area", math.pi * (do**2 - di**2) / 4.0)
+            hidro_area = mf("hidrostatic_area", math.pi * do**2 / 4.0)
+
+            density_kNm3 = mf("density", 37.18)                 # peso específico estrutural (kN/m3)
+            ext_fluid_kNm3 = mf("external_fluid_density", 10.055)
+            int_fluid_kNm3 = mf("internal_fluid_density", ext_fluid_kNm3)
+
+            elasticity_kNm2 = mf("elasticity", 1.27543e7)        # E em kN/m2
+            poisson = mf("poisson", 0.3)
+            xi = mf("xi", 6.5233e-4)   # J  (m4)
+            yi = mf("yi", 1.7014e-6)   # IY (m4)
+            zi = mf("zi", yi)          # IZ (m4)
+
+            cm = mf("inertia_coef", 2.0)
+            cd = mf("drag_normal_coef", 1.0)
+            cd_long = mf("drag_longitudinal_coef", 0.0)
+
+            # Conversão para SI: ANFLEX usa kN / kN/m2 / kN/m3 internamente
+            E = elasticity_kNm2 * 1000.0                # Pa
+            G = E / (2.0 * (1.0 + poisson))              # Pa
+            ea_N = E * area
+            ei_Nm2 = E * yi
+            gj_Nm2 = G * xi
+
+            weight_dry_kNm = density_kNm3 * area
+            # Peso submerso = peso seco - empuxo (peso específico da água externa * área hidrostática)
+            weight_wet_kNm = weight_dry_kNm - ext_fluid_kNm3 * hidro_area
+
             material_data = {
-                "name": name,
+                "name": mat.tag,
                 "inner_diameter_m": di,
                 "outer_diameter_m": do,
                 "hydro_diameter_m": dh,
-                "weight_dry_kNm": w_dry,
-                "weight_wet_kNm": w_wet,
-                "dry_mass_kgm": dry_mass_kgm,
+                "weight_dry_kNm": weight_dry_kNm,
+                "weight_wet_kNm": weight_wet_kNm,
                 "EA_N": ea_N,
                 "EI_Nm2": ei_Nm2,
                 "GJ_Nm2": gj_Nm2,
                 "E_Pa": E,
                 "G_Pa": G,
-                "A_m2": area_struct,
+                "A_m2": area,
+                "IY_m4": yi,
+                "IZ_m4": zi,
+                "J_m4": xi,
                 "Cd": cd,
                 "Cm": cm,
-                "Cd_longitudinal": cd_long
+                "Cd_longitudinal": cd_long,
+                "internal_fluid_density_kgm3": int_fluid_kNm3 * 1000.0 / 9.81,
             }
-            break # Pega o primeiro material disponível
-            
+
         if not material_data:
-            # Fallback para propriedades padrão do RISE
+            # Fallback só quando o XML não tem nenhum material (não deveria ocorrer)
             material_data = {
                 "name": "RISE",
                 "inner_diameter_m": 0.2032,
@@ -147,18 +163,84 @@ class ANFLEXXmlH5Reader:
                 "hydro_diameter_m": 0.2779,
                 "weight_dry_kNm": 1.0494,
                 "weight_wet_kNm": 0.4395,
-                "dry_mass_kgm": 1.0494 * 1000.0 / 9.81,
                 "EA_N": 3.6e8,
                 "EI_Nm2": 21700.0,
                 "GJ_Nm2": 3200000.0,
                 "E_Pa": 12.75e9,
                 "G_Pa": 7.65e9,
                 "A_m2": 0.0282,
+                "IY_m4": 1.7014e-6,
+                "IZ_m4": 1.7014e-6,
+                "J_m4": 6.5233e-4,
                 "Cd": 1.0,
                 "Cm": 2.0,
-                "Cd_longitudinal": 0.0
+                "Cd_longitudinal": 0.0,
+                "internal_fluid_density_kgm3": 1025.0,
             }
         return material_data
+
+    def extract_current_profile(self):
+        """Lê o perfil de corrente real associado ao caso de carregamento do XML.
+
+        O perfil fica em Currents/<Nome>/profile/values, como linhas
+        "profundidade|ângulo|velocidade" (profundidade medida a partir do leito
+        marinho, crescente em direção à superfície). O current_id usado é o do
+        primeiro caso de carregamento (LoadingCases/<Caso>/current_id).
+        """
+        current_id = None
+        loading_cases = self.root.find(".//LoadingCases")
+        if loading_cases is not None and len(loading_cases) > 0:
+            first_case = loading_cases[0]
+            cid_el = first_case.find("current_id")
+            if cid_el is not None and cid_el.text:
+                try:
+                    current_id = int(float(cid_el.text))
+                except ValueError:
+                    current_id = None
+
+        currents_root = self.root.find(".//Currents")
+        chosen = None
+        if currents_root is not None and len(currents_root) > 0:
+            for child in currents_root:
+                id_el = child.find("id")
+                if id_el is not None and id_el.text and current_id is not None:
+                    try:
+                        if int(float(id_el.text)) == current_id:
+                            chosen = child
+                            break
+                    except ValueError:
+                        pass
+            if chosen is None:
+                chosen = currents_root[0]
+
+        depths, angles, vels = [], [], []
+        if chosen is not None:
+            values_el = chosen.find("profile/values")
+            if values_el is not None and values_el.text:
+                for line in values_el.text.strip().splitlines():
+                    parts = line.strip().split("|")
+                    if len(parts) >= 3:
+                        try:
+                            depths.append(float(parts[0]))
+                            angles.append(float(parts[1]))
+                            vels.append(float(parts[2]))
+                        except ValueError:
+                            continue
+
+        if not depths:
+            # Fallback só quando o XML não tem nenhum perfil de corrente
+            return [0.0, 265.0], [90.0, 90.0], [1.02, 0.27]
+
+        # "Depth" no XML é medido a partir do leito marinho (0=fundo, crescente
+        # até a superfície) — mesma convenção dos nós do modelo. main_test.cpp
+        # só consome o índice [0] como valor de superfície, então inverte-se a
+        # ordem para que o ponto mais raso (perto da superfície) fique primeiro.
+        order = sorted(range(len(depths)), key=lambda i: depths[i], reverse=True)
+        depths = [depths[i] for i in order]
+        angles = [angles[i] for i in order]
+        vels = [vels[i] for i in order]
+
+        return depths, angles, vels
 
     def to_risersim_json(self):
         """Converte a modelagem XML+H5 para o novo formato JSON estruturado."""
@@ -170,19 +252,22 @@ class ANFLEXXmlH5Reader:
         material = self.extract_material_properties()
         
         # Associa as propriedades do material aos elementos
+        weight_wet_kNm = material["weight_wet_kNm"]
+        rho_equivalent = (weight_wet_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
         for elem in elements:
             elem["section_properties"] = {
                 "E": material["E_Pa"],
                 "G": material["G_Pa"],
                 "A": material["A_m2"],
-                "IY": material["EI_Nm2"] / material["E_Pa"] if material["E_Pa"] > 0 else 5e-5,
-                "IZ": material["EI_Nm2"] / material["E_Pa"] if material["E_Pa"] > 0 else 5e-5,
-                "J": material["GJ_Nm2"] / material["G_Pa"] if material["G_Pa"] > 0 else 1e-4,
+                "IY": material.get("IY_m4", material["EI_Nm2"] / material["E_Pa"] if material["E_Pa"] > 0 else 5e-5),
+                "IZ": material.get("IZ_m4", material["EI_Nm2"] / material["E_Pa"] if material["E_Pa"] > 0 else 5e-5),
+                "J": material.get("J_m4", material["GJ_Nm2"] / material["G_Pa"] if material["G_Pa"] > 0 else 1e-4),
                 "EI": material["EI_Nm2"],
-                "rho": material["dry_mass_kgm"] / material["A_m2"] if material["A_m2"] > 0 else 7850.0,
+                "weight_wet_kNm": weight_wet_kNm,
+                "rho": rho_equivalent,
                 "D_outer": material["outer_diameter_m"],
                 "D_inner": material["inner_diameter_m"],
-                "rho_fluid": 1025.0, # Fluido interno padrão
+                "rho_fluid": material.get("internal_fluid_density_kgm3", 1025.0),
                 "Ca": material["Cm"] - 1.0
             }
 
@@ -202,22 +287,27 @@ class ANFLEXXmlH5Reader:
             "dofs": [-1, -1, -1, -1, -1, -1]
         })
         
-        # 3. Solo
-        soil_stiff_kNm = self.get_float(".//Soils/Solo/spring/stiffness", 800.0)
-        friction_lat = self.get_float(".//Soils/Solo/friction/lateral", 0.95)
-        seabed_depth = self.get_float(".//GlobalData/seabed/depth", 265.0)
-        
+        # 3. Solo (Soils/Solo/vertical_stiffness e lateral_friction são campos diretos,
+        # não aninhados sob "spring"/"friction" como no XPath antigo)
+        soil_stiff_kNm = self.get_float(".//Soils/Solo/vertical_stiffness", 800.0)
+        friction_lat = self.get_float(".//Soils/Solo/lateral_friction", 0.95)
+        # GlobalData/seabed é um escalar de referência (não um branch com "depth");
+        # a lâmina d'água real é GlobalData/seawater_level
+        seabed_depth = self.get_float(".//GlobalData/seawater_level", 265.0)
+
         # 4. Caso de Análise Estática / Dinâmica
+        # (num_max_iter, não max_num_iteration; x_tol é a tolerância relativa de
+        # deslocamento, compatível com o critério rel_R < tolerance do solver)
         static_total_time = self.get_float(".//AnalysisData/Static/total_time", 11.0)
         static_time_step = self.get_float(".//AnalysisData/Static/time_step", 1.0)
-        static_max_iter = self.get_int(".//AnalysisData/Static/max_num_iteration", 40)
-        static_tol = self.get_float(".//AnalysisData/Static/tolerance", 1.0e-3)
-        
+        static_max_iter = self.get_int(".//AnalysisData/Static/num_max_iter", 40)
+        static_tol = self.get_float(".//AnalysisData/Static/x_tol", 1.0e-3)
+
         dyn_total_time = self.get_float(".//AnalysisData/Dynamic/total_time", 1.0)
         dyn_time_step = self.get_float(".//AnalysisData/Dynamic/time_step", 0.05)
-        dyn_max_iter = self.get_int(".//AnalysisData/Dynamic/max_num_iteration", 20)
-        dyn_tol = self.get_float(".//AnalysisData/Dynamic/tolerance", 1.0e-3)
-        
+        dyn_max_iter = self.get_int(".//AnalysisData/Dynamic/num_max_iter", 20)
+        dyn_tol = self.get_float(".//AnalysisData/Dynamic/x_tol", 1.0e-3)
+
         static_steps = max(1, int(static_total_time / (static_time_step if static_time_step > 0 else 1.0)))
 
         # 5. Onda (JONSWAP)
@@ -226,11 +316,9 @@ class ANFLEXXmlH5Reader:
         wave_gamma = self.get_float(".//Waves/ON/gamma", 2.07)
         wave_angle = self.get_float(".//Waves/ON/angle", 0.0)
 
-        # 6. Corrente
-        # Fallback de perfil de corrente
-        curr_depths = [0.0, seabed_depth]
-        curr_vels = [1.02, 0.27]
-        curr_angles = [90.0, 90.0]
+        # 6. Corrente (perfil real lido de Currents/<id>/profile, associado ao
+        # current_id do primeiro caso de carregamento)
+        curr_depths, curr_angles, curr_vels = self.extract_current_profile()
 
         # Montagem do JSON estruturado
         data = {

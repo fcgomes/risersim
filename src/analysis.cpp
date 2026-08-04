@@ -58,6 +58,28 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             F_int[eq_z] -= f_seabed; // Upward normal reaction force from seabed
             triplets.push_back(Eigen::Triplet<double>(eq_z, eq_z, k_seabed));
         }
+
+        // Molas de atrito horizontal (X/Y) para nós em contato com o solo — sem isso,
+        // nós apoiados no leito marinho não têm nenhuma resistência a deslocamento
+        // lateral além da rigidez do próprio elemento, o que deixa o sistema muito
+        // mais mal-condicionado do que o modelo real (que tem atrito axial/lateral).
+        if (k_seabed > 0.0) {
+            double f_fric_x = 0.0, k_fric_x = 0.0;
+            double f_fric_y = 0.0, k_fric_y = 0.0;
+            seabed.calculate_friction_1d(f_seabed, node->disp.x(), f_fric_x, k_fric_x);
+            seabed.calculate_friction_1d(f_seabed, node->disp.y(), f_fric_y, k_fric_y);
+
+            int eq_x = node->eq_numbers[0];
+            int eq_y = node->eq_numbers[1];
+            if (eq_x >= 0) {
+                F_int[eq_x] += f_fric_x;
+                triplets.push_back(Eigen::Triplet<double>(eq_x, eq_x, k_fric_x));
+            }
+            if (eq_y >= 0) {
+                F_int[eq_y] += f_fric_y;
+                triplets.push_back(Eigen::Triplet<double>(eq_y, eq_y, k_fric_y));
+            }
+        }
     }
 
     K_global.setFromTriplets(triplets.begin(), triplets.end());

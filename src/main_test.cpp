@@ -300,13 +300,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Configuração Estática com contato rígido no solo (Stiffness Penalty = 1e6 N/m^2)
+    // Configuração Estática
     risersim::StaticAnalysis static_analysis;
     static_analysis.model = model;
     static_analysis.water_density = parsed_from_json ? 0.0 : water_density;
     static_analysis.water_density_for_mass = 1025.0;  // Sempre real para massa adicionada
-    double penalty_seabed_stiffness = std::max(seabed_stiffness, 1.0e6);
-    static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, penalty_seabed_stiffness, seabed_friction);
+    static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, seabed_stiffness, seabed_friction);
     static_analysis.load_steps = static_steps;
     static_analysis.max_iter_per_step = static_max_iter;
     static_analysis.tol = static_tolerance;

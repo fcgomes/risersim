@@ -112,8 +112,16 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const 
     double L = dx.norm();
     
     Eigen::Vector3d ex = dx / L;
+    // Escolhe o eixo global menos alinhado com ex (em vez de um limiar fixo em Z),
+    // para evitar uma troca descontínua de referência quando muitos elementos ficam
+    // perto de um limiar único (ex: elementos quase verticais todos perto de |ex.z|=0.99,
+    // onde uma pequena correção de Newton pode empurrá-los para o outro lado e causar
+    // um salto abrupto na matriz de rigidez local entre iterações).
+    double adx = std::abs(ex.x()), ady = std::abs(ex.y()), adz = std::abs(ex.z());
     Eigen::Vector3d ez_temp(0, 0, 1);
-    if (std::abs(ex.dot(ez_temp)) > 0.99) {
+    if (adx <= ady && adx <= adz) {
+        ez_temp = Eigen::Vector3d(1, 0, 0);
+    } else if (ady <= adx && ady <= adz) {
         ez_temp = Eigen::Vector3d(0, 1, 0);
     }
     Eigen::Vector3d ey = ez_temp.cross(ex).normalized();

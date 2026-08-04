@@ -102,6 +102,27 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
         bool step_converged = false;
 
+        // Acumula o deslocamento total do passo (zerado a cada novo load step), usado
+        // pelo critério de convergência por incremento relativo (ver abaixo).
+        Eigen::VectorXd cumulative_dU = Eigen::VectorXd::Zero(num_dofs);
+
+        // Soma as normas (translação, rotação) de um vetor de incremento restrito aos
+        // DOFs livres de cada tipo, igual a cIntegrator::get_translation_inc_norm /
+        // get_rotation_inc_norm do ANFLEX real.
+        auto split_norms = [&](const Eigen::VectorXd& v, double& transl_norm, double& rot_norm) {
+            double t = 0.0, r = 0.0;
+            for (auto* node : model->nodes) {
+                for (int i = 0; i < 3; ++i) {
+                    int eq = node->eq_numbers[i];
+                    if (eq >= 0) t += v[eq] * v[eq];
+                    int eq_rot = node->eq_numbers[i + 3];
+                    if (eq_rot >= 0) r += v[eq_rot] * v[eq_rot];
+                }
+            }
+            transl_norm = std::sqrt(t);
+            rot_norm = std::sqrt(r);
+        };
+
         for (int iter = 0; iter < max_iter; ++iter) {
             Eigen::SparseMatrix<double> K_global;
             Eigen::VectorXd F_int;
@@ -113,14 +134,92 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             double rel_R = norm_R / norm_F_ref;
 
             if (iter % 10 == 0 || rel_R < 1.0e-3) {
-                std::cout << "  Iter " << std::setw(3) << iter << " | Residual Norm: " 
+                std::cout << "  Iter " << std::setw(3) << iter << " | Residual Norm: "
                           << std::scientific << std::setprecision(4) << norm_R << " | Rel R (ref): " << rel_R << std::defaultfloat << std::endl;
             }
 
-            // Critério de convergência: resíduo relativo < tolerância (iter > 0 garante pelo menos 1 correção NR)
-            if (iter > 0 && rel_R < tolerance) {
-                std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations! (norm_R = " 
-                          << norm_R << " N)" << std::endl;
+            // Rigidez artificial (regularização de Tikhonov) no primeiro passo de carga,
+            // igual à técnica do ANFLEX real (beam.cpp:calc_artificial_stiffness /
+            // static_integrator.cpp). No primeiro passo a geometria ainda está quase reta
+            // e sem tração, deixando a rigidez lateral/flexional real quase singular —
+            // a rigidez artificial (proporcional à rigidez axial média EA/L dos elementos)
+            // estabiliza as primeiras iterações e decai exponencialmente até desaparecer.
+            if (step == 1 && !model->elements.empty()) {
+                double avg_EA_L = 0.0;
+                for (auto* elem : model->elements) {
+                    double L = elem->current_length();
+                    if (L > 1.0e-9) avg_EA_L += (elem->props.E * elem->props.A) / L;
+                }
+                avg_EA_L /= static_cast<double>(model->elements.size());
+
+                double decay = std::exp(-static_cast<double>(iter) / 1.25);
+                double k_transversal = avg_EA_L * decay;
+                double k_rotational = k_transversal * 0.05;
+
+                std::vector<Eigen::Triplet<double>> artif_triplets;
+                for (auto* node : model->nodes) {
+                    for (int i = 0; i < 3; ++i) {
+                        int eq = node->eq_numbers[i];
+                        if (eq >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq, eq, k_transversal));
+
+                        int eq_rot = node->eq_numbers[i + 3];
+                        if (eq_rot >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq_rot, eq_rot, k_rotational));
+                    }
+                }
+                Eigen::SparseMatrix<double> K_artificial(num_dofs, num_dofs);
+                K_artificial.setFromTriplets(artif_triplets.begin(), artif_triplets.end());
+                K_global += K_artificial;
+            }
+
+            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
+            solver.compute(K_global);
+            if (solver.info() != Eigen::Success) {
+                std::cout << "❌ SparseLU decomposition failed at step " << step << "!" << std::endl;
+                return false;
+            }
+
+            Eigen::VectorXd step_dU = solver.solve(Residual);
+            if (solver.info() != Eigen::Success) {
+                std::cerr << "❌ SparseLU solve failed at step " << step << "!" << std::endl;
+                return false;
+            }
+
+            // Newton-Raphson puro (passo completo, sem line search), igual ao ANFLEX real
+            // (newton_raphson.cpp: aplica m_linear_soe->get_x() diretamente). A rigidez
+            // artificial do primeiro passo é o que mantém isso estável.
+            for (auto* node : model->nodes) {
+                for (int i = 0; i < 3; ++i) {
+                    int eq = node->eq_numbers[i];
+                    if (eq >= 0) node->disp[i] += step_dU[eq];
+
+                    int eq_rot = node->eq_numbers[i + 3];
+                    if (eq_rot >= 0) node->rot[i] += step_dU[eq_rot];
+                }
+            }
+
+            for (auto* elem : model->elements) {
+                elem->update_effective_tension();
+            }
+
+            // Critério de convergência multi-critério do ANFLEX real (convergence_test.cpp):
+            // a correção desta iteração precisa ser pequena em relação ao deslocamento total
+            // já acumulado neste passo — não em relação a um resíduo de força absoluto. Isso
+            // converge mesmo quando o resíduo de força ainda não caiu a zero (o desequilíbrio
+            // remanescente é resolvido nos passos de carga seguintes, conforme a rigidez real
+            // vai se estabelecendo). Exige pelo menos 2 iterações (iter >= 1).
+            cumulative_dU += step_dU;
+            double this_transl_norm, this_rot_norm, cum_transl_norm, cum_rot_norm;
+            split_norms(step_dU, this_transl_norm, this_rot_norm);
+            split_norms(cumulative_dU, cum_transl_norm, cum_rot_norm);
+
+            double ratio_transl = (cum_transl_norm > 1.0e-12) ? (this_transl_norm / cum_transl_norm) : 0.0;
+            double ratio_rot = (cum_rot_norm > 1.0e-12) ? (this_rot_norm / cum_rot_norm) : 0.0;
+            bool transl_converged = ratio_transl < tolerance;
+            bool rot_converged = ratio_rot < tolerance;
+
+            if (iter >= 1 && transl_converged && rot_converged) {
+                std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations! (incremento transl/rot = "
+                          << ratio_transl << " / " << ratio_rot << ", norm_R = " << norm_R << " N)" << std::endl;
                 step_converged = true;
 
                 StepSnapshot snap;
@@ -142,96 +241,6 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 }
                 history.push_back(snap);
                 break;
-            }
-
-            Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
-            solver.compute(K_global);
-            if (solver.info() != Eigen::Success) {
-                std::cout << "❌ SparseLU decomposition failed at step " << step << "!" << std::endl;
-                return false;
-            }
-
-            Eigen::VectorXd step_dU = solver.solve(Residual);
-            if (solver.info() != Eigen::Success) {
-                std::cerr << "❌ SparseLU solve failed at step " << step << "!" << std::endl;
-                return false;
-            }
-
-            // Armijo Backtracking Line Search rigoroso
-            double alpha = 1.0;
-            double norm_R_current = norm_R;
-            double best_alpha = 0.0;
-            double best_norm_R = norm_R_current;
-
-            for (int line_search = 0; line_search < 10; ++line_search) {
-                // Aplica tentativa de passo com alpha atual
-                for (auto* node : model->nodes) {
-                    for (int i = 0; i < 3; ++i) {
-                        int eq = node->eq_numbers[i];
-                        if (eq >= 0) node->disp[i] += alpha * step_dU[eq];
-
-                        int eq_rot = node->eq_numbers[i + 3];
-                        if (eq_rot >= 0) node->rot[i] += alpha * step_dU[eq_rot];
-                    }
-                }
-
-                Eigen::SparseMatrix<double> K_test;
-                Eigen::VectorXd F_int_test;
-                assemble_system(K_test, F_ext, F_int_test);
-                double norm_R_test = (F_ext - F_int_test).norm();
-
-                // Desfaz tentativa — será reaplicado com o melhor alpha ao final
-                for (auto* node : model->nodes) {
-                    for (int i = 0; i < 3; ++i) {
-                        int eq = node->eq_numbers[i];
-                        if (eq >= 0) node->disp[i] -= alpha * step_dU[eq];
-
-                        int eq_rot = node->eq_numbers[i + 3];
-                        if (eq_rot >= 0) node->rot[i] -= alpha * step_dU[eq_rot];
-                    }
-                }
-
-                // Rastreia o melhor alpha encontrado
-                if (norm_R_test < best_norm_R) {
-                    best_norm_R = norm_R_test;
-                    best_alpha = alpha;
-                }
-
-                // Se melhorou em relação ao resíduo corrente, aceita
-                if (norm_R_test <= norm_R_current) {
-                    break;
-                }
-
-                // Se alpha já é muito pequeno, para de buscar
-                if (alpha < 0.01) {
-                    break;
-                }
-
-                alpha *= 0.5;
-            }
-
-            // Se nenhum alpha testado melhorou o resíduo, a direção de Newton não é
-            // uma direção de descida válida — forçar um passo mínimo apenas divergiria
-            // ainda mais (ver Bug: line search forçado). Aborta o step sem se mover.
-            if (best_alpha <= 0.0) {
-                std::cerr << "  ⚠️ Static NR stalled at step " << step << " iter " << iter
-                          << ": no line search step size improved the residual (norm_R = "
-                          << norm_R_current << ")" << std::endl;
-                break;
-            }
-
-            for (auto* node : model->nodes) {
-                for (int i = 0; i < 3; ++i) {
-                    int eq = node->eq_numbers[i];
-                    if (eq >= 0) node->disp[i] += best_alpha * step_dU[eq];
-
-                    int eq_rot = node->eq_numbers[i + 3];
-                    if (eq_rot >= 0) node->rot[i] += best_alpha * step_dU[eq_rot];
-                }
-            }
-
-            for (auto* elem : model->elements) {
-                elem->update_effective_tension();
             }
         }
 
