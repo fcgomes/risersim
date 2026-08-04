@@ -3,7 +3,9 @@
  * @brief Diagnostic tool (not an automated test): isolates a small piece of the REAL Exemplo_01a mesh to check whether the divergence seen in the full 500-element model also shows up in a small slice, or only emerges once many elements are coupled together.
  *
  * Usage:
+ * @code
  *   risersim_diag_isolated_segment <input.json> <start_elem_id> <num_elements> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode] [current_mode]
+ * @endcode
  *     artif_mode:   0=OnlyFirstStep (default), 1=EveryStep, 2=Never
  *     fix_mode:     0=clamped-clamped at both ends (default, original condition)
  *                   1=only the first end fixed, rest free (a chain hanging from one point,

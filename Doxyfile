@@ -34,7 +34,6 @@ EXTRACT_STATIC           = YES
 EXTRACT_LOCAL_CLASSES    = YES
 JAVADOC_AUTOBRIEF        = YES
 WARN_IF_UNDOCUMENTED     = YES
-WARN_IF_INCOMPLETE_DOC   = YES
 
 #---------------------------------------------------------------------------
 # Source browsing

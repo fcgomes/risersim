@@ -34,3 +34,4 @@ input_simulation.json
 # Temporary logs
 *.log
 *.tmp
+docs/doxygen/
