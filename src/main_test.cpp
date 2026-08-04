@@ -138,15 +138,17 @@ int main(int argc, char* argv[]) {
                 }
 
                 // 3. Condições de Contorno
+                std::vector<bool> is_constrained(model->nodes.size(), false);
                 if (j.contains("boundary_conditions")) {
                     auto bc = j["boundary_conditions"];
-                    
+
                     // Prescribed
                     if (bc.contains("prescribed_dofs")) {
                         for (auto& p_d : bc["prescribed_dofs"]) {
                             int n_id = p_d["node_id"].get<int>() - 1;
                             if (n_id >= 0 && n_id < model->nodes.size()) {
                                 model->nodes[n_id]->eq_numbers = std::vector<int>(6, -1);
+                                is_constrained[n_id] = true;
                             }
                         }
                     }
@@ -156,16 +158,18 @@ int main(int argc, char* argv[]) {
                             int n_id = r_d["node_id"].get<int>() - 1;
                             if (n_id >= 0 && n_id < model->nodes.size()) {
                                 model->nodes[n_id]->eq_numbers = std::vector<int>(6, -1);
+                                is_constrained[n_id] = true;
                             }
                         }
                     }
                 }
 
                 // Configura DOFs para nós livres (intermediários)
+                // Node3D já inicializa eq_numbers com 6 entradas (nunca vazio), então
+                // a liberdade dos DOFs precisa ser rastreada via is_constrained, não via .empty()
                 for (size_t i = 0; i < model->nodes.size(); ++i) {
-                    auto* node = model->nodes[i];
-                    if (node->eq_numbers.empty()) {
-                        node->eq_numbers = {0, 1, 2, 3, 4, 5}; // Translações e rotações livres
+                    if (!is_constrained[i]) {
+                        model->nodes[i]->eq_numbers = {0, 1, 2, 3, 4, 5}; // Translações e rotações livres
                     }
                 }
 
@@ -328,7 +332,10 @@ int main(int argc, char* argv[]) {
     risersim::DynamicAnalysis dynamic_analysis(static_analysis);
     bool success_dynamic = true;
 
-    if (run_dynamic) {
+    if (run_dynamic && !success_static) {
+        std::cout << "\n⏭️ Análise Dinâmica pulada: a Análise Estática não convergiu." << std::endl;
+        success_dynamic = false;
+    } else if (run_dynamic) {
         dynamic_analysis.duration_s = dyn_duration;
         dynamic_analysis.dt_s = dyn_dt;
         dynamic_analysis.wave_amplitude = dyn_wave_amp;

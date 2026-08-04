@@ -1,5 +1,6 @@
 # riserSim Build Artifacts & CMake Cache
 build/
+buuid_debug/
 bin/
 obj/
 *.exe

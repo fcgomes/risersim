@@ -52,6 +52,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     Eigen::VectorXd V = Eigen::VectorXd::Zero(num_dofs);
     Eigen::VectorXd A = Eigen::VectorXd::Zero(num_dofs);
 
+    bool all_steps_converged = true;
+
     for (int step = 0; step <= total_steps; ++step) {
         double time = step * dt_s;
 
@@ -202,6 +204,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         if (nr_converged_iter < 0 && step > 0) {
             std::cerr << "  ⚠️ Dynamic NR did not converge at step " << step
                       << " (t=" << time << "s, last res_norm=" << res_norm_prev << ")" << std::endl;
+            all_steps_converged = false;
         }
 
         // Record Snapshot for Web Visualizer
@@ -235,6 +238,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                       << " (t = " << std::fixed << std::setprecision(1) << time << " s) | Top Z: "
                       << std::setprecision(2) << disp_z << " m" << std::endl;
         }
+    }
+
+    if (!all_steps_converged) {
+        std::cerr << "❌ 3D TIME-DOMAIN DYNAMIC SOLVER FINISHED WITH ONE OR MORE NON-CONVERGED STEPS!" << std::endl;
+        return false;
     }
 
     std::cout << "🎉 3D TIME-DOMAIN DYNAMIC SOLVER CONVERGED SUCCESSFULLY!" << std::endl;

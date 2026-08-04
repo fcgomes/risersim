@@ -210,16 +210,23 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 alpha *= 0.5;
             }
 
-            // Aplica definitivamente o melhor alpha encontrado
-            // Se nenhum alpha melhorou (best_alpha == 0), aplica um passo mínimo
-            double final_alpha = (best_alpha > 0.0) ? best_alpha : 0.01;
+            // Se nenhum alpha testado melhorou o resíduo, a direção de Newton não é
+            // uma direção de descida válida — forçar um passo mínimo apenas divergiria
+            // ainda mais (ver Bug: line search forçado). Aborta o step sem se mover.
+            if (best_alpha <= 0.0) {
+                std::cerr << "  ⚠️ Static NR stalled at step " << step << " iter " << iter
+                          << ": no line search step size improved the residual (norm_R = "
+                          << norm_R_current << ")" << std::endl;
+                break;
+            }
+
             for (auto* node : model->nodes) {
                 for (int i = 0; i < 3; ++i) {
                     int eq = node->eq_numbers[i];
-                    if (eq >= 0) node->disp[i] += final_alpha * step_dU[eq];
+                    if (eq >= 0) node->disp[i] += best_alpha * step_dU[eq];
 
                     int eq_rot = node->eq_numbers[i + 3];
-                    if (eq_rot >= 0) node->rot[i] += final_alpha * step_dU[eq_rot];
+                    if (eq_rot >= 0) node->rot[i] += best_alpha * step_dU[eq_rot];
                 }
             }
 
