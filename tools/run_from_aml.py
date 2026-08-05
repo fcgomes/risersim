@@ -165,7 +165,7 @@ def main():
             'static_only': args.static_only,
             'static_steps': sim_opts.get('static_steps', 20),
             'static_max_iter': sim_opts.get('static_max_iter', 300),
-            'static_tolerance': sim_opts.get('static_tolerance', 100.0),
+            'static_tolerance': sim_opts.get('static_tolerance', 0.01),
             'duration_s': duration,
             'dt_s': dt,
             'dynamic_max_iter': sim_opts.get('dynamic_max_iter', 20),

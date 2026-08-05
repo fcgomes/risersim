@@ -34,7 +34,7 @@ public:
         : Analysis(),
           load_steps(20),
           max_iter_per_step(300),
-          tol(100.0),
+          tol(0.01),
           offset(OffsetMode::Far, 0.0),
           enable_offset(false) {}
 
@@ -42,11 +42,18 @@ public:
      * @brief Solves the catenary/free-hanging static equilibrium by incremental load stepping.
      * @param steps Number of load increments (0..1 ramp).
      * @param max_iter Maximum Newton-Raphson iterations per load step.
-     * @param tolerance Convergence tolerance (residual/increment norm).
+     * @param tolerance Dimensionless translation/rotation increment-ratio tolerance, fed into
+     *                  ConvergenceTest's Translation/Rotation criteria (see convergence_test.hpp):
+     *                  this iteration's correction norm / cumulative correction norm for the load
+     *                  step. Default 0.01 (1%). NOT a force residual in Newtons -- an earlier
+     *                  version of this parameter (default 100.0) was documented as one but wired
+     *                  directly into this ratio-based check, making the criterion a near no-op
+     *                  (see mapa_classes_anflex_estatica.md, "tol=100.0 usado como tolerância de
+     *                  força vs. razão adimensional").
      * @param artif_mode When artificial stiffness regularization is applied (see ArtificialStiffnessMode).
      * @return true if every load step converged.
      */
-    bool solve_catenary_static(int steps = 20, int max_iter = 300, double tolerance = 100.0,
+    bool solve_catenary_static(int steps = 20, int max_iter = 300, double tolerance = 0.01,
                                 ArtificialStiffnessMode artif_mode = ArtificialStiffnessMode::OnlyFirstStep);
 
     /**
@@ -54,10 +61,12 @@ public:
      * @param vessel_offset Target top-node displacement to ramp up to.
      * @param steps Number of increments.
      * @param max_iter Maximum Newton-Raphson iterations per increment.
-     * @param tolerance Convergence tolerance.
+     * @param tolerance Unused -- convergence is checked via a hardcoded relative force-residual
+     *                  threshold (see solve_vessel_offset()'s implementation). Kept for API
+     *                  signature stability; does not affect behavior.
      * @return true if every increment converged.
      */
-    bool solve_vessel_offset(const VesselOffset& vessel_offset, int steps = 20, int max_iter = 300, double tolerance = 100.0);
+    bool solve_vessel_offset(const VesselOffset& vessel_offset, int steps = 20, int max_iter = 300, double tolerance = 0.01);
 
     /** @brief Runs solve_catenary_static() with this instance's configured parameters. */
     bool solve() override;

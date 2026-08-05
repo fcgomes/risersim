@@ -50,14 +50,18 @@ struct ConvergenceCriterionState {
 /**
  * @brief Configuration for ConvergenceTest, mirroring the relevant fields of ANFLEX's `sAnalysisData`.
  *
- * `transl_tol`/`rot_tol` default to risersim's historical single shared tolerance (the `tolerance`
- * parameter already threaded through `StaticAnalysis::solve_catenary_static()`). The other four
- * criteria default to disabled, matching ANFLEX's own AML-driven opt-in behavior and preserving
- * risersim's current convergence behavior exactly until a caller explicitly enables them.
+ * `transl_tol`/`rot_tol` default to 0.01 (1%), a sane threshold for the dimensionless
+ * increment-ratio criterion (this iteration's correction norm / cumulative correction norm for
+ * the load step -- see `check()`). An earlier default of 100.0, inherited unexamined from
+ * `StaticAnalysis::tol` (itself documented as a force residual in Newtons, a different quantity
+ * entirely), made this criterion a near no-op: any ratio in the normal ~[0,1] range trivially
+ * satisfies `<= 100.0`, so load steps "converged" after 1-2 iterations regardless of the actual
+ * force imbalance (see mapa_classes_anflex_estatica.md). The other four criteria default to
+ * disabled, matching ANFLEX's own AML-driven opt-in behavior.
  */
 struct ConvergenceConfig {
-    double transl_tol = 100.0;
-    double rot_tol = 100.0;
+    double transl_tol = 0.01;
+    double rot_tol = 0.01;
 
     bool use_force_criterion = false;
     double force_tol = 1.0e-3;

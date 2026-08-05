@@ -359,7 +359,7 @@ Usage sequence:
     sa.model    = model
     sa.seabed   = risersim.SeabedInteraction(-100.0, 1e5, 0.5)
     sa.load_steps = 20
-    sa.tol = 100.0
+    sa.tol = 0.01
     sa.enable_offset = True
     sa.offset = risersim.VesselOffset(risersim.OffsetMode.Far, 10.0)
     ok = sa.solve()
@@ -371,7 +371,8 @@ Usage sequence:
         .def_readwrite("max_iter_per_step", &StaticAnalysis::max_iter_per_step,
                        "Maximum Newton-Raphson iterations per step (default 300).")
         .def_readwrite("tol",               &StaticAnalysis::tol,
-                       "Residual-norm convergence tolerance (N, default 100.0).")
+                       "Translation/rotation increment-ratio convergence tolerance "
+                       "(dimensionless, default 0.01 = 1%).")
         .def_readwrite("offset",            &StaticAnalysis::offset,
                        "Vessel offset to apply after static convergence.")
         .def_readwrite("enable_offset",     &StaticAnalysis::enable_offset,
@@ -380,12 +381,12 @@ Usage sequence:
              "Runs the full static analysis (catenary + offset if enable_offset=True).\n"
              "Returns True if converged.")
         .def("solve_catenary_static", &StaticAnalysis::solve_catenary_static,
-             py::arg("steps") = 20, py::arg("max_iter") = 300, py::arg("tolerance") = 100.0,
+             py::arg("steps") = 20, py::arg("max_iter") = 300, py::arg("tolerance") = 0.01,
              py::arg("artif_mode") = ArtificialStiffnessMode::OnlyFirstStep,
              "Runs only the catenary phase (no offset).")
         .def("solve_vessel_offset", &StaticAnalysis::solve_vessel_offset,
              py::arg("offset"), py::arg("steps") = 20, py::arg("max_iter") = 300,
-             py::arg("tolerance") = 100.0,
+             py::arg("tolerance") = 0.01,
              "Applies the vessel offset on top of the catenary equilibrium.");
 
     // =========================================================================

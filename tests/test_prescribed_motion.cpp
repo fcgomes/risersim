@@ -140,7 +140,7 @@ TEST_CASE("StaticAnalysis::solve_vessel_offset converges and moves the top node 
     sa.seabed = SeabedInteraction(-1.0e6, 0.0, 0.0); // pushed far away: no contact, isolates this test from soil behavior
     sa.load_steps = 10;
     sa.max_iter_per_step = 200;
-    sa.tol = 100.0;
+    sa.tol = 0.01;
 
     REQUIRE(sa.solve_catenary_static(sa.load_steps, sa.max_iter_per_step, sa.tol));
 

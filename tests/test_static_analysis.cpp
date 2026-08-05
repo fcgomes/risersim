@@ -84,7 +84,7 @@ TEST_CASE("StaticAnalysis converges on the synthetic fallback catenary", "[stati
     static_analysis.seabed = risersim::SeabedInteraction(-100.0, 1.0e5, 0.5);
     static_analysis.load_steps = 20;
     static_analysis.max_iter_per_step = 300;
-    static_analysis.tol = 100.0;
+    static_analysis.tol = 0.01;
 
     const bool converged = static_analysis.solve();
 
@@ -110,9 +110,25 @@ TEST_CASE("StaticAnalysis converges on the synthetic fallback catenary", "[stati
     // UPDATED AGAIN after adding a backtracking line search to Newton-Raphson
     // (apply_newton_step_with_line_search in static_analysis.cpp) -- this case has the
     // seabed enabled, so the iteration trajectory changes whenever the full step
-    // eventually diverges too far from the previous residual. T_eff captured via Docker
-    // after the fix: 3539.18588 kN at the top element.
-    const double expected_tension_effective_N = 3539.1858815034814 * 1000.0;
+    // eventually diverges too far from the previous residual.
+    //
+    // Value UPDATED AGAIN (this time correcting a bug, not a legitimate behavior change)
+    // after fixing StaticAnalysis::tol's unit mismatch (mapa_classes_anflex_estatica.md,
+    // "tol=100.0 usado como tolerância de força vs. razão adimensional"): `tol` was
+    // documented as a force residual in Newtons but wired directly into
+    // ConvergenceTest's dimensionless translation/rotation increment-ratio criterion,
+    // where a value of 100.0 made the check a near no-op (any ratio in ~[0,1] trivially
+    // satisfies <= 100.0). Every load step was "converging" after 1-2 Newton iterations
+    // regardless of the actual force imbalance -- visibly wrong in the 3D viewer as
+    // self-folding geometry at the touchdown zone, where the residual was largest. All
+    // previous reference values above were captured under this bug, i.e. NOT at genuine
+    // equilibrium. With tol=0.01 (a sane dimensionless ratio), the first load step now
+    // takes 12 real iterations (residual drops from ~2.4e9 N to ~4.85e5 N) instead of 1,
+    // and the final residual is ~85 N instead of hundreds of millions. T_eff captured via
+    // Docker after the fix: 1101.98202 kN at the top element -- much lower than before
+    // because the line now actually settles onto the seabed instead of being held above
+    // it by residual force imbalance.
+    const double expected_tension_effective_N = 1101.9820161411786 * 1000.0;
     REQUIRE(model->elements.front()->tension_effective == Catch::Approx(expected_tension_effective_N).epsilon(0.005));
 
     delete model;

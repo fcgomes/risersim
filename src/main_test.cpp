@@ -50,7 +50,7 @@ int main(int argc, char* argv[]) {
 
     int static_steps = 20;
     int static_max_iter = 300;
-    double static_tolerance = 100.0;
+    double static_tolerance = 0.01;
 
     bool enable_offset = false;
     risersim::OffsetMode offset_mode = risersim::OffsetMode::Far;
