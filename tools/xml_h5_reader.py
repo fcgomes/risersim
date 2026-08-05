@@ -12,7 +12,21 @@ class ANFLEXXmlH5Reader:
         self.tree = ET.parse(xml_path)
         self.root = self.tree.getroot()
         self.h5 = h5py.File(h5_path, 'r')
-        
+        # O nome do grupo sob <Groups> varia de caixa entre exportações do ANFLEX
+        # (ex.: Exemplo_01a usa "group1", Exemplo_02a usa "Group1") -- descoberto
+        # dinamicamente em vez de hardcoded, tanto no XML quanto no dataset HDF5
+        # correspondente (a mesma inconsistência de caixa existe nos dois arquivos).
+        # Um valor hardcoded errado falha silenciosamente (find() retorna None) e
+        # produz um modelo com 0 nós/elementos, sem nenhum erro visível até o
+        # binário C++ tentar processá-lo.
+        self.group_name = self._detect_group_name()
+
+    def _detect_group_name(self, default="group1"):
+        groups_elem = self.root.find(".//Groups")
+        if groups_elem is not None and len(groups_elem) > 0:
+            return groups_elem[0].tag
+        return default
+
     def close(self):
         self.h5.close()
 
@@ -38,10 +52,9 @@ class ANFLEXXmlH5Reader:
         """Lê os nós diretamente do dataset HDF5 especificado no XML."""
         nodes = []
         # Buscando o dataset de nodes da malha principal
-        nodes_elem = self.root.find(".//Groups/group1/Nodes")
+        nodes_elem = self.root.find(f".//Groups/{self.group_name}/Nodes")
         if nodes_elem is not None:
-            # O nome padrão do dataset é Groups/group1/Nodes
-            h5_dataset_path = "Groups/group1/Nodes"
+            h5_dataset_path = f"Groups/{self.group_name}/Nodes"
             if h5_dataset_path in self.h5:
                 ds = self.h5[h5_dataset_path]
                 for idx in range(len(ds)):
@@ -61,7 +74,7 @@ class ANFLEXXmlH5Reader:
         label_to_id = {node["label"]: node["id"] for node in nodes}
         
         # Procura as estruturas de linha
-        lines_elem = self.root.find(".//Groups/group1/Elements")
+        lines_elem = self.root.find(f".//Groups/{self.group_name}/Elements")
         if lines_elem is not None:
             elem_id_counter = 1
             for line_child in lines_elem:
@@ -81,14 +94,14 @@ class ANFLEXXmlH5Reader:
     def extract_material_properties(self):
         """Extrai as propriedades físicas e mecânicas da linha do XML.
 
-        O material real fica em Groups/group1/Materials/<NomeDoSegmento> (nome
-        dinâmico por segmento, ex. "RISE_L1_seg001"), não em uma tag fixa
+        O material real fica em Groups/<nome_do_grupo>/Materials/<NomeDoSegmento>
+        (nome dinâmico por segmento, ex. "RISE_L1_seg001"), não em uma tag fixa
         "FlexibleLine". Os campos do ANFLEX usam unidades de engenharia
         (kN, kN/m², kN/m³), não SI puro — a conversão é feita explicitamente
         abaixo.
         """
         mat = None
-        materials_group = self.root.find(".//Groups/group1/Materials")
+        materials_group = self.root.find(f".//Groups/{self.group_name}/Materials")
         if materials_group is not None and len(materials_group) > 0:
             mat = materials_group[0]  # Pega o primeiro material do grupo
 

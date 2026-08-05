@@ -128,9 +128,52 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     return accepted_dU;
 }
 
+/**
+ * @brief Snapshots the model's current state (node positions + per-element results) into a
+ * StepSnapshot, for a given step index/load factor.
+ *
+ * Extracted so `StaticAnalysis::solve()` can capture the model's TRUE pristine geometry (0%
+ * load, before any Newton iteration in either phase) once, up front -- see the comment in
+ * `solve()` for why this matters when phase 1 (assembly) fails to converge.
+ */
+StepSnapshot capture_snapshot(RiserModel* model, int step_index, double load_factor) {
+    StepSnapshot snap;
+    snap.step_index = step_index;
+    snap.load_factor = load_factor;
+    for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
+    for (size_t i = 0; i < model->elements.size(); ++i) {
+        auto* elem = model->elements[i].get();
+        const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
+        const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
+
+        elem->update_effective_tension();
+        auto sc = elem->compute_stress_and_curvature(prev, next);
+        snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+        snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
+        snap.element_curvatures.push_back(sc.curvature);
+        snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
+        snap.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
+    }
+    return snap;
+}
+
 } // namespace
 
 bool StaticAnalysis::solve() {
+    // Captures the model's TRUE pristine geometry (0% load, before any Newton iteration in
+    // either phase) once, here -- before phase 1 gets a chance to touch node->disp.
+    //
+    // Why this matters: node->disp is deliberately NOT reset between phase 1 and phase 2 (see
+    // the comment below -- phase 2 is meant to continue from wherever phase 1 left off, even if
+    // phase 1 didn't converge). But solve_catenary_static() *always* clears `history` and
+    // (re)captures its own "step 0" at its own start, from whatever the model's state happens to
+    // be at that moment. So when phase 1 fails to converge, phase 2's own "step 0" capture isn't
+    // the true 0%-load geometry -- it's phase 1's last (possibly badly diverged) failed Newton
+    // iterate, mislabeled `load_factor: 0.0` in the exported/viewed results. This produced a
+    // visibly wrong, self-intersecting "line" in the 3D viewer for the Exemplo_02a case
+    // (mapa_classes_anflex_estatica.md) that had nothing to do with the actual input geometry.
+    StepSnapshot true_step0 = capture_snapshot(model, 0, 0.0);
+
     // Two-phase solve, mirroring real ANFLEX (cAnflexAnalysis::solve_assembly() ->
     // solve_static()). Phase 1 ("assembly") gives the mesh artificial stiffness
     // available on EVERY load step (not just the first) to find an approximate
@@ -149,6 +192,16 @@ bool StaticAnalysis::solve() {
 
     std::cout << "\n--- Phase 2/2: Static (no artificial stiffness, full load in 1 step) ---" << std::endl;
     bool ok_static = solve_catenary_static(1, max_iter_per_step, tol, ArtificialStiffnessMode::Never);
+
+    // Restores the true pristine geometry as "step 0" in the exported/viewed history -- see the
+    // comment above `true_step0` for why history[0] (phase 2's own step0 capture) can't be
+    // trusted to actually be the 0%-load state whenever phase 1 didn't fully converge.
+    if (!history.empty()) {
+        history[0] = true_step0;
+    } else {
+        history.push_back(true_step0);
+    }
+
     if (!ok_static) return false;
 
     if (enable_offset) {
@@ -169,25 +222,11 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     if (!model) return false;
 
-    // Step 0: Initial Geometry (0% Load)
-    StepSnapshot step0;
-    step0.step_index = 0;
-    step0.load_factor = 0.0;
-    for (const auto& node : model->nodes) step0.node_coords.push_back(node->current_coords());
-    for (size_t i = 0; i < model->elements.size(); ++i) {
-        auto* elem = model->elements[i].get();
-        const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
-        const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
-
-        elem->update_effective_tension();
-        auto sc = elem->compute_stress_and_curvature(prev, next);
-        step0.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
-        step0.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
-        step0.element_curvatures.push_back(sc.curvature);
-        step0.element_von_mises_MPa.push_back(sc.von_mises_MPa);
-        step0.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
-    }
-    history.push_back(step0);
+    // Step 0: Initial Geometry (0% Load). Note: this is "0% load relative to whatever state the
+    // model is in right now" -- if this is phase 2 of StaticAnalysis::solve() and phase 1 didn't
+    // converge, this is NOT the true pristine input geometry (see the comment in solve() around
+    // `true_step0`, which overwrites history[0] with the real thing once both phases finish).
+    history.push_back(capture_snapshot(model, 0, 0.0));
 
     // Total reference force at 100% load, used for a strict normalization
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
@@ -329,25 +368,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations! (incremento transl/rot = "
                           << ratio_transl << " / " << ratio_rot << ", norm_R = " << norm_R << " N)" << std::endl;
                 step_converged = true;
-
-                StepSnapshot snap;
-                snap.step_index = step;
-                snap.load_factor = load_factor;
-                for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
-                for (size_t i = 0; i < model->elements.size(); ++i) {
-                    auto* elem = model->elements[i].get();
-                    const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
-                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
-
-                    elem->update_effective_tension();
-                    auto sc = elem->compute_stress_and_curvature(prev, next);
-                    snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
-                    snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
-                    snap.element_curvatures.push_back(sc.curvature);
-                    snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
-                    snap.element_mbr_safety_factors.push_back(sc.mbr_safety_factor);
-                }
-                history.push_back(snap);
+                history.push_back(capture_snapshot(model, step, load_factor));
                 break;
             }
         }

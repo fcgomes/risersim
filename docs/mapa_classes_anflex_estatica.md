@@ -426,6 +426,26 @@ A pedido do usuário, investigado se o ANFLEX real ignora a corrente em elemento
 
 **Conclusão**: a correção é real, fiel ao ANFLEX, e fica no código (zero mudança de comportamento quando a condição de enterro não é atingida -- toda a bateria de regressão, 343 asserts, continua passando) -- mas **não é a causa** da divergência solo+corrente investigada aqui. O mecanismo real continua sendo a interação difusa entre múltiplos pontos de atrito saturando ao mesmo tempo sob carga lateral de corrente, como já apontado nas seções anteriores. As direções ainda não tentadas (line search direcional tipo Armijo, limitar o passo por nó/GDL, suavizar a transição liga/desliga do contato vertical) continuam sendo os candidatos mais promissores.
 
+## Bug real encontrado e corrigido: "step 0" exportado não era a geometria real de entrada quando a Fase 1 diverge
+
+Investigando o Exemplo_02a (a pedido do usuário, "vamos rodar o exemplo_02"): o viewer 3D mostrava a linha com uma "onda"/dobra visível perto do touchdown, mesmo depois de corrigir a câmera e o raio do tubo (que eram bugs reais, mas separados -- ver seções abaixo). O usuário perguntou se as coordenadas estavam sendo lidas certo.
+
+**Investigação, nó a nó, em cada etapa do pipeline**:
+- `extract_nodes()` (Python) -- correto, bate exatamente com o HDF5 bruto do modelo.
+- `input_simulation.json` gerado -- correto, mesmos valores.
+- `catenary_results.json` (saída do solver, `static_steps[0]`) -- **diferente**, e não corresponde a NENHUM nó da entrada (não é reordenação, é um valor calculado que não existe no arquivo de entrada).
+
+**Causa raiz**: `StaticAnalysis::solve()` roda em duas fases (Fase 1 "assembly" com rigidez artificial, Fase 2 "static" sem). Quando a Fase 1 falha em convergir (caso do Exemplo_02a: diverge no passo 1/11), o código **deliberadamente não reseta `node->disp`** antes de tentar a Fase 2 -- para aproveitar o "progresso" da Fase 1 como chute inicial (comentário original: "proceeding to the static phase from the state reached"). Mas `solve_catenary_static()` **sempre** limpa `history` e recaptura seu próprio "step 0" no início de cada chamada, a partir do estado atual do modelo naquele momento -- então o "step 0" capturado no início da Fase 2 não é a geometria real de 0% de carga, é **o último estado que a Fase 1 deixou depois de divergir por 40 iterações**, rotulado erradamente como `load_factor: 0.0` no resultado exportado. Confirmado comparando contra a geometria real do ANFLEX (arquivo `..._results_static.h5`, tanto a referência quanto o passo 11 resolvido): perfeitamente lisa, sem nenhuma onda -- provando que o bug era nosso, não um artefato real do modelo.
+
+**Corrigido**: `StaticAnalysis::solve()` agora captura a geometria pristina (0% de carga, antes de qualquer iteração de Newton em qualquer fase) uma única vez, no início, via nova função auxiliar `capture_snapshot()` (extraída da lógica antes duplicada em `solve_catenary_static()`). Depois que as duas fases rodam, `history[0]` é sobrescrito com essa captura verdadeira -- garantindo que o "step 0" exportado seja sempre honesto sobre o que realmente é, mesmo que ambas as fases falhem completamente.
+
+**Validação**: bateria completa (343 asserts Catch2, sem mudança de comportamento nos casos que já convergiam) + Exemplo_02a real -- ângulo máximo de curvatura entre nós vizinhos na geometria exportada caiu de >23° para **0,59°** em toda a malha de 834 nós, batendo com a suavidade da geometria real do ANFLEX.
+
+**Bugs relacionados, encontrados na mesma investigação** (viewer 3D, não o solver):
+- Câmera do viewer (`CameraViewController.js`/`Riser3DRenderer.js`) tinha distância/far-plane hardcoded para a escala do Exemplo_01a (~130m) -- um modelo de ~1800m de lâmina d'água (Exemplo_02a) aparecia como uma fatia minúscula e distorcida. Corrigido: distância de câmera e far-plane agora proporcionais ao bounding box real do modelo carregado, com auto-enquadramento (`setView('ISO', ...)`) no carregamento.
+- Raio do tubo 3D também hardcoded (0.6, calibrado para ~130m) -- virava uma linha sub-pixel, quase invisível, em modelos maiores. Corrigido: proporcional ao span real do modelo.
+- Leitor `xml_h5_reader.py` tinha o nome do grupo XML/HDF5 hardcoded como `"group1"` (minúsculo); o Exemplo_02a exporta com `"Group1"` (maiúsculo), causando falha silenciosa (modelo com 0 nós/elementos) e crash (segfault) no `main_test`. Corrigido: nome do grupo descoberto dinamicamente.
+
 ## Ver também
 
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).
