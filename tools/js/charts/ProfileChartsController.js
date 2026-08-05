@@ -133,12 +133,17 @@ export class ProfileChartsController {
             marker: { size: 6 }
         };
 
+        // 350 MPa casa com o default real do solver (CorotationalBeam3D::compute_stress_and_curvature,
+        // yield_stress_MPa=350.0 em element_beam.hpp) usado para normalizar o fator de segurança MBR --
+        // não é um valor exportado por modelo (o exportador não grava a tensão de escoamento usada),
+        // então isso é uma suposição alinhada ao default do código, não um dado real desta simulação.
+        const yieldStressMPa = 350;
         const traceYield = {
             x: [0, Math.max(...elementS)],
-            y: [450, 450],
+            y: [yieldStressMPa, yieldStressMPa],
             type: 'scatter',
             mode: 'lines',
-            name: 'Limite de Escoamento σ<sub>yield</sub> (450 MPa)',
+            name: `Limite de Escoamento σ<sub>yield</sub> (${yieldStressMPa} MPa, default do solver)`,
             line: { color: '#dc2626', width: 2, dash: 'dash' }
         };
 

@@ -321,19 +321,10 @@ class RiserSimApp {
 
     updateColorbar(colormap, minVal, maxVal, scalarField = 'tension') {
         const bar = document.getElementById('colorbar-bar');
-        let gradientStr = '';
-
-        if (colormap === 'Jet') {
-            gradientStr = 'linear-gradient(to top, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)';
-        } else if (colormap === 'Plasma') {
-            gradientStr = 'linear-gradient(to top, #0d0887, #9c179e, #ed6925, #f0f921)';
-        } else if (colormap === 'Viridis') {
-            gradientStr = 'linear-gradient(to top, #440154, #21908d, #fde725)';
-        } else if (colormap === 'Turbo') {
-            gradientStr = 'linear-gradient(to top, #30123b, #1ae4b6, #a6f835, #7a0403)';
-        } else if (colormap === 'Coolwarm') {
-            gradientStr = 'linear-gradient(to top, #3b4cc0, #888888, #b40426)';
-        }
+        // Gera o gradiente a partir dos mesmos pontos de controle usados para colorir os tubos 3D
+        // (ColorMapService), em vez de uma segunda paleta hardcoded independente que podia
+        // divergir silenciosamente da cor realmente renderizada.
+        const gradientStr = ColorMapService.getCssGradient(colormap);
 
         if (bar) bar.style.background = gradientStr;
 
@@ -403,10 +394,14 @@ class RiserSimApp {
             const z1 = n1 ? n1.z.toFixed(2) : "0.00";
             const z2 = n2 ? n2.z.toFixed(2) : "0.00";
 
+            // Fundo do mar detectado pela profundidade real desta simulação (não um valor fixo),
+            // já que o índice/faixa de elementos varia de modelo para modelo. Não há como
+            // detectar módulos de flutuação (Lazy Wave) a partir dos dados exportados -- o
+            // exportador não inclui diâmetro/metadado de módulo por elemento (ver
+            // simulation_exporter.cpp), então esse status foi removido em vez de "adivinhado".
             let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
-            if (idx >= 14 && idx <= 26) {
-                statusBadge = `<span class="status-buoy">🎈 Flutuador (Lazy Wave)</span>`;
-            } else if (n2 && n2.z <= -99.5) {
+            const seabedDepth = this.simulation ? this.simulation.seabedDepth : -100.0;
+            if (n2 && n2.z <= seabedDepth + 0.5) {
                 statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
             }
 
