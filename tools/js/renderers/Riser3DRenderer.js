@@ -28,6 +28,10 @@ export class Riser3DRenderer {
 
         this.scene.background = new THREE.Color(0x1e1e2e);
 
+        // far=2000/posição inicial são só um chute razoável para a escala típica do
+        // Exemplo_01a -- CameraViewController.setView() reenquadra e ajusta o far plane pra
+        // escala real do modelo assim que os dados carregam (ver app.js), então isso nunca
+        // fica sendo o que o usuário vê de fato para um modelo de escala diferente.
         this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
         this.camera.position.set(60, 50, 160);
 
@@ -103,7 +107,23 @@ export class Riser3DRenderer {
 
         this.updateBoundingBox(nodes, currentTheme);
 
-        const outerRadius = 0.6;
+        // Raio do tubo proporcional ao tamanho real do modelo -- um valor fixo (0.6, calibrado
+        // para a escala do Exemplo_01a, ~130m) vira uma linha de espessura sub-pixel, quase
+        // invisível, num modelo bem maior (ex. Exemplo_02a, ~1800m) -- mesmo com a câmera
+        // corretamente enquadrada, a linha em si fica difícil demais de enxergar/interpretar
+        // (mapa_classes_anflex_estatica.md). 0.0045 * 130 ≈ 0.585, preservando a aparência
+        // original para modelos da escala do Exemplo_01a.
+        let modelSpan = 130.0;
+        if (nodes.length > 0) {
+            const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y), zs = nodes.map(n => n.z);
+            modelSpan = Math.max(
+                Math.max(...xs) - Math.min(...xs),
+                Math.max(...ys) - Math.min(...ys),
+                Math.max(...zs) - Math.min(...zs),
+                10.0
+            );
+        }
+        const outerRadius = Math.max(0.15, modelSpan * 0.0045);
         const rangeMin = (scalarRange && scalarRange.min !== undefined) ? scalarRange.min : 0.0;
         const rangeMax = (scalarRange && scalarRange.max !== undefined) ? scalarRange.max : 1.0;
         const rangeSpan = (rangeMax > rangeMin) ? (rangeMax - rangeMin) : 1.0;

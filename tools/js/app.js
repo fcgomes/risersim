@@ -236,6 +236,13 @@ class RiserSimApp {
             slider.value = Math.max(0, this.simulation.totalSteps - 1);
             this.currentStepIdx = Math.max(0, this.simulation.totalSteps - 1);
 
+            // Enquadra a câmera no modelo recém-carregado -- sem isso, a câmera fica parada no
+            // chute inicial de Riser3DRenderer (calibrado para a escala do Exemplo_01a, ~130m),
+            // o que faz qualquer modelo de escala bem diferente (ex. um riser de 1800m de lâmina
+            // d'água) aparecer como uma fatia minúscula e distorcida -- visualmente indistinguível
+            // de "a linha está dobrada/caída", mesmo com as coordenadas corretas.
+            this.cameraController.setView('ISO', this.getCurrentStep());
+
             this.render();
             console.log("✅ Simulação OO carregada com sucesso!", this.simulation);
         } catch (err) {
