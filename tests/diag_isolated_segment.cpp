@@ -4,7 +4,7 @@
  *
  * Usage:
  * @code
- *   risersim_diag_isolated_segment <input.json> <start_elem_id> <num_elements> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode] [current_mode]
+ *   risersim_diag_isolated_segment <input.json> <start_elem_id> <num_elements> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode] [current_mode] [enable_unbalanced]
  * @endcode
  *     artif_mode:   0=OnlyFirstStep (default), 1=EveryStep, 2=Never
  *     fix_mode:     0=clamped-clamped at both ends (default, original condition)
@@ -15,6 +15,10 @@
  *     seabed_mode:  0=seabed pushed far away/no contact possible (default), 1=REAL seabed
  *                   (same parameters as the full model, z~0/k=800000/mu=0.95)
  *     current_mode: 0=no current (default), 1=REAL current (v=1.78 m/s, heading=270)
+ *     enable_unbalanced: 0=off (default), 1=enable StaticAnalysis::enable_unbalanced_criteria
+ *                   (UnbalancedForces/UnbalancedMoments escape-hatch criterion, see
+ *                   static_analysis.hpp) -- targets the near-touchdown limit-cycle chattering
+ *                   pattern (see mapa_classes_anflex_estatica.md).
  *
  * The two nodes at the ends of the slice are fixed at their real position (read from the
  * JSON); internal nodes are free (translation + rotation), matching the full model. The rest
@@ -186,6 +190,12 @@ int main(int argc, char** argv) {
         std::cout << "REAL current enabled (v=1.78 m/s, heading=270)" << std::endl;
     }
     sa.tol = 0.001;
+
+    if (argc > 10 && std::stoi(argv[10]) == 1) {
+        sa.enable_unbalanced_criteria = true;
+        std::cout << "Unbalanced force/moment escape-hatch criterion enabled (tol="
+                  << sa.unbalanced_force_tol << " N / " << sa.unbalanced_moment_tol << " N.m)" << std::endl;
+    }
 
     bool converged = sa.solve_catenary_static(sa.load_steps, sa.max_iter_per_step, sa.tol, artif_mode);
 

@@ -30,6 +30,27 @@ public:
     VesselOffset offset;
     bool enable_offset;
 
+    /**
+     * @brief Opts into ConvergenceTest's UnbalancedForces/UnbalancedMoments criteria (see
+     * convergence_test.hpp), disabled by default -- matches ANFLEX's own AML-driven opt-in
+     * behavior, and preserves risersim's existing behavior/reference values exactly unless a
+     * caller explicitly turns this on.
+     *
+     * Targets a specific failure mode found investigating the Exemplo_01a soil+current
+     * divergence (mapa_classes_anflex_estatica.md): a node sitting almost exactly at the seabed
+     * boundary can settle into a stable, tiny-amplitude limit cycle (residual flipping sign each
+     * iteration, ~1e-5 relative, already physically negligible) that never satisfies the
+     * translation/rotation increment-ratio criterion because the ratio itself doesn't shrink --
+     * it's oscillating, not converging or diverging. The escape hatch (see ConvergenceTest::check,
+     * "within the last 3 iterations of the budget") accepts the step once the worst single-DOF
+     * unbalanced force/moment is already below `unbalanced_force_tol`/`unbalanced_moment_tol`,
+     * even though the ratio criterion never settles -- exactly ANFLEX's own mechanism for this
+     * situation, just never wired up in risersim until now.
+     */
+    bool enable_unbalanced_criteria = false;
+    double unbalanced_force_tol = 1.0;   ///< N
+    double unbalanced_moment_tol = 1.0;  ///< N.m
+
     StaticAnalysis()
         : Analysis(),
           load_steps(20),

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 #include <functional>
 
@@ -215,6 +216,10 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     ConvergenceConfig convergence_config;
     convergence_config.transl_tol = tolerance;
     convergence_config.rot_tol = tolerance;
+    convergence_config.check_unbalanced_force = enable_unbalanced_criteria;
+    convergence_config.max_unbalanced_force_tol = unbalanced_force_tol;
+    convergence_config.check_unbalanced_moment = enable_unbalanced_criteria;
+    convergence_config.max_unbalanced_moment_tol = unbalanced_moment_tol;
     ConvergenceTest convergence_test(convergence_config);
 
     for (int step = 1; step <= steps; ++step) {
@@ -259,6 +264,32 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             if (iter % 10 == 0 || rel_R < 1.0e-3) {
                 std::cout << "  Iter " << std::setw(3) << iter << " | Residual Norm: "
                           << std::scientific << std::setprecision(4) << norm_R << " | Rel R (ref): " << rel_R << std::defaultfloat << std::endl;
+            }
+
+            // Temporary diagnostic (mapa_classes_anflex_estatica.md investigation): identifies
+            // which node/DOF carries the largest residual component, to pin down which
+            // nonlinearity (contact on/off, friction saturation, ...) is behind a stalled/
+            // oscillating residual. Opt-in via env var, zero cost/behavior change otherwise.
+            if (std::getenv("RISERSIM_DEBUG_RESIDUAL") && iter >= 15) {
+                int worst_eq = -1;
+                double worst_val = 0.0;
+                for (int k = 0; k < Residual.size(); ++k) {
+                    if (std::abs(Residual[k]) > std::abs(worst_val)) { worst_val = Residual[k]; worst_eq = k; }
+                }
+                for (const auto& node_ptr : model->nodes) {
+                    Node3D* nd = node_ptr.get();
+                    for (int i = 0; i < 6; ++i) {
+                        if (nd->eq_numbers[i] == worst_eq) {
+                            static const char* names[6] = {"tx","ty","tz","rx","ry","rz"};
+                            double pen = seabed.seabed_depth - nd->current_coords().z();
+                            std::cout << "    [DEBUG] worst DOF: node " << nd->id << " " << names[i]
+                                      << " = " << worst_val << " | z=" << nd->current_coords().z()
+                                      << " pen=" << pen
+                                      << " friction=(" << nd->friction_force[0] << "," << nd->friction_force[1] << ")"
+                                      << std::endl;
+                        }
+                    }
+                }
             }
 
             Eigen::VectorXd step_dU;

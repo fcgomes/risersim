@@ -382,6 +382,50 @@ Investigado como o ANFLEX real impõe movimento prescrito (`dof.h`'s `sPrescribe
 
 Com isso, **todos os 8 passos do roadmap de modernização original estão concluídos**. Os três problemas de convergência documentados ao longo da sessão (limiar ~300-350 elementos, solo+corrente em cadeias longas, chattering perto do limite elástico/plástico no caso de 20 elementos) continuam em aberto — não fazem parte do roadmap de arquitetura, são investigações de física/numérica separadas.
 
+## Bug real encontrado e corrigido: `tol=100.0` usado como tolerância de força vs. razão adimensional
+
+Investigando por que o viewer 3D mostrava a linha "dobrando" na zona de touchdown mesmo com a estática reportando sucesso: `StaticAnalysis::tol` (default `100.0`) era documentado em `bindings.cpp` como "residual-norm convergence tolerance (N)", mas era passado direto para `ConvergenceConfig::transl_tol`/`rot_tol`, que `ConvergenceTest` usa como limite de uma **razão adimensional** (`ratio_transl = correção desta iteração / correção acumulada no passo`, tipicamente em `[0,~1]`). Um limite de `100.0` faz esse critério virar um no-op -- todo passo "convergia" em 1-2 iterações com resíduo de força de centenas de milhões a bilhões de N, nunca de fato em equilíbrio.
+
+**Corrigido**: `tol` (default e todos os call sites que hardcodeavam `100.0`) trocado para `0.01`, um valor são para a razão adimensional. Documentação/docstrings atualizadas para descrever o parâmetro corretamente.
+
+**Importante**: isso **não é o mesmo bug** da divergência do Exemplo_01a documentada nas seções acima -- o Exemplo_01a sempre leu sua própria tolerância do XML real (`AnalysisData/Static/x_tol=0.001`), nunca dependeu do default `100.0`. Confirmado rodando o Exemplo_01a real com o binário corrigido: **continua divergindo**, exatamente como documentado (residual crescendo a partir da iteração ~20 do passo 1). O bug do `tol=100.0` afetava só o modelo sintético de fallback (usado quando nenhum AML é fornecido) e dois testes que hardcodeavam esse default -- todos corrigidos e revalidados (343 asserts, teste de caracterização com novo valor de referência real: 1101,98 kN em vez de 3539,19 kN, que estava congelado sob a convergência falsa).
+
+## Retomando a investigação: causa real do "chattering" de 20 elementos identificada (não é o atrito saturando)
+
+Reinvestigado o caso de 20 elementos (trecho 272+, solo real, sem corrente) que estagna oscilando num resíduo minúsculo (~0,03 N, relativo ~1,5e-5) sem nunca convergir -- documentado antes como suspeita de "chattering no limite elástico/plástico do atrito". Instrumentado temporariamente (`RISERSIM_DEBUG_RESIDUAL=1`, ver `static_analysis.cpp`) para identificar o DOF com maior resíduo a cada iteração:
+
+**Achado**: o pior resíduo, iteração após iteração, é sempre o GDL `ty` (lateral local) do **mesmo nó** (286), alternando de sinal a cada iteração (-0,0227 → +0,0259 → -0,0229 → +0,0261...) -- um ciclo-limite de período 2 clássico. O nó está com penetração ínfima no solo (~5e-5 m, praticamente na superfície exata) e o estado de atrito lateral (`friction_force[1]`) está bem longe da saturação (~0,002 N, contra um limite de saturação muito maior) -- **descartando a hipótese original de saturação de atrito** como causa deste caso específico.
+
+**Tentativa 1 (não resolveu sozinha)**: adicionada rigidez residual pós-saturação ao atrito (`SeabedInteraction::friction_residual_stiffness_fraction`, default 2% da rigidez elástica, em vez de `k=0` exato ao saturar -- regularização padrão em código de contato/plasticidade, sugerida como próximo passo nas seções acima). Não teve efeito neste caso específico (números idênticos bit-a-bit, confirmando que o atrito nunca satura aqui), mas é uma correção real e bem fundamentada para quando o atrito de fato satura (caso solo+corrente abaixo muda de trajetória com ela) -- mantida.
+
+**Tentativa 2 (resolve este caso específico)**: os 6 critérios de convergência do `ConvergenceTest` (portados no passo 4 do roadmap) sempre tiveram uma "válvula de escape": nas últimas 3 iterações do orçamento, satisfazer só o critério de força/momento desbalanceado máximo (`UnbalancedForces`/`UnbalancedMoments`) já basta, mesmo que a razão de translação/rotação nunca se estabilize -- só que nenhum caller nunca habilitava esses 4 critérios opcionais. Exposto via `StaticAnalysis::enable_unbalanced_criteria`/`unbalanced_force_tol`/`unbalanced_moment_tol` (default desligado, zero mudança de comportamento a menos que habilitado explicitamente) e ligado no teste isolado (`diag_isolated_segment.cpp`, novo parâmetro posicional).
+
+**Resultado**: com `enable_unbalanced_criteria=true` (tol=1 N / 1 N.m), o caso de 20 elementos deixa de travar no passo 1/11 -- avança até o **passo 5/11** antes de falhar por um motivo diferente (carga mais alta). É uma melhora real e mensurável, não uma correção completa.
+
+**Testado contra o caso solo+corrente (32/33 elementos)**: nem a rigidez residual de atrito nem a válvula de escape resolvem esse caso -- o resíduo ali é genuinamente grande (~5.000-9.700 N, não uma oscilação de ruído numérico perto da convergência), confirmando que são **dois mecanismos diferentes**: (a) um ciclo-limite de pequena amplitude perto do touchdown quando só o solo está ativo (agora mitigável via a válvula de escape), e (b) a divergência catastrófica solo+corrente já documentada extensivamente acima, que continua sem solução.
+
+**Confirmado no Exemplo_01a real completo (500 elementos)**: com os dois fixes aplicados, ainda diverge -- o problema dominante no modelo completo é o mecanismo (b), não (a).
+
+**Validação**: bateria completa (343 asserts Catch2, cadeia de 300 elementos sem solo/corrente, modelo sintético do `main_test`) -- tudo convergindo exatamente como antes (ambos os fixes desligados por padrão para os callers existentes, exceto a rigidez residual de atrito, que é sempre ativa mas só muda trajetória quando o atrito de fato satura).
+
+**Próximo passo em aberto**: o mecanismo (b) -- solo+corrente -- continua sendo o problema central do Exemplo_01a real. As direções já listadas (line search tipo Armijo/direcional, limitar o passo por nó/GDL em vez de um fator escalar global, suavizar a transição liga/desliga do contato vertical -- hoje só a penetração é suavizada, a transição pen>0/pen<=0 continua uma chave dura) continuam válidas e nenhuma foi implementada ainda.
+
+## Corrente ignorada/reduzida em elementos enterrados: implementado, real, mas não resolve o caso solo+corrente
+
+A pedido do usuário, investigado se o ANFLEX real ignora a corrente em elementos apoiados/enterrados no solo (hipótese direta para o problema solo+corrente). Confirmado lendo o código real:
+
+- `cMorison::calc_external_flow` (`morison.cpp:141-145`) retorna força hidrodinâmica **zero** para `BURIED_ELEMENT`/`DRY_BURIED_ELEMENT` (elemento com os dois nós "enterrados").
+- `cNode::set_surrounding_state` (`node.cpp:1030-1047`) só marca um nó como "enterrado" (`m_surround=3`) quando ele está **mais de 1 metro abaixo da linha do solo** (`zn < SEAB - 1.0`) -- não basta estar apoiado na superfície (penetração de centímetros continua `WET_ELEMENT`, corrente cheia).
+- Para elementos parcialmente enterrados (`WET_BURIED_ELEMENT`), a força é reduzida proporcionalmente ao trecho não enterrado (`m_wet_length`).
+
+**Confirmado: o risersim não tinha nenhum equivalente** -- `StaticIntegrator::assemble_load_vector` (`static_integrator.cpp`) aplicava a força de corrente incondicionalmente, com o comprimento total do elemento, independente da posição em relação ao solo.
+
+**Implementado**: mesma lógica no `assemble_load_vector` -- calcula a fração do elemento acima do limiar `seabed_depth - 1.0`, zera a força se os dois nós estão enterrados além disso, interpola linearmente se só um está (o piso do risersim é plano, então a interpolação linear em Z é exata, ao contrário da geometria mais geral do ANFLEX real que não precisou ser replicada).
+
+**Resultado**: testado nos casos de 32/33 elementos (solo+corrente) e no Exemplo_01a completo (500 elementos) -- **resíduos idênticos aos de antes da correção**, em todos os casos. Instrumentação (`RISERSIM_DEBUG_RESIDUAL`) confirma por quê: nesses casos os nós na zona de divergência nunca ficam mais de 1m abaixo do solo -- ficam bem próximos da superfície (penetração ~5e-5 m) ou até flutuando acima dela (ex.: nó 273 chega a z=+1,42 m, claramente não enterrado). O pior resíduo (`tx`) salta entre **vários nós diferentes a cada iteração** (273, 296, 291, 274, 285, 298, 295, 304...), com atrito substancial (dezenas de N) saturado simultaneamente em vários deles -- confirma o padrão já documentado ("salta entre vários nós da zona de touchdown"), não um problema de um nó específico afundando demais.
+
+**Conclusão**: a correção é real, fiel ao ANFLEX, e fica no código (zero mudança de comportamento quando a condição de enterro não é atingida -- toda a bateria de regressão, 343 asserts, continua passando) -- mas **não é a causa** da divergência solo+corrente investigada aqui. O mecanismo real continua sendo a interação difusa entre múltiplos pontos de atrito saturando ao mesmo tempo sob carga lateral de corrente, como já apontado nas seções anteriores. As direções ainda não tentadas (line search direcional tipo Armijo, limitar o passo por nó/GDL, suavizar a transição liga/desliga do contato vertical) continuam sendo os candidatos mais promissores.
+
 ## Ver também
 
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).

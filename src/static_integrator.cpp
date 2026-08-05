@@ -3,6 +3,7 @@
  * @brief StaticIntegrator: static load vector assembly and artificial-stiffness (Tikhonov) regularization.
  */
 #include "risersim/static_integrator.hpp"
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -28,17 +29,47 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double load_factor) const
         if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
 
         if (analysis->enable_current) {
-            double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
-            double f_drag_x = 0.0, f_drag_y = 0.0;
-            analysis->current.get_drag_force_per_meter(avg_z, elem->props.D_outer, analysis->water_density_for_mass, f_drag_x, f_drag_y);
+            double z1 = elem->node1->current_coords().z();
+            double z2 = elem->node2->current_coords().z();
 
-            int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
-            int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
+            // Fraction of this element's length not buried more than 1m below the seabed --
+            // mirrors real ANFLEX's element-state classification (node.cpp:set_surrounding_state,
+            // "m_surround=3" once a node is more than 1m below the seabed line) and
+            // cMorison::calc_external_flow (morison.cpp:141-145), which returns zero
+            // current/wave force for a BURIED_ELEMENT and prorates it by the exposed length for
+            // a WET_BURIED_ELEMENT, instead of always applying full-length drag regardless of how
+            // deep a node has been pushed into the ground. risersim had no equivalent before this
+            // fix -- during a bad Newton trial step that shoves a touchdown-zone node well
+            // underground, full lateral current force kept fighting the seabed's contact
+            // reaction instead of backing off like real ANFLEX, a plausible amplifier of the
+            // seabed+current divergence (see mapa_classes_anflex_estatica.md).
+            double buried_threshold_z = analysis->seabed.seabed_depth - 1.0;
+            bool node1_buried = z1 < buried_threshold_z;
+            bool node2_buried = z2 < buried_threshold_z;
+            double exposed_fraction = 1.0;
+            if (node1_buried && node2_buried) {
+                exposed_fraction = 0.0;
+            } else if (node1_buried != node2_buried) {
+                double dz = z2 - z1;
+                double t = (std::fabs(dz) > 1.0e-9) ? (buried_threshold_z - z1) / dz : 0.5;
+                t = std::clamp(t, 0.0, 1.0);
+                exposed_fraction = node1_buried ? (1.0 - t) : t;
+            }
 
-            if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L * 0.5 * load_factor;
-            if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L * 0.5 * load_factor;
-            if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L * 0.5 * load_factor;
-            if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L * 0.5 * load_factor;
+            if (exposed_fraction > 0.0) {
+                double avg_z = 0.5 * (z1 + z2);
+                double f_drag_x = 0.0, f_drag_y = 0.0;
+                analysis->current.get_drag_force_per_meter(avg_z, elem->props.D_outer, analysis->water_density_for_mass, f_drag_x, f_drag_y);
+
+                int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
+                int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
+
+                double L_exposed = L * exposed_fraction;
+                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L_exposed * 0.5 * load_factor;
+                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L_exposed * 0.5 * load_factor;
+                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L_exposed * 0.5 * load_factor;
+                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L_exposed * 0.5 * load_factor;
+            }
         }
     }
     return F_ext;

@@ -36,6 +36,22 @@ public:
     double axial_elastic_deflection_limit;
     double lateral_elastic_deflection_limit;
 
+    /**
+     * @brief Fraction of the elastic slope (mu*|Fn|/u_limit) kept as tangent stiffness once the
+     * Coulomb friction cap is reached, instead of dropping to exactly zero (perfect plasticity).
+     *
+     * Standard regularization for return-mapping plasticity/contact codes: a hard `k=0` right at
+     * the yield surface makes the Newton tangent discontinuous there, so a node sitting near the
+     * friction limit can flip between the elastic and plastic branch every iteration (`du`
+     * flipping sign from numerical noise) without ever damping to zero -- observed as the
+     * residual oscillating in a tiny, already-converged band (~1e-5 relative) that never
+     * satisfies the convergence tolerance (see mapa_classes_anflex_estatica.md, "chattering no
+     * limite elástico/plástico"). A small residual slope (default 2%) keeps the tangent
+     * well-conditioned there at the cost of a deliberately small physical inaccuracy (force can
+     * drift slightly past the nominal Coulomb cap under sustained loading in one direction).
+     */
+    double friction_residual_stiffness_fraction = 0.02;
+
     SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double f_ult = 5000.0)
         : seabed_depth(depth), stiffness_z(kz), friction_coeff(mu), elastic_deflection_limit(u_limit), ultimate_bearing_force(f_ult),
           axial_friction(mu), lateral_friction(mu),
@@ -95,7 +111,10 @@ public:
      * @param f_normal Current normal reaction force (defines the plastic cap `mu*|f_normal|`).
      * @param du This iteration's displacement increment along this direction.
      * @param[in,out] f_state Persistent friction force state for this direction.
-     * @param[out] k_friction Tangent stiffness (0 once the plastic cap is reached).
+     * @param[out] k_friction Tangent stiffness (a small residual fraction of the elastic slope
+     *                        once the plastic cap is reached, see `friction_residual_stiffness_fraction`;
+     *                        not exactly 0, to avoid a discontinuous Newton tangent right at the
+     *                        yield surface).
      */
     void calculate_friction_1d(double mu, double u_limit, double f_normal, double du, double& f_state, double& k_friction) const {
         double fl = mu * std::fabs(f_normal);
@@ -104,9 +123,17 @@ public:
             k_friction = 0.0;
             return;
         }
-        k_friction = fl / u_limit;
+        double k_elastic = fl / u_limit;
+        bool already_saturated = std::fabs(f_state) >= fl;
+        k_friction = already_saturated ? (friction_residual_stiffness_fraction * k_elastic) : k_elastic;
         f_state += k_friction * du;
-        if (std::fabs(f_state) > fl) {
+        if (std::fabs(f_state) > fl && !already_saturated) {
+            // Just crossed into saturation this iteration: clamp exactly to the Coulomb limit
+            // (matches the original hard cutoff for the crossing iteration itself) -- the
+            // residual stiffness only applies from the *next* iteration onward, once
+            // already_saturated is true. Past this point (already_saturated == true), f_state
+            // is intentionally allowed to drift slightly beyond fl under the small residual
+            // slope -- see friction_residual_stiffness_fraction's docstring above.
             f_state = (f_state > 0.0) ? fl : -fl;
             k_friction = 0.0;
         }
