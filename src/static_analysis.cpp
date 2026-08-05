@@ -345,18 +345,34 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
     if (!model) return false;
 
     Node3D* top_node = model->nodes.front().get();
+    Eigen::Vector3d start_disp = top_node->disp;
+    std::vector<int> saved_eq_numbers = top_node->eq_numbers;
 
-    for (int step = 1; step <= steps; ++step) {
+    // Passo 7 do roadmap de modernização (mapa_classes_anflex_estatica.md): em vez de escrever
+    // top_node->disp diretamente fora do sistema linear (a técnica antiga -- um Dirichlet BC
+    // rígido, com o topo permanentemente engastado), o topo vira um GDL livre de verdade, guiado
+    // por uma mola de penalidade (PrescribedMotion, ver prescribed_motion.hpp) -- o mesmo
+    // mecanismo que o ANFLEX real usa para movimento imposto (cLoad + "big number"), genérico o
+    // bastante para futuramente vir de uma série temporal medida, não só um offset sintético.
+    // Restaurado para engastado ao final (ver abaixo), preservando exatamente o contrato de GDL
+    // que o resto do código (ex.: DynamicAnalysis) espera do nó de topo.
+    top_node->eq_numbers = {0, 1, 2, 3, 4, 5};
+    assign_equation_numbers();
+
+    prescribed_motions.clear();
+    prescribed_motions.emplace_back(top_node);
+    PrescribedMotion& top_motion = prescribed_motions.back();
+    top_motion.dof_active = {true, true, true, false, false, false}; // translation only, matches VesselOffset's scope
+
+    bool all_steps_converged = true;
+
+    for (int step = 1; step <= steps && all_steps_converged; ++step) {
         double offset_factor = static_cast<double>(step) / static_cast<double>(steps);
-        Eigen::Vector3d current_offset = offset.offset_disp * offset_factor;
+        top_motion.target_disp = start_disp + offset.offset_disp * offset_factor;
 
-        top_node->disp.x() += current_offset.x() / static_cast<double>(steps);
-        top_node->disp.y() += current_offset.y() / static_cast<double>(steps);
-        top_node->disp.z() += current_offset.z() / static_cast<double>(steps);
-
-        std::cout << "\n[Offset Step " << std::setw(2) << step << "/" << steps << "] Offset Factor: " 
-                  << std::fixed << std::setprecision(2) << (offset_factor * 100.0) << "% | Top Pos X: " 
-                  << top_node->disp.x() << " m" << std::endl;
+        std::cout << "\n[Offset Step " << std::setw(2) << step << "/" << steps << "] Offset Factor: "
+                  << std::fixed << std::setprecision(2) << (offset_factor * 100.0) << "% | Target Top Pos X: "
+                  << top_motion.target_disp.x() << " m" << std::endl;
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
 
@@ -375,6 +391,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
         }
 
         bool step_converged = false;
+        bool solver_failed = false;
 
         for (int iter = 0; iter < max_iter; ++iter) {
             Eigen::SparseMatrix<double> K_global;
@@ -388,12 +405,13 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
             double rel_R = norm_R / norm_F;
 
             if (iter % 10 == 0 || rel_R < 1.0e-4) {
-                std::cout << "  Iter " << std::setw(2) << iter << " | Residual Norm: " 
+                std::cout << "  Iter " << std::setw(2) << iter << " | Residual Norm: "
                           << std::scientific << std::setprecision(4) << norm_R << " | Rel R: " << rel_R << std::defaultfloat << std::endl;
             }
 
             if (rel_R < 1.0e-4) {
-                std::cout << "  ✅ Offset Step " << step << " Converged in " << iter << " iterations!" << std::endl;
+                std::cout << "  ✅ Offset Step " << step << " Converged in " << iter << " iterations! (Top Pos X: "
+                          << top_node->disp.x() << " m)" << std::endl;
                 step_converged = true;
 
                 StepSnapshot snap;
@@ -421,23 +439,36 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
             LinearSolverStatus lin_status = linear_solver->solve(K_global, Residual, step_dU);
             if (lin_status == LinearSolverStatus::DecompositionFailed) {
                 std::cout << "❌ SparseLU decomposition failed at offset step " << step << "!" << std::endl;
-                return false;
+                solver_failed = true;
+                break;
             }
 
+            // No longer excludes top_node: it's a genuine free DOF now (held by the penalty
+            // spring, not by direct assignment), so it must receive Newton corrections like any
+            // other free node.
             AssembleFn assemble_fn = [this](int, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& F) {
                 Eigen::VectorXd F_ext_unused;
                 this->assemble_system(K, F_ext_unused, F);
             };
-            apply_newton_step_with_line_search(assemble_fn, model, F_ext, step_dU, norm_R, iter, top_node);
+            apply_newton_step_with_line_search(assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr);
         }
 
-        if (!step_converged) {
+        if (solver_failed) {
+            all_steps_converged = false;
+        } else if (!step_converged) {
             std::cout << "❌ Offset Step " << step << " failed to converge after " << max_iter << " iterations." << std::endl;
-            return false;
+            all_steps_converged = false;
         }
     }
 
-    return true;
+    // Restaura o nó de topo ao seu contrato original de GDL (engastado), congelando a posição de
+    // offset convergida como um valor de Dirichlet de novo -- consistente com o que o resto do
+    // código (ex.: DynamicAnalysis, que reusa o mesmo model) espera do nó de topo.
+    top_node->eq_numbers = saved_eq_numbers;
+    prescribed_motions.clear();
+    assign_equation_numbers();
+
+    return all_steps_converged;
 }
 
 } // namespace risersim

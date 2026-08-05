@@ -3,6 +3,7 @@
  * @brief Analysis::assemble_system(): assembles the global tangent stiffness, internal force, and seabed contact/friction contributions.
  */
 #include "risersim/analysis.hpp"
+#include <algorithm>
 #include <unordered_map>
 
 namespace risersim {
@@ -136,6 +137,15 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             // (soil_uncoupled.cpp:update, "else" branch when pen<=0).
             node->friction_force.setZero();
         }
+    }
+
+    // Prescribed motions (see prescribed_motion.hpp): a stiff penalty spring pulling specific
+    // node DOFs toward a target value, mirroring ANFLEX's big-number technique. Empty by
+    // default, so this is a no-op unless a caller (e.g. solve_vessel_offset()) populates it.
+    if (!prescribed_motions.empty()) {
+        double big_number = 0.0;
+        for (const auto& elem : model->elements) big_number = std::max(big_number, elem->props.E);
+        for (const auto& pm : prescribed_motions) pm.apply(big_number, triplets, F_int);
     }
 
     K_global.setFromTriplets(triplets.begin(), triplets.end());

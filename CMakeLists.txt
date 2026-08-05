@@ -149,6 +149,7 @@ add_executable(risersim_tests
     tests/test_static_analysis.cpp
     tests/test_element.cpp
     tests/test_convergence_test.cpp
+    tests/test_prescribed_motion.cpp
 )
 target_link_libraries(risersim_tests PRIVATE risersim_core Catch2::Catch2WithMain)
 

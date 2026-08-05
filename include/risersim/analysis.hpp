@@ -11,6 +11,7 @@
 #include "risersim/snapshot.hpp"
 #include "risersim/linear_solver.hpp"
 #include "risersim/rcm_reorder.hpp"
+#include "risersim/prescribed_motion.hpp"
 #include <vector>
 #include <string>
 #include <memory>
@@ -34,6 +35,14 @@ public:
     int num_dofs;
 
     std::vector<StepSnapshot> history;
+
+    /**
+     * @brief Motions actively enforced this assembly, via a stiff penalty spring (see prescribed_motion.hpp).
+     *
+     * Empty by default -- zero cost/behavior change unless a caller populates it (e.g.
+     * StaticAnalysis::solve_vessel_offset()).
+     */
+    std::vector<PrescribedMotion> prescribed_motions;
 
     /**
      * @brief Linear solver backend (see linear_solver.hpp), swappable without touching code that consumes this interface.
