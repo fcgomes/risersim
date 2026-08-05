@@ -346,6 +346,22 @@ Também rodado `risersim_test_main` (modelo sintético de 40 elementos, estátic
 
 **Validação**: bateria de regressão completa (teste de caracterização + `test_element.cpp` + diagnóstico de segmento isolado de 20 e 300 elementos + `main_test` completo) — todos convergem exatamente como antes, mesmos valores de referência (dentro da tolerância já estabelecida do teste de caracterização).
 
+## Passo 4 do roadmap concluído: `ConvergenceTest` com os 6 critérios reais do ANFLEX
+
+Lido `convergence_test.h`/`.cpp` do ANFLEX real para entender os 6 critérios exatos (`eConvergenceCriterion`): Translation, Rotation, ForcesNorm, MomentsNorm, UnbalancedForces, UnbalancedMoments. Achados principais:
+
+- **Translation/Rotation são sempre ativos** (`// Criterio de deslocamento sempre eh usado`), os outros 4 são opt-in via AML (`m_use_force_criterium`, `m_check_unbalanced_force`, `m_check_unbalanced_moment`).
+- A fórmula de Translation/Rotation é `norma_da_correcao_desta_iteracao / norma_acumulada_desde_o_inicio_do_passo` — **exatamente** o que o risersim já calculava inline em `solve_catenary_static` (o `split_norms` lambda + `ratio_transl`/`ratio_rot`), confirmando que essa parte já estava correta; só faltava a organização em classe.
+- ForcesNorm/MomentsNorm: resíduo de força/momento desta iteração, normalizado pelo resíduo da **primeira** iteração do passo (não por um valor absoluto fixo).
+- UnbalancedForces/UnbalancedMoments: o maior valor **absoluto** de força/momento residual em qualquer GDL individual (não normalizado) — com uma válvula de escape: dentro das últimas 3 iterações do orçamento, satisfazer só esse critério já é suficiente, mesmo que os outros ainda não tenham convergido (evita falhar um passo por causa de uma razão de incremento que decai devagar mas já é pequena, bem no limite de iterações).
+- Critério de convergência de cada `sConvergenceCriterion` usa `<=` (não `<`); o código inline do risersim usava `<` — troquei para `<=` ao portar, fiel ao ANFLEX (a diferença é inobservável na prática, igualdade exata em ponto flutuante é essencialmente impossível de atingir).
+
+**Implementado**: `convergence_test.hpp`/`.cpp` com a classe `ConvergenceTest`, `enum class ConvergenceCriterion` (6 valores), e `ConvergenceCriterionState`/`ConvergenceConfig`. Deliberadamente mais enxuto que o `cConvergenceTest` real (sem a infraestrutura de `cStatusWatcherAnalysis`, mensagens de erro formatadas, hooks de teste `_TESTS`/`_DIFZERO` — nada disso existe no risersim). `StaticAnalysis::solve_catenary_static` foi refatorado para usar `ConvergenceTest` no lugar do `split_norms` lambda inline; os 4 critérios novos (ForcesNorm/MomentsNorm/UnbalancedForces/UnbalancedMoments) ficam **desabilitados por padrão** (`ConvergenceConfig` default), preservando o comportamento atual exatamente — ficam prontos para quando houver leitura de config real do AML/JSON habilitando-os.
+
+**Não mexido, deliberadamente**: `solve_vessel_offset` continua com seu próprio critério simples (`rel_R < 1e-4`, resíduo relativo direto) — é um critério genuinamente diferente em espírito (não é a razão de incremento), então não foi forçado para dentro do `ConvergenceTest`.
+
+**Validação**: novo `tests/test_convergence_test.cpp` (3 casos, 12 assertions) cobre especificamente: (a) Translation/Rotation sempre ativos e bloqueados na primeira iteração (`iter>=1`), (b) ForcesNorm/MomentsNorm normalizando pelo resíduo da 1ª iteração, (c) a válvula de escape do UnbalancedForces só valendo perto do limite de iterações. Bateria de regressão completa (teste de caracterização + `test_element.cpp` + diagnóstico de segmento isolado de 20 e 300 elementos) — todos convergem como antes.
+
 ## Ver também
 
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).

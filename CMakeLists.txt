@@ -36,6 +36,7 @@ add_library(risersim_core STATIC
     src/element_beam.cpp
     src/analysis.cpp
     src/linear_solver.cpp
+    src/convergence_test.cpp
     src/static_integrator.cpp
     src/static_analysis.cpp
     src/dynamic_analysis.cpp
@@ -147,6 +148,7 @@ FetchContent_MakeAvailable(Catch2)
 add_executable(risersim_tests
     tests/test_static_analysis.cpp
     tests/test_element.cpp
+    tests/test_convergence_test.cpp
 )
 target_link_libraries(risersim_tests PRIVATE risersim_core Catch2::Catch2WithMain)
 

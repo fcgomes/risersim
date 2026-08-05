@@ -5,6 +5,7 @@
 #include "risersim/static_analysis.hpp"
 #include "risersim/static_integrator.hpp"
 #include "risersim/rotation_utils.hpp"
+#include "risersim/convergence_test.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -206,6 +207,16 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     StaticIntegrator integrator(this);
 
+    // Passo 4 do roadmap de modernização (mapa_classes_anflex_estatica.md): translation/rotation
+    // increment ratios go through the same ConvergenceTest class real ANFLEX uses
+    // (convergence_test.cpp), instead of ad-hoc inline logic. The four residual-based criteria
+    // it also supports (forces/moments norm, max unbalanced force/moment) are implemented but
+    // left disabled (ConvergenceConfig defaults), so behavior here is unchanged from before.
+    ConvergenceConfig convergence_config;
+    convergence_config.transl_tol = tolerance;
+    convergence_config.rot_tol = tolerance;
+    ConvergenceTest convergence_test(convergence_config);
+
     for (int step = 1; step <= steps; ++step) {
         double load_factor = static_cast<double>(step) / static_cast<double>(steps);
         std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Load Factor: "
@@ -233,23 +244,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
         // Accumulates this load step's total displacement (reset every new load step),
         // used by the relative-increment convergence criterion (see below).
         Eigen::VectorXd cumulative_dU = Eigen::VectorXd::Zero(num_dofs);
-
-        // Sums the norms (translation, rotation) of an increment vector restricted to
-        // the free DOFs of each type, mirroring real ANFLEX's
-        // cIntegrator::get_translation_inc_norm / get_rotation_inc_norm.
-        auto split_norms = [&](const Eigen::VectorXd& v, double& transl_norm, double& rot_norm) {
-            double t = 0.0, r = 0.0;
-            for (const auto& node : model->nodes) {
-                for (int i = 0; i < 3; ++i) {
-                    int eq = node->eq_numbers[i];
-                    if (eq >= 0) t += v[eq] * v[eq];
-                    int eq_rot = node->eq_numbers[i + 3];
-                    if (eq_rot >= 0) r += v[eq_rot] * v[eq_rot];
-                }
-            }
-            transl_norm = std::sqrt(t);
-            rot_norm = std::sqrt(r);
-        };
+        convergence_test.start();
 
         for (int iter = 0; iter < max_iter; ++iter) {
             Eigen::SparseMatrix<double> K_global;
@@ -288,23 +283,18 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
             Eigen::VectorXd accepted_dU = apply_newton_step_with_line_search(
                 assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr);
 
-            // Real ANFLEX's multi-criterion convergence test (convergence_test.cpp): this
-            // iteration's correction must be small relative to the total displacement already
-            // accumulated this step -- not relative to an absolute force residual. This converges
-            // even when the force residual hasn't dropped to zero yet (the remaining imbalance is
-            // resolved in subsequent load steps, as the real stiffness settles in). Requires at
-            // least 2 iterations (iter >= 1).
+            // Real ANFLEX's multi-criterion convergence test (see convergence_test.hpp/.cpp): by
+            // default only translation/rotation are active, so this iteration's correction must
+            // be small relative to the total displacement already accumulated this step -- not
+            // relative to an absolute force residual. This converges even when the force
+            // residual hasn't dropped to zero yet (the remaining imbalance is resolved in
+            // subsequent load steps, as the real stiffness settles in).
             cumulative_dU += accepted_dU;
-            double this_transl_norm, this_rot_norm, cum_transl_norm, cum_rot_norm;
-            split_norms(accepted_dU, this_transl_norm, this_rot_norm);
-            split_norms(cumulative_dU, cum_transl_norm, cum_rot_norm);
+            bool iteration_converged = convergence_test.check(*model, accepted_dU, cumulative_dU, Residual, iter, max_iter);
 
-            double ratio_transl = (cum_transl_norm > 1.0e-12) ? (this_transl_norm / cum_transl_norm) : 0.0;
-            double ratio_rot = (cum_rot_norm > 1.0e-12) ? (this_rot_norm / cum_rot_norm) : 0.0;
-            bool transl_converged = ratio_transl < tolerance;
-            bool rot_converged = ratio_rot < tolerance;
-
-            if (iter >= 1 && transl_converged && rot_converged) {
+            if (iteration_converged) {
+                double ratio_transl = convergence_test.criterion(ConvergenceCriterion::Translation).value;
+                double ratio_rot = convergence_test.criterion(ConvergenceCriterion::Rotation).value;
                 std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations! (incremento transl/rot = "
                           << ratio_transl << " / " << ratio_rot << ", norm_R = " << norm_R << " N)" << std::endl;
                 step_converged = true;
