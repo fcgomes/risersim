@@ -224,8 +224,14 @@ export class Riser3DRenderer {
             maxY = Math.max(maxY, waterSurfaceZ);
         }
 
-        const boxMargin = 5.0;
-        const marginPerpendicular = 35.0; // Distância maior no eixo perpendicular (Y)
+        // Margens proporcionais ao span de cada eixo (com piso mínimo), em vez de uma distância
+        // fixa -- um valor fixo (ex. marginPerpendicular=35 sempre) fica bem em modelos com
+        // espalhamento horizontal razoável, mas domina o quadro quando um eixo é naturalmente
+        // pequeno (ex. riser quase vertical, com pouco desvio lateral): a vista de topo (XY)
+        // acabava mostrando uma caixa enorme e vazia em volta de uma linha minúscula.
+        const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
+        const boxMargin = Math.max(2.0, Math.min(spanX, spanY) * 0.08);
+        const marginPerpendicular = Math.max(5.0, spanZ * 0.25); // Distância maior no eixo perpendicular (Y)
 
         minX -= boxMargin; maxX += boxMargin;
         minY -= boxMargin; maxY += boxMargin;

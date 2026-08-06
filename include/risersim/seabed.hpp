@@ -11,10 +11,21 @@
 namespace risersim {
 
 /**
+ * @brief Which soil-friction formulation to use, mirroring ANFLEX's `eSoilModel`
+ * (`soil.h`: COUPLED/UNCOUPLED/PYTZ -- risersim only implements the first two).
+ *
+ * Real models pick one explicitly: Exemplo_01a uses `%SOIL.UNCOUPLED`, Exemplo_02a uses
+ * `%OPTION.SOIL.COUPLED`. They are physically different friction laws (see
+ * `calculate_friction_1d` vs. `calculate_friction_coupled`), not just an implementation detail.
+ */
+enum class SoilModel { Uncoupled, Coupled };
+
+/**
  * @brief Vertical (normal) reaction and axial/lateral Coulomb friction at the seabed.
  */
 class SeabedInteraction {
 public:
+    SoilModel soil_model = SoilModel::Uncoupled; ///< Which friction law calc_friction_* in analysis.cpp should use.
     double seabed_depth;   ///< Z coordinate of the seabed (e.g. -100.0 m).
     double stiffness_z;    ///< Initial vertical soil stiffness k_inicial (N/m per node, default 1e5).
     double friction_coeff; ///< Default/fallback friction coefficient mu (used if axial/lateral aren't overridden).
@@ -36,23 +47,7 @@ public:
     double axial_elastic_deflection_limit;
     double lateral_elastic_deflection_limit;
 
-    /**
-     * @brief Fraction of the elastic slope (mu*|Fn|/u_limit) kept as tangent stiffness once the
-     * Coulomb friction cap is reached, instead of dropping to exactly zero (perfect plasticity).
-     *
-     * Standard regularization for return-mapping plasticity/contact codes: a hard `k=0` right at
-     * the yield surface makes the Newton tangent discontinuous there, so a node sitting near the
-     * friction limit can flip between the elastic and plastic branch every iteration (`du`
-     * flipping sign from numerical noise) without ever damping to zero -- observed as the
-     * residual oscillating in a tiny, already-converged band (~1e-5 relative) that never
-     * satisfies the convergence tolerance (see mapa_classes_anflex_estatica.md, "chattering no
-     * limite elástico/plástico"). A small residual slope (default 2%) keeps the tangent
-     * well-conditioned there at the cost of a deliberately small physical inaccuracy (force can
-     * drift slightly past the nominal Coulomb cap under sustained loading in one direction).
-     */
-    double friction_residual_stiffness_fraction = 0.02;
-
-    SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double f_ult = 5000.0)
+    SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double f_ult = 1.0e7)
         : seabed_depth(depth), stiffness_z(kz), friction_coeff(mu), elastic_deflection_limit(u_limit), ultimate_bearing_force(f_ult),
           axial_friction(mu), lateral_friction(mu),
           axial_elastic_deflection_limit(u_limit), lateral_elastic_deflection_limit(u_limit) {}
@@ -60,13 +55,23 @@ public:
     /**
      * @brief Computes the normal (vertical) seabed reaction force and its tangent stiffness.
      *
-     * Nonlinear hyperbolic model, the same functional form used by real offshore geotechnical
-     * P-Y/T-Z curves: `f(pen) = pen / (1/k_inicial + pen/f_ultima)`. Tangent stiffness starts at
-     * `k_inicial = stiffness_z` (soft) and saturates asymptotically toward `f_ultima` as
-     * penetration grows -- instead of an abrupt jump to full linear stiffness the instant
-     * `pen > 0`, which caused contact "chattering"/ill-conditioning when many nodes touch down
-     * nearly simultaneously (common when the seabed already intersects much of the mesh in the
-     * initial configuration).
+     * Nonlinear hyperbolic model, `f(pen) = pen / (1/k_inicial + pen/f_ultima)`, saturating
+     * toward `ultimate_bearing_force` as penetration grows, instead of a plain linear spring
+     * (`f = k*pen`, unbounded) like real ANFLEX's `cUncoupledSoil`/`cCoupledSoil`
+     * (`soil_uncoupled.cpp:90-91`/`soil_coupled.cpp:92-93`).
+     *
+     * Tried switching to the real-ANFLEX-matching plain linear spring directly (no saturation)
+     * and it made things measurably WORSE on the real soil+current divergence case: once a
+     * Newton iterate lets a node penetrate deeply during a bad step, an unbounded linear force
+     * grows without limit and the blow-up gets far more catastrophic (residual reaching ~1e30
+     * instead of ~1e12) -- see `mapa_classes_anflex_estatica.md`. So the saturation is being kept
+     * as a deliberate risersim-only safety net (real ANFLEX apparently never lets a bad iterate
+     * get this far in the first place, for reasons still under investigation), but
+     * `ultimate_bearing_force` itself was previously a hardcoded 5000 N default that was never
+     * actually read from the input JSON -- far too small for a real riser's weight, letting nodes
+     * sink multiple meters into the seabed once that cap was reached instead of being held up.
+     * Raised to a much larger default (1e7 N) so it acts purely as a runaway-prevention ceiling,
+     * not a physically-meaningful bearing capacity that binds under normal loading.
      *
      * @param z_current Current Z coordinate of the node.
      * @param[out] f_normal Normal reaction force (0 if not penetrating).
@@ -111,10 +116,9 @@ public:
      * @param f_normal Current normal reaction force (defines the plastic cap `mu*|f_normal|`).
      * @param du This iteration's displacement increment along this direction.
      * @param[in,out] f_state Persistent friction force state for this direction.
-     * @param[out] k_friction Tangent stiffness (a small residual fraction of the elastic slope
-     *                        once the plastic cap is reached, see `friction_residual_stiffness_fraction`;
-     *                        not exactly 0, to avoid a discontinuous Newton tangent right at the
-     *                        yield surface).
+     * @param[out] k_friction Tangent stiffness -- always the full elastic slope `mu*|f_normal|/u_limit`,
+     *                        never reduced even once the plastic cap is reached (matches real ANFLEX,
+     *                        see the note inside the function body).
      */
     void calculate_friction_1d(double mu, double u_limit, double f_normal, double du, double& f_state, double& k_friction) const {
         double fl = mu * std::fabs(f_normal);
@@ -123,19 +127,65 @@ public:
             k_friction = 0.0;
             return;
         }
-        double k_elastic = fl / u_limit;
-        bool already_saturated = std::fabs(f_state) >= fl;
-        k_friction = already_saturated ? (friction_residual_stiffness_fraction * k_elastic) : k_elastic;
+        // Mirrors ANFLEX's real cUncoupledSoil::calc_unidimensional_friction
+        // (soil_uncoupled.cpp:144-173): the tangent stiffness `k` is always the full elastic
+        // slope `fl/u_limit`, computed once and NEVER reduced -- even once the trial force is
+        // pulled back onto the Coulomb cap below. Only the force is corrected via return-mapping;
+        // the stiffness never softens. This was previously a small residual fraction here
+        // (friction_residual_stiffness_fraction), a deliberate regularization to avoid a
+        // discontinuous Newton tangent -- but real ANFLEX has no such softening and still
+        // converges, while risersim's softened tangent was the leading suspect for why the
+        // global K loses conditioning exactly when many nodes saturate simultaneously (see
+        // mapa_classes_anflex_estatica.md).
+        k_friction = fl / u_limit;
         f_state += k_friction * du;
-        if (std::fabs(f_state) > fl && !already_saturated) {
-            // Just crossed into saturation this iteration: clamp exactly to the Coulomb limit
-            // (matches the original hard cutoff for the crossing iteration itself) -- the
-            // residual stiffness only applies from the *next* iteration onward, once
-            // already_saturated is true. Past this point (already_saturated == true), f_state
-            // is intentionally allowed to drift slightly beyond fl under the small residual
-            // slope -- see friction_residual_stiffness_fraction's docstring above.
+        if (std::fabs(f_state) > fl) {
             f_state = (f_state > 0.0) ? fl : -fl;
-            k_friction = 0.0;
+        }
+    }
+
+    /**
+     * @brief Incremental elastic-plastic COUPLED Coulomb friction: a single combined
+     * axial+lateral yield surface, instead of two independent 1D caps.
+     *
+     * Mirrors ANFLEX's real `cCoupledSoil::calc_friction` (`soil_coupled.cpp:108-162`), used
+     * whenever the model's soil is `%OPTION.SOIL.COUPLED` (e.g. Exemplo_02a) rather than
+     * `%SOIL.UNCOUPLED` (e.g. Exemplo_01a, see `calculate_friction_1d`). The combined force
+     * magnitude `norm_f = sqrt(Fx^2+Fy^2)` is capped at `sqrt(fl_ax^2+fl_lat^2)` with a shared-
+     * lambda radial return -- axial and lateral saturate together, not independently, so a node
+     * loaded diagonally (partly along the line, partly from lateral current) reaches its combined
+     * limit sooner than two separate per-axis caps would allow. As in the uncoupled model, each
+     * direction's tangent stiffness is always the elastic slope (`k = fl/u_limit`) and is never
+     * reduced when the force is corrected back onto the yield surface -- only the force/state
+     * changes, matching ANFLEX's `m_forces`/`m_ui` exactly.
+     *
+     * @param f_normal Current normal reaction force (defines the combined cap).
+     * @param du_axial, du_lateral This iteration's displacement increments, axial and lateral.
+     * @param[in,out] f_axial, f_lateral Persistent friction force state, each direction.
+     * @param[out] k_axial, k_lateral Tangent stiffness, each direction (always the elastic slope).
+     */
+    void calculate_friction_coupled(double f_normal, double du_axial, double du_lateral,
+                                     double& f_axial, double& f_lateral,
+                                     double& k_axial, double& k_lateral) const {
+        double fl_ax = axial_friction * std::fabs(f_normal);
+        double fl_lat = lateral_friction * std::fabs(f_normal);
+        k_axial = (axial_elastic_deflection_limit > 1.0e-9) ? (fl_ax / axial_elastic_deflection_limit) : 0.0;
+        k_lateral = (lateral_elastic_deflection_limit > 1.0e-9) ? (fl_lat / lateral_elastic_deflection_limit) : 0.0;
+
+        f_axial += k_axial * du_axial;
+        f_lateral += k_lateral * du_lateral;
+
+        double norm_f = std::sqrt(f_axial * f_axial + f_lateral * f_lateral);
+        double cap = std::sqrt(fl_ax * fl_ax + fl_lat * fl_lat);
+        if (norm_f - cap > 1.0e-10 && norm_f > 1.0e-12) {
+            double r0 = f_axial / norm_f;
+            double r1 = f_lateral / norm_f;
+            double denom = r0 * k_axial * r0 + r1 * k_lateral * r1;
+            if (denom > 1.0e-12) {
+                double lambda = (r0 * k_axial * du_axial + r1 * k_lateral * du_lateral) / denom;
+                f_axial -= k_axial * lambda * r0;
+                f_lateral -= k_lateral * lambda * r1;
+            }
         }
     }
 };

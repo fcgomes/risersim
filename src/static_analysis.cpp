@@ -6,6 +6,7 @@
 #include "risersim/static_integrator.hpp"
 #include "risersim/rotation_utils.hpp"
 #include "risersim/convergence_test.hpp"
+#include "risersim/config.hpp"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -262,7 +263,14 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     ConvergenceTest convergence_test(convergence_config);
 
     for (int step = 1; step <= steps; ++step) {
-        double load_factor = static_cast<double>(step) / static_cast<double>(steps);
+        // Rampa em meio-cosseno (0.5*(1-cos(pi*t))), igual à cRampFunction real do ANFLEX
+        // (libs/anf_movements/src/ramp_function.cpp), em vez de uma rampa linear. Derivada zero
+        // no início E no fim do carregamento -- uma rampa linear tem incremento de carga
+        // constante até o último passo, com uma quebra abrupta bem onde a saturação de atrito em
+        // muitos nós simultaneamente (o padrão de resíduo já observado na divergência
+        // solo+corrente) tende a acontecer. Ver mapa_classes_anflex_estatica.md.
+        double t = static_cast<double>(step) / static_cast<double>(steps);
+        double load_factor = 0.5 * (1.0 - std::cos(std::numbers::pi * t));
         std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Load Factor: "
                   << std::fixed << std::setprecision(1) << (load_factor * 100.0) << "%" << std::endl;
 

@@ -23,7 +23,7 @@ class RiserSimApp {
     async initUI() {
         const canvas = document.getElementById('three-canvas');
         this.renderer3D = new Riser3DRenderer(canvas);
-        this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls);
+        this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
         this.chartsController = new ProfileChartsController();
 
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'

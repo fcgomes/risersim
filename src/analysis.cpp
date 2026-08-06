@@ -103,10 +103,20 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             double du_lateral = node->delta_disp_xy.x() * lateral_dir.x() + node->delta_disp_xy.y() * lateral_dir.y();
 
             double k_ax = 0.0, k_lat = 0.0;
-            seabed.calculate_friction_1d(seabed.axial_friction, seabed.axial_elastic_deflection_limit,
-                                         f_seabed, du_axial, node->friction_force[0], k_ax);
-            seabed.calculate_friction_1d(seabed.lateral_friction, seabed.lateral_elastic_deflection_limit,
-                                         f_seabed, du_lateral, node->friction_force[1], k_lat);
+            if (seabed.soil_model == SoilModel::Coupled) {
+                // Combined axial+lateral yield surface (real ANFLEX's cCoupledSoil, e.g.
+                // Exemplo_02a's %OPTION.SOIL.COUPLED) -- see seabed.hpp:calculate_friction_coupled.
+                seabed.calculate_friction_coupled(f_seabed, du_axial, du_lateral,
+                                                  node->friction_force[0], node->friction_force[1],
+                                                  k_ax, k_lat);
+            } else {
+                // Independent per-axis caps (real ANFLEX's cUncoupledSoil, e.g. Exemplo_01a's
+                // %SOIL.UNCOUPLED) -- see seabed.hpp:calculate_friction_1d.
+                seabed.calculate_friction_1d(seabed.axial_friction, seabed.axial_elastic_deflection_limit,
+                                             f_seabed, du_axial, node->friction_force[0], k_ax);
+                seabed.calculate_friction_1d(seabed.lateral_friction, seabed.lateral_elastic_deflection_limit,
+                                             f_seabed, du_lateral, node->friction_force[1], k_lat);
+            }
 
             double f_global_x = node->friction_force[0] * axial_dir.x() + node->friction_force[1] * lateral_dir.x();
             double f_global_y = node->friction_force[0] * axial_dir.y() + node->friction_force[1] * lateral_dir.y();

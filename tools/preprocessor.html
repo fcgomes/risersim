@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>riserSim Pré-processador (Dados de Entrada)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #1e1e2e; color: #cdd6f4; overflow: hidden; transition: background-color 0.3s; }
+
+        body.dark-mode { background-color: #1e1e2e; color: #cdd6f4; }
+        body.dark-mode #header { background: #11111b; border-bottom-color: #313244; }
+        body.dark-mode #sidebar { background: #181825; border-right-color: #313244; color: #cdd6f4; }
+        body.dark-mode #data-panel { background: #181825; border-left-color: #313244; color: #cdd6f4; }
+        body.dark-mode .control-group { background: #313244; }
+        body.dark-mode .control-title { color: #89b4fa; }
+        body.dark-mode .stat-card { background: #11111b; border-color: #313244; }
+        body.dark-mode .stat-title { color: #a6adc8; }
+        body.dark-mode .stat-value { color: #a6e3a1; }
+        body.dark-mode select, body.dark-mode input[type="range"], body.dark-mode input[type="file"], body.dark-mode input[type="text"] { background: #181825; border-color: #45475a; color: #cdd6f4; }
+        body.dark-mode #colorbar-legend { background: rgba(17, 17, 27, 0.88); border-color: #313244; color: #cdd6f4; }
+        body.dark-mode #data-panel h3 { color: #89b4fa; }
+        body.dark-mode table.excel-table, body.dark-mode table.kv-table { color: #cdd6f4; }
+        body.dark-mode table.excel-table th, body.dark-mode table.kv-table th { background: #181825; color: #89b4fa; border-color: #313244; }
+        body.dark-mode table.excel-table td, body.dark-mode table.kv-table td { border-color: #313244; }
+        body.dark-mode table.excel-table tr:nth-child(even), body.dark-mode table.kv-table tr:nth-child(even) { background: #1e1e2e; }
+        body.dark-mode .warning-error { background: #451a1a; color: #f87171; border-color: #7f1d1d; }
+        body.dark-mode .warning-warning { background: #452e0e; color: #fbbf24; border-color: #78350f; }
+        body.dark-mode .warning-info { background: #0f2942; color: #7dd3fc; border-color: #0c4a6e; }
+        body.dark-mode #resizer-h { background: #313244; border-color: #45475a; }
+        body.dark-mode #resizer-h:hover, body.dark-mode #resizer-h.dragging { background: #2563eb; }
+
+        body.light-mode { background-color: #ffffff; color: #0f172a; }
+        body.light-mode #header { background: #1e293b; border-bottom-color: #cbd5e1; }
+        body.light-mode #sidebar { background: #f8fafc; border-right-color: #e2e8f0; color: #0f172a; }
+        body.light-mode #data-panel { background: #f8fafc; border-left-color: #e2e8f0; color: #0f172a; }
+        body.light-mode .control-group { background: #e2e8f0; }
+        body.light-mode .control-title { color: #1e3a8a; }
+        body.light-mode .stat-card { background: #ffffff; border-color: #cbd5e1; }
+        body.light-mode .stat-title { color: #64748b; }
+        body.light-mode .stat-value { color: #047857; }
+        body.light-mode select, body.light-mode input[type="range"], body.light-mode input[type="file"], body.light-mode input[type="text"] { background: #ffffff; border-color: #94a3b8; color: #0f172a; }
+        body.light-mode #colorbar-legend { background: rgba(255, 255, 255, 0.95); border-color: #cbd5e1; color: #0f172a; }
+        body.light-mode #data-panel h3 { color: #1e3a8a; }
+        body.light-mode table.excel-table, body.light-mode table.kv-table { color: #0f172a; }
+        body.light-mode table.excel-table th, body.light-mode table.kv-table th { background: #f1f5f9; color: #1e3a8a; border-color: #cbd5e1; }
+        body.light-mode table.excel-table td, body.light-mode table.kv-table td { border-color: #cbd5e1; }
+        body.light-mode table.excel-table tr:nth-child(even), body.light-mode table.kv-table tr:nth-child(even) { background: #f8fafc; }
+        body.light-mode .warning-error { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+        body.light-mode .warning-warning { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+        body.light-mode .warning-info { background: #e0f2fe; color: #0369a1; border-color: #7dd3fc; }
+        body.light-mode #resizer-h { background: #e2e8f0; border-color: #cbd5e1; }
+        body.light-mode #resizer-h:hover, body.light-mode #resizer-h.dragging { background: #2563eb; }
+
+        #header { padding: 12px 25px; border-bottom: 2px solid; display: flex; justify-content: space-between; align-items: center; height: 50px; box-sizing: border-box; }
+        h1 { margin: 0; font-size: 20px; color: #89b4fa; }
+
+        /* Layout principal: sidebar de controles | canvas 3D | divisor arrastável | painel de dados (abas) */
+        #main-layout { display: flex; height: calc(100vh - 50px); min-height: 0; }
+        #sidebar { width: 78px; flex-shrink: 0; padding: 10px 8px; border-right: 2px solid; box-sizing: border-box; overflow-y: auto; }
+        #sidebar .control-group { padding: 8px 4px; }
+        #sidebar .control-title { font-size: 9px; text-align: center; }
+        #sidebar .icon-toolbar { align-items: center; }
+        #canvas-container { flex: 1; position: relative; min-width: 0; height: 100%; overflow: hidden; }
+        #three-canvas { position: absolute; top: 0; left: 0; width: 100% !important; height: 100% !important; display: block; }
+
+        #resizer-h { width: 8px; flex-shrink: 0; cursor: col-resize; user-select: none; border-left: 1px solid; border-right: 1px solid; box-sizing: border-box; display: flex; align-items: center; justify-content: center; transition: background 0.15s; }
+        #resizer-h::after { content: '⋮'; font-size: 14px; opacity: 0.6; }
+
+        #data-panel { width: 560px; flex-shrink: 0; min-width: 320px; max-width: 75vw; border-left: 2px solid; box-sizing: border-box; padding: 15px; display: flex; flex-direction: column; overflow: hidden; }
+        #data-panel h3 { margin-top: 0; margin-bottom: 8px; font-size: 14px; flex-shrink: 0; }
+        #bottom-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-shrink: 0; flex-wrap: wrap; }
+        #bottom-tabs .btn-tab { font-size: 12px; padding: 6px 12px; }
+        .bottom-tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; }
+        .bottom-tab-panel.active { display: flex; }
+
+        #colorbar-legend { position: absolute; top: 20px; right: 25px; padding: 12px 16px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); pointer-events: none; z-index: 30; }
+        #colorbar-ticks { display: flex; flex-direction: column; justify-content: space-between; height: 140px; font-size: 11px; font-weight: bold; text-align: right; line-height: 1; }
+        #colorbar-bar { width: 20px; height: 140px; border-radius: 4px; border: 1px solid #94a3b8; box-sizing: border-box; }
+
+        .control-group { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; }
+        .control-title { font-size: 11px; font-weight: bold; margin-bottom: 6px; }
+        .stat-card { padding: 6px 10px; border-radius: 6px; margin-bottom: 4px; border: 1px solid; }
+        #model-status .stat-card { flex: 1 1 120px; min-width: 110px; margin-bottom: 0; }
+        .stat-title { font-size: 9px; text-transform: uppercase; }
+        .stat-value { font-size: 14px; font-weight: bold; margin-top: 1px; word-break: break-word; }
+
+        select, input[type="range"], input[type="file"], input[type="text"] { width: 100%; padding: 6px; border-radius: 6px; box-sizing: border-box; font-size: 12px; }
+
+        .btn-row { display: flex; gap: 5px; margin-top: 6px; }
+        .btn-icon { flex: 1; background: #94a3b8; color: #ffffff; border: none; padding: 7px 4px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 12px; text-align: center; }
+        .btn-icon:hover { opacity: 0.85; }
+        .btn-primary { background: #2563eb; color: #ffffff; }
+        .btn-theme { background: #f59e0b; color: #11111b; font-weight: bold; border-radius: 6px; padding: 6px 14px; border: none; cursor: pointer; }
+
+        /* Barra fina de ícones (vistas/zoom), em coluna -- botões quadrados pequenos, sem rótulo
+           de texto longo, com tooltip customizado (data-tip) em vez de botões largos
+           "🎲 Isométrica". */
+        .icon-toolbar { display: flex; flex-direction: column; gap: 4px; }
+        .btn-icon-sm {
+            width: 28px; height: 28px; padding: 0; box-sizing: border-box;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 6px; border: 1px solid; font-size: 11px; font-weight: bold;
+            cursor: pointer; background: #313244; color: #cdd6f4; border-color: #45475a;
+        }
+        .btn-icon-sm:hover { opacity: 0.85; }
+        .btn-icon-sm.btn-primary, .btn-icon-sm.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
+        body.light-mode .btn-icon-sm { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
+
+        /* Tooltip customizado -- title nativo do browser tem delay/estilo inconsistente entre
+           navegadores; este aparece rápido e consistente com o tema claro/escuro da página. */
+        [data-tip] { position: relative; }
+        [data-tip]::after {
+            content: attr(data-tip);
+            position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+            background: #11111b; color: #cdd6f4; padding: 5px 9px; border-radius: 5px;
+            font-size: 11px; font-weight: normal; text-align: left; line-height: 1.35;
+            width: max-content; max-width: 190px;
+            opacity: 0; pointer-events: none; transition: opacity 0.12s ease 0.2s;
+            z-index: 60; border: 1px solid #313244; box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+        }
+        [data-tip]:hover::after { opacity: 1; }
+        body.light-mode [data-tip]::after { background: #1e293b; color: #f8fafc; border-color: #334155; }
+
+        /* Retângulo de arraste do "zoom por janela", desenhado sobre o canvas 3D. */
+        #zoom-rect { position: absolute; display: none; border: 1px dashed #2563eb; background: rgba(37, 99, 235, 0.15); pointer-events: none; z-index: 25; }
+
+        table.excel-table, table.kv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        table.excel-table th, table.excel-table td, table.kv-table th, table.kv-table td { padding: 5px 10px; white-space: nowrap; text-align: left; }
+        table.excel-table th { font-weight: bold; position: sticky; top: 0; }
+        table.kv-table td:first-child { opacity: 0.75; }
+        table.kv-table td:last-child { font-weight: bold; }
+
+        .warning-item { padding: 8px 10px; border-radius: 6px; border: 1px solid; margin-bottom: 6px; font-size: 12px; line-height: 1.4; }
+
+        .btn-tab { background: #313244; color: #cdd6f4; border: 1px solid #45475a; padding: 4px 10px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 11px; }
+        .btn-tab.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
+        body.light-mode .btn-tab { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
+        body.light-mode .btn-tab.active { background: #2563eb; color: #ffffff; }
+
+        #current-chart { width: 100%; height: 220px; flex-shrink: 0; }
+    </style>
+</head>
+<body class="dark-mode">
+    <div id="header">
+        <h1>🔍 riserSim Pré-processador (Dados de Entrada)</h1>
+        <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
+    </div>
+
+    <div id="main-layout">
+        <div id="sidebar">
+            <div class="control-group">
+                <div class="control-title">🎥 VISTAS</div>
+                <div class="icon-toolbar">
+                    <button class="btn-icon-sm btn-primary" id="view-iso-btn" data-tip="Vista isométrica">🎲</button>
+                    <button class="btn-icon-sm" id="view-xy-btn" data-tip="Vista superior (plano XY)">XY</button>
+                    <button class="btn-icon-sm" id="view-xz-btn" data-tip="Vista de elevação / perfil (plano XZ)">XZ</button>
+                    <button class="btn-icon-sm" id="view-yz-btn" data-tip="Vista frontal transversal (plano YZ)">YZ</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <div class="control-title">🔍 ZOOM</div>
+                <div class="icon-toolbar">
+                    <button class="btn-icon-sm" id="zoom-fit-btn" data-tip="Enquadrar o modelo inteiro (zoom extents), sem mudar o ângulo de vista">⤢</button>
+                    <button class="btn-icon-sm" id="zoom-in-btn" data-tip="Aproximar (zoom +)">+</button>
+                    <button class="btn-icon-sm" id="zoom-out-btn" data-tip="Afastar (zoom −)">−</button>
+                    <button class="btn-icon-sm" id="zoom-window-btn" data-tip="Zoom por janela: clique e depois arraste um retângulo na cena para aproximar da área selecionada">⛶</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="canvas-container">
+            <canvas id="three-canvas"></canvas>
+            <div id="zoom-rect"></div>
+            <div id="colorbar-legend">
+                <div style="font-size: 11px; font-weight: bold; color: #89b4fa; text-align: center;">Diâmetro externo (m)</div>
+                <div style="display: flex; gap: 10px; align-items: stretch;">
+                    <div id="colorbar-ticks">
+                        <span id="cbar-max">-</span>
+                        <span id="cbar-mid2">-</span>
+                        <span id="cbar-mid1">-</span>
+                        <span id="cbar-min">-</span>
+                    </div>
+                    <div id="colorbar-bar"></div>
+                </div>
+                <div style="font-size: 9px; opacity: 0.8;">🔴 nó prescrito &nbsp; 🟠 nó restringido</div>
+            </div>
+        </div>
+
+        <div id="resizer-h" title="Arraste para redimensionar o canvas 3D e o painel de dados"></div>
+
+        <div id="data-panel">
+            <div id="bottom-tabs">
+                <button class="btn-tab active" id="tab-load-btn">📁 Carregar</button>
+                <button class="btn-tab" id="tab-geometry-btn">📐 Geometria</button>
+                <button class="btn-tab" id="tab-environmental-btn">🌊 Condições Ambientais</button>
+                <button class="btn-tab" id="tab-analysis-btn">⚙️ Análise</button>
+            </div>
+
+            <div class="bottom-tab-panel active" id="tab-load">
+                <div class="control-group">
+                    <div class="control-title">📁 CARREGAR JSON DE ENTRADA</div>
+                    <input type="file" id="json-input" accept=".json">
+                    <div style="margin-top:8px; display:flex; gap:4px;">
+                        <input type="text" id="url-input" placeholder="../input_simulation.json" style="flex:1;">
+                        <button class="btn-icon btn-primary" id="url-load-btn" style="flex:0 0 auto; padding:6px 10px;">Carregar</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">⚠️ AVISOS DE QUALIDADE DE DADOS</div>
+                    <div id="warnings-panel"></div>
+                </div>
+            </div>
+
+            <div class="bottom-tab-panel" id="tab-geometry">
+                <div id="model-status" style="display:flex; flex-wrap:wrap; gap:8px; flex-shrink:0; margin-bottom:10px;"></div>
+
+                <h3 style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; flex-shrink:0;">
+                    <span>📋 Elementos e Nós</span>
+                    <span>
+                        <button class="btn-tab active" id="view-grouped-btn">Agrupado por seção</button>
+                        <button class="btn-tab" id="view-byelement-btn">Elementos (completo)</button>
+                        <button class="btn-tab" id="view-nodes-btn">Nós</button>
+                    </span>
+                </h3>
+                <div style="flex:1; min-height:120px; overflow:auto;">
+                    <table class="excel-table" id="section-table">
+                        <thead>
+                            <tr>
+                                <th>Elementos</th><th>D_outer (m)</th><th>D_inner (m)</th>
+                                <th>E (MPa)</th><th>G (MPa)</th><th>A (m²)</th>
+                                <th>EI (kN·m²)</th><th>Peso submerso (kN/m)</th><th>Ca</th>
+                            </tr>
+                        </thead>
+                        <tbody id="section-tbody"></tbody>
+                    </table>
+                    <table class="excel-table" id="element-table" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>Elem.</th><th>Linha</th><th>Nó 1</th><th>Nó 2</th><th>Comprimento (m)</th>
+                                <th>E (MPa)</th><th>G (MPa)</th><th>A (m²)</th>
+                                <th>D_outer (m)</th><th>D_inner (m)</th>
+                                <th>IY (m⁴)</th><th>IZ (m⁴)</th><th>J (m⁴)</th><th>EI (kN·m²)</th>
+                                <th>Peso submerso (kN/m)</th><th>rho (kg/m³)</th><th>rho_fluid (kg/m³)</th><th>Ca</th>
+                            </tr>
+                        </thead>
+                        <tbody id="element-tbody"></tbody>
+                    </table>
+                    <table class="excel-table" id="node-table" style="display:none;">
+                        <thead>
+                            <tr><th>Nó</th><th>X (m)</th><th>Y (m)</th><th>Z (m)</th><th>Condição de contorno</th></tr>
+                        </thead>
+                        <tbody id="node-tbody"></tbody>
+                    </table>
+                </div>
+
+                <div style="flex-shrink:0; margin-top:10px;">
+                    <h3>🔗 Condições de Contorno</h3>
+                    <div id="bc-panel"></div>
+                </div>
+            </div>
+
+            <div class="bottom-tab-panel" id="tab-environmental">
+                <h3>🌊 Ambiental</h3>
+                <div id="env-panel"></div>
+
+                <div class="control-title" style="margin-top:8px;">📈 PERFIL DE CORRENTE</div>
+                <table class="kv-table">
+                    <thead><tr><th>Profundidade (m)</th><th>Velocidade (m/s)</th><th>Ângulo (°)</th></tr></thead>
+                    <tbody id="current-tbody"></tbody>
+                </table>
+                <div id="current-chart"></div>
+            </div>
+
+            <div class="bottom-tab-panel" id="tab-analysis">
+                <h3>⚙️ Opções de Análise</h3>
+                <div id="analysis-panel"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/preprocessor_app.js"></script>
+</body>
+</html>

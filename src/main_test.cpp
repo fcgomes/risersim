@@ -47,6 +47,19 @@ int main(int argc, char* argv[]) {
     double total_span_x = 120.0;
     double seabed_stiffness = 1.0e5;
     double seabed_friction = 0.5;
+    // Axial/lateral overrides: absent from most exported JSONs today (they only carry an
+    // isotropic "friction_coeff"), so these fall back to seabed_friction/0.05 (the
+    // SeabedInteraction default) unless a JSON explicitly provides them -- see
+    // environmental.seabed.axial_friction etc below.
+    double seabed_axial_friction = -1.0;
+    double seabed_lateral_friction = -1.0;
+    double seabed_axial_elastic_limit = -1.0;
+    double seabed_lateral_elastic_limit = -1.0;
+    // "uncoupled" (independent per-axis Coulomb caps, ANFLEX's %SOIL.UNCOUPLED) or "coupled"
+    // (combined axial+lateral yield surface, ANFLEX's %OPTION.SOIL.COUPLED) -- see
+    // seabed.hpp:SoilModel. Real models pick one explicitly and they are physically different,
+    // not interchangeable defaults.
+    risersim::SoilModel soil_model = risersim::SoilModel::Uncoupled;
     double water_density = 1025.0;
 
     int static_steps = 20;
@@ -220,6 +233,12 @@ int main(int argc, char* argv[]) {
                         seabed_enabled = sb.value("enabled", true);
                         seabed_stiffness = sb.value("stiffness_Nm", seabed_stiffness);
                         seabed_friction = sb.value("friction_coeff", seabed_friction);
+                        seabed_axial_friction = sb.value("axial_friction", seabed_axial_friction);
+                        seabed_lateral_friction = sb.value("lateral_friction", seabed_lateral_friction);
+                        seabed_axial_elastic_limit = sb.value("axial_elastic_deflection_limit", seabed_axial_elastic_limit);
+                        seabed_lateral_elastic_limit = sb.value("lateral_elastic_deflection_limit", seabed_lateral_elastic_limit);
+                        std::string soil_model_str = sb.value("soil_model", std::string("uncoupled"));
+                        soil_model = (soil_model_str == "coupled") ? risersim::SoilModel::Coupled : risersim::SoilModel::Uncoupled;
                         // "depth_m" here comes from the AML's own Z origin, which the min_z
                         // override below deliberately does NOT trust for *position* (see that
                         // comment) -- but its *magnitude* (the total water depth) is still
@@ -370,6 +389,11 @@ int main(int argc, char* argv[]) {
     static_analysis.water_density = parsed_from_json ? 0.0 : water_density;
     static_analysis.water_density_for_mass = 1025.0;  // Always the real value, for added mass
     static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, seabed_stiffness, seabed_friction);
+    static_analysis.seabed.soil_model = soil_model;
+    if (seabed_axial_friction > 0.0) static_analysis.seabed.axial_friction = seabed_axial_friction;
+    if (seabed_lateral_friction > 0.0) static_analysis.seabed.lateral_friction = seabed_lateral_friction;
+    if (seabed_axial_elastic_limit > 0.0) static_analysis.seabed.axial_elastic_deflection_limit = seabed_axial_elastic_limit;
+    if (seabed_lateral_elastic_limit > 0.0) static_analysis.seabed.lateral_elastic_deflection_limit = seabed_lateral_elastic_limit;
     static_analysis.load_steps = static_steps;
     static_analysis.max_iter_per_step = static_max_iter;
     static_analysis.tol = static_tolerance;

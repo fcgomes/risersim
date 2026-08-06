@@ -446,6 +446,86 @@ Investigando o Exemplo_02a (a pedido do usuário, "vamos rodar o exemplo_02"): o
 - Raio do tubo 3D também hardcoded (0.6, calibrado para ~130m) -- virava uma linha sub-pixel, quase invisível, em modelos maiores. Corrigido: proporcional ao span real do modelo.
 - Leitor `xml_h5_reader.py` tinha o nome do grupo XML/HDF5 hardcoded como `"group1"` (minúsculo); o Exemplo_02a exporta com `"Group1"` (maiúsculo), causando falha silenciosa (modelo com 0 nós/elementos) e crash (segfault) no `main_test`. Corrigido: nome do grupo descoberto dinamicamente.
 
+## Retomando solo+corrente: três hipóteses testadas contra o ANFLEX real, nenhuma resolve sozinha
+
+A pedido do usuário ("focar no ANFLEX real — análise estática e tipo de elemento — e criar um
+plano de testes"), nova rodada de investigação lendo diretamente o código-fonte real do ANFLEX
+(`c:/fred/proj/anflex/trunk/src`, não a reimplementação) em vez de só inferir comportamento.
+
+**Elemento de viga: descartado como causa.** `cBeam` real (`src/beam.h`/`beam.cpp`) é uma viga
+corrotacional Euler-Bernoulli com tríade de referência fixada na montagem
+(`calc_init_rot_mt`, `beam.cpp:301`) — o `CorotationalBeam3D` do risersim já implementa o
+equivalente exato (`node1_init_triad`/`node2_init_triad`, fixados na construção). Não há gap de
+formulação de elemento a fechar.
+
+**Hipótese 1 (testada): rampa de carga.** O ANFLEX real usa uma "time function" com rampa em
+meio-cosseno (`cRampFunction::get_ramp`, `libs/anf_movements/src/ramp_function.cpp:30-42`:
+`0,5*(1-cos(π·t/rampa))`) para escalar peso/empuxo/corrente durante a estática — não uma rampa
+linear. O solo em si não tem função do tempo própria (`soil_uncoupled.cpp`/`soil_coupled.cpp` não
+referenciam `cTimeFunction`); só "sente" a rampa indiretamente via o deslocamento que resulta das
+forças externas rampadas. **Implementado** (`static_analysis.cpp:265`, `load_factor =
+0,5*(1-cos(π·t))`). Sozinha, não resolveu — mas mudou a assinatura da falha de "explosão
+catastrófica imediata" para "quase convergência antes de explodir" em vários casos.
+
+**Hipótese 2 (testada): rigidez de atrito nunca amolece no ANFLEX real.** Em
+`cUncoupledSoil::calc_unidimensional_friction` (`soil_uncoupled.cpp:144-173`) e
+`cCoupledSoil::calc_friction` (`soil_coupled.cpp:108-162`), a rigidez tangente `k=fl/u_limit` é
+calculada uma vez e nunca reduzida, mesmo quando a força é corrigida de volta pro limite de
+Coulomb (`phi>0`) — só a força/estado inelástico muda, nunca a rigidez. O risersim reduzia a
+rigidez para uma fração residual (2%) ou zero exato ao saturar (`friction_residual_stiffness_fraction`,
+já removido). **Implementado**: `calculate_friction_1d` agora sempre retorna a rigidez elástica
+plena, igual ao ANFLEX real. Isoladamente, transformou a explosão catastrófica do caso mínimo (33
+elementos) num *chattering* limitado (oscilação 1e1-1e3, sem convergir em 40 iterações) — pior
+localmente que o amolecimento anterior nesse caso específico, mas sem a explosão total.
+
+**Descoberta adicional: Exemplo_01a usa solo desacoplado, Exemplo_02a usa solo ACOPLADO.**
+Confirmado nos `.aml` reais: `%SOIL.UNCOUPLED` (Exemplo_01a) vs. `%OPTION.SOIL.COUPLED`
+(Exemplo_02a, `Exemplo_02a.aml:228`). O modelo acoplado (`cCoupledSoil::calc_friction`) usa uma
+superfície de escoamento combinada (`norm_f=sqrt(Fx²+Fy²)` capado em `sqrt(fl_ax²+fl_lat²)`, com
+retorno radial de `lambda` compartilhado) em vez de dois springs 1D independentes. **Implementado**:
+`SeabedInteraction::calculate_friction_coupled` (nova, réplica linha-a-linha da fórmula real) +
+`SoilModel::{Uncoupled,Coupled}` selecionável via `environmental.seabed.soil_model` no JSON,
+aplicado no branch certo em `analysis.cpp:105-118`. Também descoberto e corrigido de passagem:
+`main_test.cpp` nunca lia `axial_friction`/`lateral_friction`/`axial_elastic_deflection_limit`/
+`lateral_elastic_deflection_limit` do JSON — usava um `friction_coeff`/`0,05 m` isotrópico para
+as duas direções, mesmo quando os valores reais divergem bastante entre si (ex. Exemplo_02a:
+axial=1,2/0,03m vs. lateral=1,2/0,56m). Agora lido do JSON quando presente.
+
+**Resultado combinado (rampa + rigidez plena + atrito acoplado + valores axiais/laterais reais)
+no Exemplo_02a completo**: a Fase 1 (rigidez artificial) chega muito perto de convergir — resíduo
+estável e baixo (~800-1800 N) até a iteração ~20, depois explode subitamente entre as iterações
+20-30. O mesmo padrão aparece na Fase 2 e no Exemplo_01a com o atrito desacoplado: **estável até
+~iter 20, "parede" repentina depois**, não mais uma divergência gradual desde o início.
+
+**Hipótese 3 (testada e REFUTADA): contato normal hiperbólico saturante vs. mola linear pura.**
+Inspecionando nó a nó a explosão (iter 20-30 acima), achado um nó penetrando >2m no "solo" já no
+primeiro passo de carga (2%) — fisicamente absurdo pra um contato quase-rígido. Causa aparente:
+`calculate_seabed_reaction` usa um modelo hiperbólico saturante (`f(pen)=pen/(1/k+pen/f_ultima)`)
+cujo `ultimate_bearing_force` **nunca era lido do JSON**, ficando travado no default de 5000 N —
+muito pequeno pra um riser real pesado. O ANFLEX real não tem esse conceito: `cUncoupledSoil`/
+`cCoupledSoil` usam uma mola linear pura, sem saturação (`m_forces[2] = -k*pen`,
+`soil_uncoupled.cpp:90-91`). **Testado trocar para a mola linear pura, igual ao ANFLEX real** —
+resultado: **piorou**, a Fase 2 passou a explodir para ~1e30 em vez de ~1e12 (força ilimitada faz
+qualquer iterada ruim virar catástrofe maior). **Revertido** — a saturação hiperbólica do risersim,
+apesar de não existir no ANFLEX real, funciona como uma rede de segurança real contra iteradas
+ruins, não é a causa raiz. Mantida, com `ultimate_bearing_force` elevado para um teto muito mais
+alto (1e7 N, antes 5000 N) que não deveria mais amarrar sob carga realista.
+
+**Testado: mais iterações não resolvem.** Com o teto de iterações elevado de 40 para 150 no
+Exemplo_02a, o resíduo **não converge nem decresce monotonicamente** — oscila caoticamente entre
+ordens de grandeza (7,9e12 → 1,2e12 → 4e10 → 7,1e8 → ...). Confirma que não é "faltam iterações",
+é uma instabilidade genuína no entorno da iteração ~20-100+.
+
+**Estado atual**: as três hipóteses testadas hoje (rampa suave, rigidez de atrito plena, atrito
+acoplado) individualmente e em conjunto mudam a assinatura da falha (de explosão imediata para
+"quase convergência" ou chattering limitado) mas nenhuma resolve sozinha nem em combinação. A
+mudança mais promissora identificada (contato normal linear puro) foi testada e refutada
+experimentalmente. **Ainda não tentado**: suavizar a transição liga/desliga `pen>0`/`pen<=0` em si
+(hoje só a *penetração* é suavizada, o cruzamento de zero continua uma chave dura) — candidato
+natural dado que a "parede" em ~iter 20-30 tem a assinatura de muitos nós mudando de estado juntos;
+inspecionar diretamente quantos nós cruzam `pen=0` simultaneamente nessa janela de iterações antes
+de mudar mais código.
+
 ## Ver também
 
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).
