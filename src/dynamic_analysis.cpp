@@ -221,6 +221,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             std::cerr << "  ⚠️ Dynamic NR did not converge at step " << step
                       << " (t=" << time << "s, last res_norm=" << res_norm_prev << ")" << std::endl;
             all_steps_converged = false;
+            if (stop_on_first_non_convergence) {
+                std::cerr << "  ⏹️ Stopping (stop_on_first_non_convergence=true) instead of running "
+                             "the remaining " << (total_steps - step) << " steps." << std::endl;
+                break;
+            }
         }
 
         // Record Snapshot for Web Visualizer

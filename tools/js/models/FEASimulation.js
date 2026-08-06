@@ -5,14 +5,16 @@
 export class FEASimulation {
     /**
      * @param {string} simulationType - Nome/Descrição da Simulação
-     * @param {number} seabedDepth - Profundidade do Fundo do Mar (-m)
+     * @param {number} seabedDepth - Profundidade do Fundo do Mar (m)
+     * @param {number} waterSurfaceZ - Cota Z da superfície do mar (m)
      * @param {SimulationStep[]} steps - Coleção de passos incrementais padrão
      * @param {SimulationStep[]} staticSteps - Passos estáticos
      * @param {SimulationStep[]} dynamicSteps - Passos dinâmicos temporais
      */
-    constructor(simulationType = "riserSim Equilibrium", seabedDepth = -100.0, steps = [], staticSteps = [], dynamicSteps = []) {
+    constructor(simulationType = "riserSim Equilibrium", seabedDepth = -100.0, waterSurfaceZ = 0.0, steps = [], staticSteps = [], dynamicSteps = []) {
         this.simulationType = simulationType;
         this.seabedDepth = seabedDepth;
+        this.waterSurfaceZ = waterSurfaceZ;
         this.steps = steps;
 
         if (staticSteps && staticSteps.length > 0 && staticSteps.length <= 30) {

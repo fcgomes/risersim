@@ -13,6 +13,7 @@ export class Riser3DRenderer {
         this.scene = new THREE.Scene();
         this.riserGroup = new THREE.Group();
         this.nodesGroup = new THREE.Group();
+        this.envGroup = new THREE.Group(); // seabed/water-surface planes
         this.boundingBoxWireframe = null;
 
         this.initEngine();
@@ -51,6 +52,7 @@ export class Riser3DRenderer {
         // Adiciona os grupos
         this.scene.add(this.riserGroup);
         this.scene.add(this.nodesGroup);
+        this.scene.add(this.envGroup);
 
         // Loop de Renderização 60 FPS
         const animate = () => {
@@ -79,13 +81,15 @@ export class Riser3DRenderer {
 
     /**
      * Renderiza o estado 3D do riser em um determinado passo
-     * @param {SimulationStep} step 
-     * @param {string} colormap 
-     * @param {{min: number, max: number}} scalarRange 
-     * @param {'dark'|'light'} currentTheme 
+     * @param {SimulationStep} step
+     * @param {string} colormap
+     * @param {{min: number, max: number}} scalarRange
+     * @param {'dark'|'light'} currentTheme
      * @param {string} scalarField - 'tension' | 'moment' | 'curvature' | 'vonmises' | 'mbr'
+     * @param {number|null} seabedDepth - Cota Z do fundo do mar (null/ausente = não desenha o plano)
+     * @param {number|null} waterSurfaceZ - Cota Z da superfície do mar (null/ausente = não desenha o plano)
      */
-    renderStep(step, colormap = 'Jet', scalarRange = { min: 0, max: 10 }, currentTheme = 'dark', scalarField = 'tension') {
+    renderStep(step, colormap = 'Jet', scalarRange = { min: 0, max: 10 }, currentTheme = 'dark', scalarField = 'tension', seabedDepth = null, waterSurfaceZ = null) {
         if (!step) return;
 
         // Limpa geometrias anteriores completamente
@@ -105,7 +109,9 @@ export class Riser3DRenderer {
         const nodes = step.nodes;
         const elements = step.elements;
 
-        this.updateBoundingBox(nodes, currentTheme);
+        const bounds = this.computeSceneBounds(nodes, seabedDepth, waterSurfaceZ);
+        this.updateBoundingBox(bounds, currentTheme);
+        this.updateEnvironmentPlanes(bounds, seabedDepth, waterSurfaceZ, currentTheme);
 
         // Raio do tubo proporcional ao tamanho real do modelo -- um valor fixo (0.6, calibrado
         // para a escala do Exemplo_01a, ~130m) vira uma linha de espessura sub-pixel, quase
@@ -181,9 +187,18 @@ export class Riser3DRenderer {
         }
     }
 
-    updateBoundingBox(nodes, currentTheme = 'dark') {
-        if (!nodes || nodes.length === 0) return;
-        if (this.boundingBoxWireframe) this.scene.remove(this.boundingBoxWireframe);
+    /**
+     * Calcula a caixa envolvente da cena (nós do passo + fundo do mar + superfície), já com as
+     * margens de exibição aplicadas -- fonte única usada tanto pelo wireframe da bounding box
+     * quanto pelos planos ambientais, para que os planos fiquem sempre exatamente do tamanho da
+     * caixa, nunca maiores/menores de forma independente.
+     * @param {Node3D[]} nodes
+     * @param {number|null} seabedDepth
+     * @param {number|null} waterSurfaceZ
+     * @returns {{minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number}|null}
+     */
+    computeSceneBounds(nodes, seabedDepth, waterSurfaceZ) {
+        if (!nodes || nodes.length === 0) return null;
 
         let minX = Infinity, maxX = -Infinity;
         let minY = Infinity, maxY = -Infinity;
@@ -195,12 +210,38 @@ export class Riser3DRenderer {
             minZ = Math.min(minZ, n.y); maxZ = Math.max(maxZ, n.y);
         });
 
+        // Estende o alcance vertical (Y do Three.js = Z do risersim/profundidade) para sempre
+        // cobrir o fundo do mar e a superfície -- não só a extensão dos nós deste passo -- assim
+        // a caixa (e os planos) nunca "escondem" parte da lâmina d'água real. `1.0e5` descarta o
+        // sentinela usado quando o solo está desligado via `environmental.seabed.enabled=false`
+        // (empurrado a -1e6, ver main_test.cpp), que não representa uma posição real de solo.
+        if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
+            minY = Math.min(minY, seabedDepth);
+            maxY = Math.max(maxY, seabedDepth);
+        }
+        if (Number.isFinite(waterSurfaceZ)) {
+            minY = Math.min(minY, waterSurfaceZ);
+            maxY = Math.max(maxY, waterSurfaceZ);
+        }
+
         const boxMargin = 5.0;
         const marginPerpendicular = 35.0; // Distância maior no eixo perpendicular (Y)
 
         minX -= boxMargin; maxX += boxMargin;
         minY -= boxMargin; maxY += boxMargin;
         minZ -= marginPerpendicular; maxZ += marginPerpendicular;
+
+        return { minX, maxX, minY, maxY, minZ, maxZ };
+    }
+
+    /**
+     * @param {{minX,maxX,minY,maxY,minZ,maxZ}|null} bounds - ver computeSceneBounds()
+     * @param {'dark'|'light'} currentTheme
+     */
+    updateBoundingBox(bounds, currentTheme = 'dark') {
+        if (this.boundingBoxWireframe) this.scene.remove(this.boundingBoxWireframe);
+        if (!bounds) return;
+        const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
 
         const boxWidth = maxX - minX;
         const boxHeight = maxY - minY;
@@ -215,5 +256,77 @@ export class Riser3DRenderer {
 
         this.boundingBoxWireframe.position.set(minX + boxWidth / 2, minY + boxHeight / 2, minZ + boxDepth / 2);
         this.scene.add(this.boundingBoxWireframe);
+    }
+
+    /**
+     * Desenha os planos horizontais de referência ambiental: fundo do mar e superfície do mar.
+     * Ambos semitransparentes, com o mesmo footprint X/Z (planta) da bounding box -- nunca maior
+     * nem menor que ela -- na cota Z correta de cada um.
+     * @param {{minX,maxX,minY,maxY,minZ,maxZ}|null} bounds - ver computeSceneBounds()
+     * @param {number|null} seabedDepth
+     * @param {number|null} waterSurfaceZ
+     * @param {'dark'|'light'} currentTheme
+     */
+    updateEnvironmentPlanes(bounds, seabedDepth, waterSurfaceZ, currentTheme = 'dark') {
+        while (this.envGroup.children.length > 0) {
+            const obj = this.envGroup.children[0];
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+            this.envGroup.remove(obj);
+        }
+        if (!bounds) return;
+        const { minX, maxX, minZ, maxZ } = bounds;
+
+        const planeW = maxX - minX;
+        const planeD = maxZ - minZ;
+        const centerX = (minX + maxX) / 2;
+        const centerPlan = (minZ + maxZ) / 2;
+
+        const seabedColor = currentTheme === 'dark' ? 0x8a7355 : 0xb8a074;
+        const waterColor = currentTheme === 'dark' ? 0x4a9fd8 : 0x7fc0ec;
+
+        // Adiciona um plano horizontal (área semitransparente) + um contorno retangular sólido na
+        // borda, na cota Y dada. O contorno existe porque um plano fino visto quase de perfil
+        // (ex. a vista ISO, com a câmera bem acima do centro da caixa olhando para baixo, vê o
+        // plano de cima quase de raspão) fica praticamente invisível como área preenchida --
+        // mas a borda, sendo uma linha (sem espessura a esconder), continua visível de qualquer
+        // ângulo, igual ao wireframe da bounding box.
+        const addPlane = (y, color, opacity, order) => {
+            const mesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(planeW, planeD),
+                new THREE.MeshStandardMaterial({
+                    color, transparent: true, opacity, depthWrite: false,
+                    side: THREE.DoubleSide, roughness: 0.5, metalness: 0.1
+                })
+            );
+            mesh.rotation.x = -Math.PI / 2;
+            mesh.position.set(centerX, y, centerPlan);
+            mesh.renderOrder = order;
+            this.envGroup.add(mesh);
+
+            const hw = planeW / 2, hd = planeD / 2;
+            const borderPts = [
+                new THREE.Vector3(centerX - hw, y, centerPlan - hd),
+                new THREE.Vector3(centerX + hw, y, centerPlan - hd),
+                new THREE.Vector3(centerX + hw, y, centerPlan + hd),
+                new THREE.Vector3(centerX - hw, y, centerPlan + hd),
+            ];
+            const border = new THREE.LineLoop(
+                new THREE.BufferGeometry().setFromPoints(borderPts),
+                new THREE.LineBasicMaterial({ color, linewidth: 2 })
+            );
+            border.renderOrder = order;
+            this.envGroup.add(border);
+        };
+
+        // Descarta o sentinela usado quando o solo está desligado (environmental.seabed.enabled=
+        // false empurra o fundo pra -1e6, ver main_test.cpp) -- nesse caso não há plano de fundo
+        // real pra desenhar.
+        if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
+            addPlane(seabedDepth, seabedColor, 0.4, 1);
+        }
+        if (Number.isFinite(waterSurfaceZ)) {
+            addPlane(waterSurfaceZ, waterColor, 0.28, 2);
+        }
     }
 }

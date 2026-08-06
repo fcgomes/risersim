@@ -120,10 +120,10 @@ class RiserSimApp {
         });
 
         // Atalhos de Câmera (ISO, XY, XZ, YZ)
-        document.getElementById('view-iso-btn').addEventListener('click', () => this.cameraController.setView('ISO', this.getCurrentStep()));
-        document.getElementById('view-xy-btn').addEventListener('click', () => this.cameraController.setView('XY', this.getCurrentStep()));
-        document.getElementById('view-xz-btn').addEventListener('click', () => this.cameraController.setView('XZ', this.getCurrentStep()));
-        document.getElementById('view-yz-btn').addEventListener('click', () => this.cameraController.setView('YZ', this.getCurrentStep()));
+        document.getElementById('view-iso-btn').addEventListener('click', () => this.cameraController.setView('ISO', this.getCurrentStep(), ...this.getEnvBounds()));
+        document.getElementById('view-xy-btn').addEventListener('click', () => this.cameraController.setView('XY', this.getCurrentStep(), ...this.getEnvBounds()));
+        document.getElementById('view-xz-btn').addEventListener('click', () => this.cameraController.setView('XZ', this.getCurrentStep(), ...this.getEnvBounds()));
+        document.getElementById('view-yz-btn').addEventListener('click', () => this.cameraController.setView('YZ', this.getCurrentStep(), ...this.getEnvBounds()));
 
         // Seletor de Modo de Análise (Estática / Dinâmica)
         const modeSelect = document.getElementById('analysis-mode-select');
@@ -241,7 +241,7 @@ class RiserSimApp {
             // o que faz qualquer modelo de escala bem diferente (ex. um riser de 1800m de lâmina
             // d'água) aparecer como uma fatia minúscula e distorcida -- visualmente indistinguível
             // de "a linha está dobrada/caída", mesmo com as coordenadas corretas.
-            this.cameraController.setView('ISO', this.getCurrentStep());
+            this.cameraController.setView('ISO', this.getCurrentStep(), ...this.getEnvBounds());
 
             this.render();
             console.log("✅ Simulação OO carregada com sucesso!", this.simulation);
@@ -252,6 +252,11 @@ class RiserSimApp {
 
     getCurrentStep() {
         return this.simulation ? this.simulation.getStep(this.currentStepIdx) : null;
+    }
+
+    /** @returns {[number|null, number|null]} [seabedDepth, waterSurfaceZ] da simulação carregada, para os planos/enquadramento 3D. */
+    getEnvBounds() {
+        return this.simulation ? [this.simulation.seabedDepth, this.simulation.waterSurfaceZ] : [null, null];
     }
 
     play() {
@@ -317,7 +322,7 @@ class RiserSimApp {
         this.updateColorbar(colormap, minVal, maxVal, scalarField);
 
         // Renderiza Cena 3D
-        this.renderer3D.renderStep(step, colormap, scalarRange, this.currentTheme, scalarField);
+        this.renderer3D.renderStep(step, colormap, scalarRange, this.currentTheme, scalarField, ...this.getEnvBounds());
         this.updateTable(step);
 
         // Atualiza Gráficos 2D de Perfil

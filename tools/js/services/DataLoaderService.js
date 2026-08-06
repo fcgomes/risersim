@@ -126,7 +126,17 @@ export class DataLoaderService {
                 if (dynamicGroup) dynamicSteps = DataLoaderService.parseHDF5Group(dynamicGroup);
             } catch(e) {}
 
-            return new FEASimulation("riserSim HDF5 Native Binary", -100.0, defaultSteps, staticSteps, dynamicSteps);
+            // File-level attributes (see SimulationExporter::export_hdf5) -- defensive, since
+            // older exported files won't have them and h5wasm's attrs API can vary by version.
+            let seabedDepth = -100.0, waterSurfaceZ = 0.0;
+            try {
+                if (h5file.attrs) {
+                    if (h5file.attrs.seabed_depth !== undefined) seabedDepth = h5file.attrs.seabed_depth.value ?? h5file.attrs.seabed_depth;
+                    if (h5file.attrs.water_surface_z !== undefined) waterSurfaceZ = h5file.attrs.water_surface_z.value ?? h5file.attrs.water_surface_z;
+                }
+            } catch (e) {}
+
+            return new FEASimulation("riserSim HDF5 Native Binary", seabedDepth, waterSurfaceZ, defaultSteps, staticSteps, dynamicSteps);
         } finally {
             h5file.close();
         }
@@ -170,7 +180,8 @@ export class DataLoaderService {
 
         return new FEASimulation(
             jsonObject.simulation_type || "riserSim JSON Results",
-            jsonObject.seabed_depth || -100.0,
+            jsonObject.seabed_depth ?? -100.0,
+            jsonObject.water_surface_z ?? 0.0,
             defaultSteps,
             staticSteps,
             dynamicSteps

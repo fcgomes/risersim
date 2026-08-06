@@ -14,10 +14,13 @@ export class CameraViewController {
 
     /**
      * Define a vista da câmera baseada na opção selecionada
-     * @param {'ISO'|'XY'|'XZ'|'YZ'} viewType 
-     * @param {SimulationStep} currentStep 
+     * @param {'ISO'|'XY'|'XZ'|'YZ'} viewType
+     * @param {SimulationStep} currentStep
+     * @param {number|null} seabedDepth - Se informado, garante que o enquadramento cubra até o
+     *   fundo do mar, mesmo que os nós deste passo não cheguem lá.
+     * @param {number|null} waterSurfaceZ - Idem, para a superfície do mar.
      */
-    setView(viewType, currentStep) {
+    setView(viewType, currentStep, seabedDepth = null, waterSurfaceZ = null) {
         if (!this.camera || !this.controls) return;
 
         let minX = 0, maxX = 120, minY = -100, maxY = 0, minZ = -35, maxZ = 35;
@@ -28,6 +31,18 @@ export class CameraViewController {
             maxY = Math.max(...currentStep.nodes.map(n => n.z));
             minZ = Math.min(...currentStep.nodes.map(n => n.y));
             maxZ = Math.max(...currentStep.nodes.map(n => n.y));
+        }
+
+        // Garante que o enquadramento cubra a lâmina d'água inteira (fundo + superfície), não só
+        // a extensão dos nós deste passo -- mesmo descarte do sentinela de solo desligado que
+        // Riser3DRenderer usa (ver main_test.cpp, environmental.seabed.enabled=false).
+        if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
+            minY = Math.min(minY, seabedDepth);
+            maxY = Math.max(maxY, seabedDepth);
+        }
+        if (Number.isFinite(waterSurfaceZ)) {
+            minY = Math.min(minY, waterSurfaceZ);
+            maxY = Math.max(maxY, waterSurfaceZ);
         }
 
         const centerX = (minX + maxX) / 2.0;

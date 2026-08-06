@@ -17,19 +17,27 @@ public:
      * @brief Exports static and dynamic analysis history to a JSON file.
      * @param static_analysis Converged static analysis (initial/reference state).
      * @param dynamic_analysis Dynamic analysis whose step history is exported (may be an empty/unsolved instance).
+     * @param seabed_depth Z of the seabed plane, for the viewer's seabed plane/bounding box.
+     * @param water_surface_z Z of the sea surface plane, for the viewer's water-surface plane/bounding box.
      * @param filename Output path.
      * @return true on success.
      */
-    static bool export_json(const Analysis& static_analysis, const Analysis& dynamic_analysis, const std::string& filename = "catenary_results.json");
+    static bool export_json(const Analysis& static_analysis, const Analysis& dynamic_analysis,
+                             double seabed_depth, double water_surface_z,
+                             const std::string& filename = "catenary_results.json");
 
     /**
      * @brief Exports static and dynamic analysis history to an HDF5 file (requires `RISERSIM_HAS_HDF5`).
      * @param static_analysis Converged static analysis (initial/reference state).
      * @param dynamic_analysis Dynamic analysis whose step history is exported (may be an empty/unsolved instance).
+     * @param seabed_depth Z of the seabed plane, for the viewer's seabed plane/bounding box.
+     * @param water_surface_z Z of the sea surface plane, for the viewer's water-surface plane/bounding box.
      * @param filename Output path.
      * @return true on success.
      */
-    static bool export_hdf5(const Analysis& static_analysis, const Analysis& dynamic_analysis, const std::string& filename = "catenary_results.h5");
+    static bool export_hdf5(const Analysis& static_analysis, const Analysis& dynamic_analysis,
+                             double seabed_depth, double water_surface_z,
+                             const std::string& filename = "catenary_results.h5");
 };
 
 } // namespace risersim

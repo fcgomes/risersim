@@ -49,12 +49,15 @@ static void write_snapshots_json_array(std::ofstream& ofs, const std::vector<Ste
     ofs << "]";
 }
 
-bool SimulationExporter::export_json(const Analysis& static_analysis, const Analysis& dynamic_analysis, const std::string& filename) {
+bool SimulationExporter::export_json(const Analysis& static_analysis, const Analysis& dynamic_analysis,
+                                      double seabed_depth, double water_surface_z, const std::string& filename) {
     std::ofstream ofs(filename);
     if (!ofs.is_open()) return false;
 
     ofs << std::fixed << std::setprecision(5);
-    ofs << "{\n  \"static_steps\": ";
+    ofs << "{\n  \"seabed_depth\": " << safe_num(seabed_depth)
+        << ",\n  \"water_surface_z\": " << safe_num(water_surface_z);
+    ofs << ",\n  \"static_steps\": ";
     write_snapshots_json_array(ofs, static_analysis.history);
 
     ofs << ",\n  \"dynamic_steps\": ";
@@ -120,9 +123,15 @@ static void write_hdf5_group(H5::H5File& file, const std::string& group_name, co
     dataset_tens.write(buf_tens.data(), H5::PredType::NATIVE_DOUBLE);
 }
 
-bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Analysis& dynamic_analysis, const std::string& filename) {
+bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Analysis& dynamic_analysis,
+                                      double seabed_depth, double water_surface_z, const std::string& filename) {
     try {
         H5::H5File file(filename, H5F_ACC_TRUNC);
+
+        H5::DataSpace scalar_space(H5S_SCALAR);
+        double sd = safe_num(seabed_depth), wsz = safe_num(water_surface_z);
+        file.createAttribute("seabed_depth", H5::PredType::NATIVE_DOUBLE, scalar_space).write(H5::PredType::NATIVE_DOUBLE, &sd);
+        file.createAttribute("water_surface_z", H5::PredType::NATIVE_DOUBLE, scalar_space).write(H5::PredType::NATIVE_DOUBLE, &wsz);
 
         write_hdf5_group(file, "/static_analysis", static_analysis.history);
         write_hdf5_group(file, "/dynamic_analysis", dynamic_analysis.history);
@@ -139,7 +148,8 @@ bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Anal
 
 #else // RISERSIM_HAS_HDF5 not defined
 
-bool SimulationExporter::export_hdf5(const Analysis& /*static_analysis*/, const Analysis& /*dynamic_analysis*/, const std::string& /*filename*/) {
+bool SimulationExporter::export_hdf5(const Analysis& /*static_analysis*/, const Analysis& /*dynamic_analysis*/,
+                                      double /*seabed_depth*/, double /*water_surface_z*/, const std::string& /*filename*/) {
     std::cerr << "⚠️ HDF5 support not available (built without RISERSIM_HAS_HDF5). Skipping HDF5 export." << std::endl;
     return false;
 }

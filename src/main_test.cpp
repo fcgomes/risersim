@@ -43,6 +43,7 @@ int main(int argc, char* argv[]) {
     int num_elements = 40;
     double total_length = 180.0;
     double total_depth_z = -100.0;
+    double water_surface_z = 0.0; ///< Z of the sea surface, for the viewer's water-surface plane. Default 0.0 matches the synthetic fallback geometry's convention (top node at z=0).
     double total_span_x = 120.0;
     double seabed_stiffness = 1.0e5;
     double seabed_friction = 0.5;
@@ -73,6 +74,7 @@ int main(int argc, char* argv[]) {
     double dyn_wave_angle_deg = 0.0;
     double dyn_wave_gamma = 3.3;
     std::string dyn_wave_type = "regular";
+    bool dyn_stop_on_first_non_convergence = false;
 
     // Load a structured JSON model, if one was provided
     auto* model = new risersim::RiserModel();
@@ -205,19 +207,52 @@ int main(int argc, char* argv[]) {
                 // 4. Environmental parameters
                 if (j.contains("environmental")) {
                     auto env = j["environmental"];
+                    // "enabled": false (diagnostic-only escape hatch, matching
+                    // diag_isolated_segment.cpp's seabed_mode=0) pushes the seabed far below any
+                    // real node instead of aligning it to the model's real minimum Z -- lets a
+                    // JSON model be re-run with contact effectively disabled, to isolate whether
+                    // the seabed is contributing to a convergence problem (see
+                    // mapa_classes_anflex_estatica.md).
+                    bool seabed_enabled = true;
+                    double water_depth_magnitude = 100.0; // fallback if "seabed" sub-object is absent
                     if (env.contains("seabed")) {
                         auto sb = env["seabed"];
+                        seabed_enabled = sb.value("enabled", true);
                         seabed_stiffness = sb.value("stiffness_Nm", seabed_stiffness);
                         seabed_friction = sb.value("friction_coeff", seabed_friction);
+                        // "depth_m" here comes from the AML's own Z origin, which the min_z
+                        // override below deliberately does NOT trust for *position* (see that
+                        // comment) -- but its *magnitude* (the total water depth) is still
+                        // meaningful, and is what locates the water-surface plane relative to
+                        // the real seabed position.
+                        water_depth_magnitude = std::abs(sb.value("depth_m", -water_depth_magnitude));
                     }
 
-                    // Aligns the seabed with the real minimum Z of the nodes read from the H5
-                    double min_z = 1e9;
+                    double max_z = -1e9;
                     for (const auto& node : model->nodes) {
-                        if (node->coords.z() < min_z) min_z = node->coords.z();
+                        if (node->coords.z() > max_z) max_z = node->coords.z();
                     }
-                    total_depth_z = min_z;
-                    std::cout << "Seabed positioned at the nodes' real Z: " << total_depth_z << " m" << std::endl;
+
+                    if (seabed_enabled) {
+                        // Aligns the seabed with the real minimum Z of the nodes read from the H5
+                        double min_z = 1e9;
+                        for (const auto& node : model->nodes) {
+                            if (node->coords.z() < min_z) min_z = node->coords.z();
+                        }
+                        total_depth_z = min_z;
+                        water_surface_z = total_depth_z + water_depth_magnitude;
+                        std::cout << "Seabed positioned at the nodes' real Z: " << total_depth_z
+                                  << " m | Water surface at: " << water_surface_z << " m" << std::endl;
+                    } else {
+                        total_depth_z = -1.0e6;
+                        // No real seabed reference left to add the water depth to -- approximate
+                        // the surface as the model's highest node (a riser's top end is normally
+                        // at/near the water surface).
+                        water_surface_z = max_z;
+                        std::cout << "Seabed DISABLED (environmental.seabed.enabled=false) -- pushed to "
+                                  << total_depth_z << " m, no contact possible | Water surface approximated at: "
+                                  << water_surface_z << " m" << std::endl;
+                    }
                     if (env.contains("current")) {
                         auto curr = env["current"];
                         auto vels = curr.value("velocities_ms", std::vector<double>{});
@@ -271,6 +306,7 @@ int main(int argc, char* argv[]) {
                         dyn_dt = dy.value("dt_s", dyn_dt);
                         dyn_max_nr_iters = dy.value("max_iterations", dyn_max_nr_iters);
                         dyn_nr_tolerance = dy.value("tolerance", dyn_nr_tolerance);
+                        dyn_stop_on_first_non_convergence = dy.value("stop_on_first_non_convergence", dyn_stop_on_first_non_convergence);
                         
                         if (dy.contains("rayleigh_damping")) {
                             auto ray = dy["rayleigh_damping"];
@@ -373,6 +409,7 @@ int main(int argc, char* argv[]) {
         dynamic_analysis.beta_rayleigh = dyn_beta_rayleigh;
         dynamic_analysis.max_nr_iters = dyn_max_nr_iters;
         dynamic_analysis.nr_tolerance = dyn_nr_tolerance;
+        dynamic_analysis.stop_on_first_non_convergence = dyn_stop_on_first_non_convergence;
 
         std::cout << "\n--- Running Dynamic Analysis ---" << std::endl;
         std::cout << "  Wave: type=" << dyn_wave_type << " | angle=" << dyn_wave_angle_deg
@@ -386,8 +423,8 @@ int main(int argc, char* argv[]) {
     // Results export
     std::string json_out = output_dir + "/catenary_results.json";
     std::string h5_out = output_dir + "/catenary_results.h5";
-    risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, json_out);
-    risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, h5_out);
+    risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, total_depth_z, water_surface_z, json_out);
+    risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, total_depth_z, water_surface_z, h5_out);
 
     std::cout << "\nResults exported to:" << std::endl;
     std::cout << "   " << json_out << std::endl;

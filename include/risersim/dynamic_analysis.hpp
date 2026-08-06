@@ -25,6 +25,20 @@ public:
     int max_nr_iters;
     double nr_tolerance;
 
+    /**
+     * @brief If true, stops the time-domain loop at the first time step whose Newton-Raphson
+     * doesn't converge, instead of running the full duration regardless.
+     *
+     * Default false, matching the original behavior: run every time step, accepting whatever
+     * state each step's Newton-Raphson reached even if it didn't converge, and only report
+     * overall failure at the end (deliberate for time-domain dynamics, where continuing past a
+     * bad step and hoping the system recovers is common practice). But when a model is known to
+     * diverge early and stay diverged (e.g. while isolating a convergence problem), running the
+     * full duration anyway just burns the iteration budget on hundreds of hopeless steps for no
+     * new information -- this lets a caller opt into stopping immediately instead.
+     */
+    bool stop_on_first_non_convergence = false;
+
     DynamicAnalysis()
         : Analysis(),
           duration_s(20.0),
