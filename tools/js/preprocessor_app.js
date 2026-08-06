@@ -2,11 +2,16 @@ import { InputLoaderService } from './services/InputLoaderService.js';
 import { ColorMapService } from './services/ColorMapService.js';
 import { Riser3DRenderer } from './renderers/Riser3DRenderer.js';
 import { CameraViewController } from './renderers/CameraViewController.js';
+import { initPanelResizer } from './ui/PanelResizer.js';
+import { ZoomWindowController } from './ui/ZoomWindowController.js';
+import { bindCameraToolbar } from './ui/CameraToolbar.js';
+import { switchTab } from './ui/TabPanel.js';
+import { initThemeToggle } from './ui/ThemeToggle.js';
 
 /**
  * preprocessor_app.js
  * Controlador principal do pré-processador web: inspeciona/valida o JSON de ENTRADA consumido
- * por main_test.cpp, ANTES de rodar a simulação -- não os resultados (isso é viewer_3d.html/app.js).
+ * por main_test.cpp, ANTES de rodar a simulação -- não os resultados (isso é posprocessor.html/app.js).
  */
 class PreprocessorApp {
     constructor() {
@@ -20,121 +25,15 @@ class PreprocessorApp {
         const canvas = document.getElementById('three-canvas');
         this.renderer3D = new Riser3DRenderer(canvas);
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
+        this.zoomWindow = new ZoomWindowController(this.cameraController, this.renderer3D);
 
         this.bindEvents();
-        this.initResizer();
-        this.initZoomWindow();
+        initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
         await this.loadInput('../input_simulation.json');
     }
 
-    /** Divisor arrastável entre o canvas 3D e o painel de dados (largura, não altura -- monitores widescreen aproveitam melhor lado a lado do que empilhado). */
-    initResizer() {
-        const resizer = document.getElementById('resizer-h');
-        const dataPanel = document.getElementById('data-panel');
-        if (!resizer || !dataPanel) return;
-
-        let isDragging = false, startX = 0, startWidth = 0;
-
-        resizer.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            startX = e.clientX;
-            startWidth = dataPanel.getBoundingClientRect().width;
-            resizer.classList.add('dragging');
-            document.body.style.cursor = 'col-resize';
-            e.preventDefault();
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const dx = e.clientX - startX;
-            const newWidth = Math.min(window.innerWidth * 0.75, Math.max(320, startWidth - dx));
-            dataPanel.style.width = `${newWidth}px`;
-            if (this.renderer3D) this.renderer3D.onWindowResize();
-        });
-
-        window.addEventListener('mouseup', () => {
-            if (isDragging) {
-                isDragging = false;
-                resizer.classList.remove('dragging');
-                document.body.style.cursor = '';
-                if (this.renderer3D) this.renderer3D.onWindowResize();
-            }
-        });
-    }
-
-    /**
-     * "Zoom por janela" (tipo CAD): ativa via botão, o próximo arraste do mouse sobre o canvas
-     * desenha um retângulo de seleção; ao soltar, converte o retângulo para NDC e pede ao
-     * CameraViewController para reenquadrar nele (ver zoomToWindow()), e desativa o modo.
-     */
-    initZoomWindow() {
-        this.zoomWindowActive = false;
-        const canvas = document.getElementById('three-canvas');
-        const container = document.getElementById('canvas-container');
-        const rectEl = document.getElementById('zoom-rect');
-        let dragging = false, startX = 0, startY = 0;
-
-        canvas.addEventListener('mousedown', (e) => {
-            if (!this.zoomWindowActive) return;
-            dragging = true;
-            const rect = container.getBoundingClientRect();
-            startX = e.clientX - rect.left;
-            startY = e.clientY - rect.top;
-            rectEl.style.left = `${startX}px`;
-            rectEl.style.top = `${startY}px`;
-            rectEl.style.width = '0px';
-            rectEl.style.height = '0px';
-            rectEl.style.display = 'block';
-            e.preventDefault();
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            const rect = container.getBoundingClientRect();
-            const curX = e.clientX - rect.left, curY = e.clientY - rect.top;
-            const x = Math.min(startX, curX), y = Math.min(startY, curY);
-            rectEl.style.left = `${x}px`;
-            rectEl.style.top = `${y}px`;
-            rectEl.style.width = `${Math.abs(curX - startX)}px`;
-            rectEl.style.height = `${Math.abs(curY - startY)}px`;
-        });
-
-        window.addEventListener('mouseup', (e) => {
-            if (!dragging) return;
-            dragging = false;
-            rectEl.style.display = 'none';
-            const rect = container.getBoundingClientRect();
-            const endX = e.clientX - rect.left, endY = e.clientY - rect.top;
-            const toNdc = (px, py) => ({ x: (px / rect.width) * 2 - 1, y: -((py / rect.height) * 2 - 1) });
-            const p1 = toNdc(startX, startY), p2 = toNdc(endX, endY);
-            this.cameraController.zoomToWindow({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
-            this.setZoomWindowActive(false);
-        });
-
-        window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this.zoomWindowActive) this.setZoomWindowActive(false);
-        });
-    }
-
-    setZoomWindowActive(active) {
-        this.zoomWindowActive = active;
-        const canvas = document.getElementById('three-canvas');
-        const btn = document.getElementById('zoom-window-btn');
-        if (canvas) canvas.style.cursor = active ? 'crosshair' : '';
-        if (btn) btn.classList.toggle('active', active);
-        if (this.renderer3D && this.renderer3D.controls) this.renderer3D.controls.enabled = !active;
-    }
-
     bindEvents() {
-        document.getElementById('view-iso-btn').addEventListener('click', () => this.cameraController.setView('ISO', this.getSyntheticStep(), ...this.getEnvBounds()));
-        document.getElementById('view-xy-btn').addEventListener('click', () => this.cameraController.setView('XY', this.getSyntheticStep(), ...this.getEnvBounds()));
-        document.getElementById('view-xz-btn').addEventListener('click', () => this.cameraController.setView('XZ', this.getSyntheticStep(), ...this.getEnvBounds()));
-        document.getElementById('view-yz-btn').addEventListener('click', () => this.cameraController.setView('YZ', this.getSyntheticStep(), ...this.getEnvBounds()));
-
-        document.getElementById('zoom-fit-btn').addEventListener('click', () => this.cameraController.fitToModel(this.getSyntheticStep(), ...this.getEnvBounds()));
-        document.getElementById('zoom-in-btn').addEventListener('click', () => this.cameraController.zoomIn());
-        document.getElementById('zoom-out-btn').addEventListener('click', () => this.cameraController.zoomOut());
-        document.getElementById('zoom-window-btn').addEventListener('click', () => this.setZoomWindowActive(!this.zoomWindowActive));
+        bindCameraToolbar(this.cameraController, this.zoomWindow, () => this.getSyntheticStep(), () => this.getEnvBounds());
 
         document.getElementById('json-input').addEventListener('change', (e) => {
             const file = e.target.files[0];
@@ -155,13 +54,7 @@ class PreprocessorApp {
         document.getElementById('tab-environmental-btn').addEventListener('click', () => this.setBottomTab('environmental'));
         document.getElementById('tab-analysis-btn').addEventListener('click', () => this.setBottomTab('analysis'));
 
-        document.getElementById('theme-toggle-btn').addEventListener('click', () => {
-            this.currentTheme = this.currentTheme === 'dark' ? 'light' : 'dark';
-            document.body.className = this.currentTheme === 'dark' ? 'dark-mode' : 'light-mode';
-            document.getElementById('theme-toggle-btn').innerText = this.currentTheme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro';
-            this.renderer3D.scene.background.setHex(this.currentTheme === 'dark' ? 0x1e1e2e : 0xffffff);
-            this.render();
-        });
+        initThemeToggle(this);
     }
 
     async loadInput(fileOrUrl) {
@@ -250,11 +143,7 @@ class PreprocessorApp {
 
     /** Alterna entre as 4 abas do painel de dados: Carregar / Geometria / Condições Ambientais / Análise. */
     setBottomTab(tab) {
-        const tabs = { load: 'tab-load', geometry: 'tab-geometry', environmental: 'tab-environmental', analysis: 'tab-analysis' };
-        Object.entries(tabs).forEach(([key, panelId]) => {
-            document.getElementById(panelId).classList.toggle('active', key === tab);
-            document.getElementById(`tab-${key}-btn`).className = key === tab ? 'btn-tab active' : 'btn-tab';
-        });
+        switchTab({ load: 'tab-load', geometry: 'tab-geometry', environmental: 'tab-environmental', analysis: 'tab-analysis' }, tab);
         if (tab === 'environmental' && typeof Plotly !== 'undefined') {
             // Plotly não desenha corretamente num container que estava com display:none --
             // força um resize assim que a aba fica visível.

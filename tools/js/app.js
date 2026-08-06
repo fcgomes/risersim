@@ -3,6 +3,11 @@ import { ColorMapService } from './services/ColorMapService.js';
 import { Riser3DRenderer } from './renderers/Riser3DRenderer.js';
 import { CameraViewController } from './renderers/CameraViewController.js';
 import { ProfileChartsController } from './charts/ProfileChartsController.js';
+import { initPanelResizer } from './ui/PanelResizer.js';
+import { ZoomWindowController } from './ui/ZoomWindowController.js';
+import { bindCameraToolbar } from './ui/CameraToolbar.js';
+import { switchTab } from './ui/TabPanel.js';
+import { initThemeToggle } from './ui/ThemeToggle.js';
 
 /**
  * app.js
@@ -16,6 +21,7 @@ class RiserSimApp {
         this.animationTimer = null;
         this.currentTheme = 'dark';
         this.activeTab = 'table'; // 'table' or 'charts'
+        this.tableViewMode = 'elements'; // 'elements' or 'nodes'
 
         this.initUI();
     }
@@ -24,59 +30,18 @@ class RiserSimApp {
         const canvas = document.getElementById('three-canvas');
         this.renderer3D = new Riser3DRenderer(canvas);
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
+        this.zoomWindow = new ZoomWindowController(this.cameraController, this.renderer3D);
         this.chartsController = new ProfileChartsController();
 
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
-        this.initResizer();
+        initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
         await this.loadSimulationData('../catenary_results.json');
     }
 
-    initResizer() {
-        const resizer = document.getElementById('resizer-v');
-        const topContainer = document.getElementById('top-container');
-        const tableContainer = document.getElementById('table-container');
-
-        if (!resizer || !topContainer || !tableContainer) return;
-
-        let isDragging = false;
-        let startY = 0;
-        let startTopHeight = 0;
-        let startTableHeight = 0;
-
-        resizer.addEventListener('mousedown', (e) => {
-            isDragging = true;
-            startY = e.clientY;
-            startTopHeight = topContainer.getBoundingClientRect().height;
-            startTableHeight = tableContainer.getBoundingClientRect().height;
-            resizer.classList.add('dragging');
-            document.body.style.cursor = 'row-resize';
-            e.preventDefault();
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            if (!isDragging) return;
-            const dy = e.clientY - startY;
-            const newTopHeight = Math.max(150, startTopHeight + dy);
-            const newTableHeight = Math.max(80, startTableHeight - dy);
-
-            topContainer.style.flex = 'none';
-            topContainer.style.height = `${newTopHeight}px`;
-            tableContainer.style.height = `${newTableHeight}px`;
-
-            if (this.renderer3D) this.renderer3D.onWindowResize();
-            window.dispatchEvent(new Event('resize'));
-        });
-
-        window.addEventListener('mouseup', () => {
-            if (isDragging) {
-                isDragging = false;
-                resizer.classList.remove('dragging');
-                document.body.style.cursor = '';
-                if (this.renderer3D) this.renderer3D.onWindowResize();
-                window.dispatchEvent(new Event('resize'));
-            }
-        });
+    /** Alterna entre as abas do painel de dados lateral (Controles/Visualização/Tabela/Carregar). */
+    setDataTab(tab) {
+        switchTab({ controls: 'tab-controls', viz: 'tab-viz', table: 'tab-table', load: 'tab-load' }, tab);
     }
 
     bindEvents() {
@@ -119,11 +84,18 @@ class RiserSimApp {
             this.render();
         });
 
-        // Atalhos de Câmera (ISO, XY, XZ, YZ)
-        document.getElementById('view-iso-btn').addEventListener('click', () => this.cameraController.setView('ISO', this.getCurrentStep(), ...this.getEnvBounds()));
-        document.getElementById('view-xy-btn').addEventListener('click', () => this.cameraController.setView('XY', this.getCurrentStep(), ...this.getEnvBounds()));
-        document.getElementById('view-xz-btn').addEventListener('click', () => this.cameraController.setView('XZ', this.getCurrentStep(), ...this.getEnvBounds()));
-        document.getElementById('view-yz-btn').addEventListener('click', () => this.cameraController.setView('YZ', this.getCurrentStep(), ...this.getEnvBounds()));
+        // Atalhos de câmera/zoom (ISO/XY/XZ/YZ, fit/+/−/janela)
+        bindCameraToolbar(this.cameraController, this.zoomWindow, () => this.getCurrentStep(), () => this.getEnvBounds());
+
+        // Abas do painel de dados lateral
+        document.getElementById('tab-controls-btn').addEventListener('click', () => this.setDataTab('controls'));
+        document.getElementById('tab-viz-btn').addEventListener('click', () => this.setDataTab('viz'));
+        document.getElementById('tab-table-btn').addEventListener('click', () => this.setDataTab('table'));
+        document.getElementById('tab-load-btn').addEventListener('click', () => this.setDataTab('load'));
+
+        // Alternância Elementos / Nós dentro da aba "Tabela"
+        document.getElementById('table-view-elements-btn').addEventListener('click', () => this.setTableViewMode('elements'));
+        document.getElementById('table-view-nodes-btn').addEventListener('click', () => this.setTableViewMode('nodes'));
 
         // Seletor de Modo de Análise (Estática / Dinâmica)
         const modeSelect = document.getElementById('analysis-mode-select');
@@ -164,13 +136,7 @@ class RiserSimApp {
         });
 
         // Tema Claro/Escuro
-        document.getElementById('theme-toggle-btn').addEventListener('click', () => {
-            this.currentTheme = this.currentTheme === 'dark' ? 'light' : 'dark';
-            document.body.className = this.currentTheme === 'dark' ? 'dark-mode' : 'light-mode';
-            document.getElementById('theme-toggle-btn').innerText = this.currentTheme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro';
-            this.renderer3D.scene.background.setHex(this.currentTheme === 'dark' ? 0x1e1e2e : 0xffffff);
-            this.render();
-        });
+        initThemeToggle(this);
     }
 
     switchViewportView(view) {
@@ -381,8 +347,20 @@ class RiserSimApp {
         if (minEl) minEl.innerText = formatter(minVal);
     }
 
+    /** Alterna entre a tabela de elementos e a tabela de nós na aba "Tabela". */
+    setTableViewMode(mode) {
+        this.tableViewMode = mode;
+        const elTable = document.getElementById('elements-table');
+        const nodeTable = document.getElementById('nodes-table');
+        const elBtn = document.getElementById('table-view-elements-btn');
+        const nodeBtn = document.getElementById('table-view-nodes-btn');
+        if (elTable) elTable.style.display = mode === 'elements' ? 'table' : 'none';
+        if (nodeTable) nodeTable.style.display = mode === 'nodes' ? 'table' : 'none';
+        if (elBtn) elBtn.className = mode === 'elements' ? 'btn-tab active' : 'btn-tab';
+        if (nodeBtn) nodeBtn.className = mode === 'nodes' ? 'btn-tab active' : 'btn-tab';
+    }
+
     updateTable(step) {
-        const tbody = document.getElementById('elements-tbody');
         const stepTitle = document.getElementById('table-step-title');
 
         if (stepTitle && this.simulation) {
@@ -391,51 +369,67 @@ class RiserSimApp {
             stepTitle.innerText = `Passo ${step.stepIndex}/${totalSteps} (${loadPct}% da Carga / Offset)`;
         }
 
-        if (!tbody) return;
-        tbody.innerHTML = '';
-
         const nodes = step.nodes;
         const elements = step.elements;
 
-        elements.forEach((elem, idx) => {
-            const tr = document.createElement('tr');
+        // Tabela de Elementos (tensão, momento, curvatura, von Mises, MBR, status da seção)
+        const elTbody = document.getElementById('elements-tbody');
+        if (elTbody) {
+            elTbody.innerHTML = '';
+            elements.forEach((elem, idx) => {
+                const tr = document.createElement('tr');
 
-            const n1 = nodes[idx];
-            const n2 = nodes[idx + 1] || n1;
+                const n2 = nodes[idx + 1] || nodes[idx];
 
-            const z1 = n1 ? n1.z.toFixed(2) : "0.00";
-            const z2 = n2 ? n2.z.toFixed(2) : "0.00";
+                // Fundo do mar detectado pela profundidade real desta simulação (não um valor
+                // fixo), já que o índice/faixa de elementos varia de modelo para modelo. Não há
+                // como detectar módulos de flutuação (Lazy Wave) a partir dos dados exportados --
+                // o exportador não inclui diâmetro/metadado de módulo por elemento (ver
+                // simulation_exporter.cpp), então esse status foi removido em vez de "adivinhado".
+                let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
+                const seabedDepth = this.simulation ? this.simulation.seabedDepth : -100.0;
+                if (n2 && n2.z <= seabedDepth + 0.5) {
+                    statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
+                }
 
-            // Fundo do mar detectado pela profundidade real desta simulação (não um valor fixo),
-            // já que o índice/faixa de elementos varia de modelo para modelo. Não há como
-            // detectar módulos de flutuação (Lazy Wave) a partir dos dados exportados -- o
-            // exportador não inclui diâmetro/metadado de módulo por elemento (ver
-            // simulation_exporter.cpp), então esse status foi removido em vez de "adivinhado".
-            let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
-            const seabedDepth = this.simulation ? this.simulation.seabedDepth : -100.0;
-            if (n2 && n2.z <= seabedDepth + 0.5) {
-                statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
-            }
+                // Tração efetiva e von Mises em notação científica (valores tipicamente grandes
+                // ou de faixa dinâmica ampla); as demais grandezas continuam em ponto fixo. As
+                // unidades ficam só no cabeçalho da coluna, não repetidas em cada célula.
+                const tensionStr = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn.toExponential(2) : "0.00e+0";
+                const momentStr = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm.toFixed(2) : "0.00";
+                const curvStr = elem.curvature !== undefined ? elem.curvature.toExponential(3) : "0.000e+00";
+                const vmStr = elem.vonMisesMpa !== undefined ? elem.vonMisesMpa.toExponential(2) : "0.00e+0";
+                const mbrStr = elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor.toFixed(2) : "1.00";
 
-            const tensionStr = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn.toFixed(1) : "0.0";
-            const momentStr = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm.toFixed(2) : "0.00";
-            const curvStr = elem.curvature !== undefined ? elem.curvature.toExponential(3) : "0.000e+00";
-            const vmStr = elem.vonMisesMpa !== undefined ? elem.vonMisesMpa.toFixed(1) : "0.0";
-            const mbrStr = elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor.toFixed(2) : "1.00";
+                tr.innerHTML = `
+                    <td style="font-weight:bold;">Elemento ${elem.id}</td>
+                    <td>Nó ${idx + 1} ➔ Nó ${idx + 2}</td>
+                    <td>${statusBadge}</td>
+                    <td class="tension-val">${tensionStr}</td>
+                    <td>${momentStr}</td>
+                    <td style="font-family:monospace;">${curvStr}</td>
+                    <td style="font-weight:bold; color:#e11d48;">${vmStr}</td>
+                    <td style="font-weight:bold; color:#2563eb;">${mbrStr}</td>
+                `;
+                elTbody.appendChild(tr);
+            });
+        }
 
-            tr.innerHTML = `
-                <td style="font-weight:bold;">Elemento ${elem.id}</td>
-                <td>Nó ${idx + 1} ➔ Nó ${idx + 2}</td>
-                <td>${z1}m ➔ ${z2}m</td>
-                <td>${statusBadge}</td>
-                <td class="tension-val">${tensionStr} kN</td>
-                <td>${momentStr} kN.m</td>
-                <td style="font-family:monospace;">${curvStr}</td>
-                <td style="font-weight:bold; color:#e11d48;">${vmStr} MPa</td>
-                <td style="font-weight:bold; color:#2563eb;">${mbrStr}</td>
-            `;
-            tbody.appendChild(tr);
-        });
+        // Tabela de Nós (coordenadas)
+        const nodeTbody = document.getElementById('nodes-tbody');
+        if (nodeTbody) {
+            nodeTbody.innerHTML = '';
+            nodes.forEach((node, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="font-weight:bold;">Nó ${node.id !== undefined ? node.id : idx + 1}</td>
+                    <td>${node.x.toFixed(2)}</td>
+                    <td>${node.y.toFixed(2)}</td>
+                    <td>${node.z.toFixed(2)}</td>
+                `;
+                nodeTbody.appendChild(tr);
+            });
+        }
     }
 }
 

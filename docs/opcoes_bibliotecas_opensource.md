@@ -99,7 +99,7 @@ Desenho feito antes da comparação de bibliotecas da seção 1 — continua vá
 - Seam de monitoramento: interface `SimulationObserver` (inspirada no `sStepInfo`/`cStatusWatcher` do ANFLEX real, sem a dependência de UI IUP) — `ProgressLogObserver` (fase 1, sem rede) e `StreamingObserver` (fase 3, via **oatpp** — Apache 2.0, leve, sem trazer Boost inteiro).
 
 ### Web app de pré/pós-processamento
-- React + Vite + TypeScript; Three.js (evoluindo o `tools/viewer_3d.html` atual) num componente fino; Plotly mantido; h5wasm mantido; UI kit Mantine; estado com Zustand.
+- React + Vite + TypeScript; Three.js (evoluindo o `tools/posprocessor.html` atual) num componente fino; Plotly mantido; h5wasm mantido; UI kit Mantine; estado com Zustand.
 - Um app, três rotas: `/model`, `/run`, `/results/:runId`.
 - Comunicação motor↔web em fases: fase 1 = arquivo (`progress.json`, CLI batch); fase 3 = backend local opcional com oatpp (HTTP+WebSocket), mesma rota `/run` trocando polling por streaming atrás de um tipo compartilhado.
 

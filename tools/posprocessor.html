@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>riserSim 3D Three.js Web Visualizer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/h5wasm@0.4.10/dist/h5wasm.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="css/shared.css">
+    <style>
+        /* Só o que é específico do pós-processador -- o resto (tema, layout de 3 regiões,
+           control-group/stat-card, botões, icon-toolbar/tooltip/zoom-rect, btn-tab, tabela
+           estilo planilha) está em css/shared.css, compartilhado com preprocessor.html. */
+
+        /* Legenda de resultados -- versão de 180px com offsets finos de tick e gradiente real,
+           diferente da legenda simples de diâmetro do pré-processador. */
+        #colorbar-legend {
+            position: absolute;
+            top: 20px;
+            right: 25px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            pointer-events: none;
+            z-index: 30;
+        }
+        #colorbar-ticks {
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            height: 180px;
+            font-size: 11px;
+            font-weight: bold;
+            text-align: right;
+            line-height: 1;
+        }
+        #cbar-max { transform: translateY(-5px); }
+        #cbar-mid2 { transform: translateY(0px); }
+        #cbar-mid1 { transform: translateY(0px); }
+        #cbar-min { transform: translateY(5px); }
+
+        #colorbar-bar {
+            width: 20px;
+            height: 180px;
+            border-radius: 4px;
+            background: linear-gradient(to top, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000);
+            border: 1px solid #94a3b8;
+            box-sizing: border-box;
+        }
+
+        table.excel-table { text-align: center; }
+        .tension-val { font-weight: bold; color: #047857; }
+        .status-seabed { background: #ffedd5; color: #c2410c; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
+        .status-water { background: #dbeafe; color: #1e40af; padding: 2px 6px; border-radius: 4px; }
+    </style>
+</head>
+<body class="dark-mode">
+    <div id="header">
+        <h1>🌊 riserSim 3D Three.js Web Visualizer</h1>
+        <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
+    </div>
+
+    <div id="main-layout">
+        <div id="sidebar">
+            <div class="control-group">
+                <div class="control-title">🎥 VISTAS</div>
+                <div class="icon-toolbar">
+                    <button class="btn-icon-sm btn-primary" id="view-iso-btn" data-tip="Vista isométrica">🎲</button>
+                    <button class="btn-icon-sm" id="view-xy-btn" data-tip="Vista superior (plano XY)">XY</button>
+                    <button class="btn-icon-sm" id="view-xz-btn" data-tip="Vista de elevação / perfil (plano XZ)">XZ</button>
+                    <button class="btn-icon-sm" id="view-yz-btn" data-tip="Vista frontal transversal (plano YZ)">YZ</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <div class="control-title">🔍 ZOOM</div>
+                <div class="icon-toolbar">
+                    <button class="btn-icon-sm" id="zoom-fit-btn" data-tip="Enquadrar o modelo inteiro (zoom extents), sem mudar o ângulo de vista">⤢</button>
+                    <button class="btn-icon-sm" id="zoom-in-btn" data-tip="Aproximar (zoom +)">+</button>
+                    <button class="btn-icon-sm" id="zoom-out-btn" data-tip="Afastar (zoom −)">−</button>
+                    <button class="btn-icon-sm" id="zoom-window-btn" data-tip="Zoom por janela: clique e depois arraste um retângulo na cena para aproximar da área selecionada">⛶</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="canvas-container">
+            <!-- Abas Superiores Flutuantes no Viewport (Cena 3D vs Gráficos 2D) -->
+            <div id="viewport-tabs" style="position: absolute; top: 10px; left: 10px; z-index: 25; display: flex; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px);">
+                <button class="btn-tab active" id="vtab-3d-btn">🧊 Cena 3D WebGL</button>
+                <button class="btn-tab" id="vtab-tension-btn">📈 Tração Efetiva T_eff</button>
+                <button class="btn-tab" id="vtab-moment-btn">📐 Momento & Curvatura</button>
+                <button class="btn-tab" id="vtab-vm-btn">⚡ Tensão von Mises</button>
+            </div>
+
+            <!-- 1. Canvas 3D -->
+            <canvas id="three-canvas" style="width:100%; height:100%; display:block;"></canvas>
+
+            <!-- 2. Gráficos 2D de Alta Resolução (Full Viewport Height) -->
+            <div id="tension-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
+            <div id="moment-curv-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
+            <div id="vonmises-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
+
+            <div id="zoom-rect"></div>
+
+            <!-- Floating Colorbar Legend -->
+            <div id="colorbar-legend">
+                <div style="font-size: 11px; font-weight: bold; color: #89b4fa; text-align: center;" id="cbar-unit-title">Tração (kN)</div>
+                <div style="display: flex; gap: 10px; align-items: stretch;">
+                    <div id="colorbar-ticks">
+                        <span id="cbar-max">10.0</span>
+                        <span id="cbar-mid2">7.5</span>
+                        <span id="cbar-mid1">5.0</span>
+                        <span id="cbar-min">2.5</span>
+                    </div>
+                    <div id="colorbar-bar"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="resizer-h" title="Arraste para redimensionar o canvas 3D e o painel de dados"></div>
+
+        <div id="data-panel">
+            <div id="bottom-tabs">
+                <button class="btn-tab active" id="tab-controls-btn">🎬 Controles</button>
+                <button class="btn-tab" id="tab-viz-btn">🎨 Visualização</button>
+                <button class="btn-tab" id="tab-table-btn">📊 Tabela</button>
+                <button class="btn-tab" id="tab-load-btn">📁 Carregar</button>
+            </div>
+
+            <div class="bottom-tab-panel active" id="tab-controls">
+                <div class="control-group">
+                    <div class="control-title">⚙️ MODO DE ANÁLISE (ESTÁTICA / DINÂMICA)</div>
+                    <select id="analysis-mode-select">
+                        <option value="dynamic" selected>🌊 Análise Dinâmica (Domínio do Tempo)</option>
+                        <option value="static">📊 Análise Estática (Equilíbrio & Offset)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">🎬 CONTROLES DE ANIMAÇÃO</div>
+                    <label for="step-slider" style="font-size:12px;">Passo: <span id="step-label" style="font-weight:bold;">400/400 (20.00s)</span></label>
+                    <input type="range" id="step-slider" min="0" max="400" value="400" step="1">
+
+                    <div class="btn-row">
+                        <button class="btn-icon" id="prev-btn" title="Passo Anterior">⏮️ Voltar</button>
+                        <button class="btn-icon btn-primary" id="play-btn" title="Iniciar Animação">▶️ Play</button>
+                        <button class="btn-icon" id="pause-btn" title="Pausar Animação">⏸️ Pausa</button>
+                        <button class="btn-icon" id="next-btn" title="Próximo Passo">⏭️ Avançar</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">📊 MÉTRICAS DO PASSO ATUAL</div>
+                    <div class="stat-card">
+                        <div class="stat-title">Fator de Carga / Offset</div>
+                        <div class="stat-value" id="load-factor">100 %</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Tração Efetiva no Topo</div>
+                        <div class="stat-value" id="top-tension">10.00 kN</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">Profundidade Mínima (Z)</div>
+                        <div class="stat-value" id="max-depth">-80.00 m</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bottom-tab-panel" id="tab-viz">
+                <div class="control-group">
+                    <div class="control-title">🎯 GRANDEZA PARA COLORIR (CAMPO ESCALAR)</div>
+                    <select id="scalar-field-select">
+                        <option value="tension" selected>⚡ Tração Efetiva (kN)</option>
+                        <option value="moment">🌀 Momento Fletor (kN·m)</option>
+                        <option value="curvature">📐 Curvatura (1/m)</option>
+                        <option value="vonmises">💥 Tensão von Mises (MPa)</option>
+                        <option value="mbr">🛡️ Fator de Segurança MBR (SF)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-title">🎨 MAPA DE CORES (COLORMAP)</div>
+                    <select id="colormap-select">
+                        <option value="Jet" selected>Jet (Clássico Engineering)</option>
+                        <option value="Plasma">Plasma</option>
+                        <option value="Viridis">Viridis</option>
+                        <option value="Turbo">Turbo (Google High Contrast)</option>
+                        <option value="Coolwarm">Coolwarm (Azul -> Vermelho)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="bottom-tab-panel" id="tab-table">
+                <h3 style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                    <span>
+                        📊 Tabela de Resultados
+                        <button class="btn-tab active" id="table-view-elements-btn" style="font-size:11px; padding:3px 8px; margin-left:8px;">Elementos</button>
+                        <button class="btn-tab" id="table-view-nodes-btn" style="font-size:11px; padding:3px 8px;">Nós</button>
+                    </span>
+                    <span style="font-size: 11px; opacity: 0.85;">Passo Ativo: <span id="table-step-title">Passo 20 (100%)</span></span>
+                </h3>
+                <div style="flex:1; min-height:120px; overflow:auto;">
+                    <table class="excel-table" id="elements-table">
+                        <thead>
+                            <tr>
+                                <th>Elemento ID</th>
+                                <th>Nó Origem ➔ Destino</th>
+                                <th>Status da Seção</th>
+                                <th>Tração Efetiva (kN)</th>
+                                <th>Momento Fletor (kN.m)</th>
+                                <th>Curvatura (1/m)</th>
+                                <th>Tensão von Mises (MPa)</th>
+                                <th>Fator MBR (SF)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="elements-tbody">
+                            <!-- Populated dynamically per active step -->
+                        </tbody>
+                    </table>
+                    <table class="excel-table" id="nodes-table" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>Nó ID</th>
+                                <th>X (m)</th>
+                                <th>Y (m)</th>
+                                <th>Z (m)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nodes-tbody">
+                            <!-- Populated dynamically per active step -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="bottom-tab-panel" id="tab-load">
+                <div class="control-group">
+                    <div class="control-title">📁 CARREGAR ARQUIVO DE RESULTADOS (.H5 / .JSON)</div>
+                    <input type="file" id="json-input" accept=".h5,.hdf5,.json">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Módulo Principal da Aplicação Orientada a Objetos (OO) -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>

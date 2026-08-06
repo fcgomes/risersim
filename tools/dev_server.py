@@ -1,6 +1,6 @@
 """
 dev_server.py
-Servidor de arquivos estáticos para iteração local em preprocessor.html/viewer_3d.html, com
+Servidor de arquivos estáticos para iteração local em preprocessor.html/posprocessor.html, com
 cache desabilitado (Cache-Control: no-store) em toda resposta -- python -m http.server sozinho
 não manda esse header, e o navegador cacheia agressivamente os módulos ES (js/*.js importados via
 <script type="module">), fazendo edições nesses arquivos parecerem "não aplicadas" mesmo depois de

@@ -1,0 +1,143 @@
+/**
+ * shared.css
+ * Casca de UI compartilhada entre preprocessor.html e posprocessor.html: tema claro/escuro,
+ * esqueleto do layout de 3 regiões (sidebar de câmera | canvas | painel de dados em abas),
+ * componentes genéricos (control-group/stat-card/botões/tabs), barra de ícones de câmera/zoom,
+ * tooltip customizado, e a parte comum da tabela estilo planilha.
+ *
+ * O que NÃO está aqui, de propósito, porque é conteúdo específico de cada página (não duplicação
+ * acidental): dimensionamento do #colorbar-legend/#colorbar-ticks/#colorbar-bar (o
+ * pré-processador usa uma legenda simples de 140px pra diâmetro; o pós-processador usa uma versão
+ * de 180px com offsets finos de tick pra resultados reais), table.kv-table (só
+ * preprocessor.html), .warning-item/.tension-val/.status-seabed/.status-water, #model-status,
+ * #current-chart, e o alinhamento de texto de table.excel-table (esquerda no pré, centro no pós).
+ */
+
+body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #1e1e2e; color: #cdd6f4; overflow: hidden; transition: background-color 0.3s; }
+
+/* Dark Theme Styles (Default) */
+body.dark-mode { background-color: #1e1e2e; color: #cdd6f4; }
+body.dark-mode #header { background: #11111b; border-bottom-color: #313244; }
+body.dark-mode #sidebar { background: #181825; border-right-color: #313244; color: #cdd6f4; }
+body.dark-mode #data-panel { background: #181825; border-left-color: #313244; color: #cdd6f4; }
+body.dark-mode .control-group { background: #313244; }
+body.dark-mode .control-title { color: #89b4fa; }
+body.dark-mode .stat-card { background: #11111b; border-color: #313244; }
+body.dark-mode .stat-title { color: #a6adc8; }
+body.dark-mode .stat-value { color: #a6e3a1; }
+body.dark-mode select, body.dark-mode input[type="range"], body.dark-mode input[type="file"], body.dark-mode input[type="text"] { background: #181825; border-color: #45475a; color: #cdd6f4; }
+body.dark-mode #colorbar-legend { background: rgba(17, 17, 27, 0.88); border-color: #313244; color: #cdd6f4; }
+body.dark-mode #data-panel h3 { color: #89b4fa; }
+body.dark-mode table.excel-table { color: #cdd6f4; }
+body.dark-mode table.excel-table th { background: #181825; color: #89b4fa; border-color: #313244; }
+body.dark-mode table.excel-table td { border-color: #313244; }
+body.dark-mode table.excel-table tr:nth-child(even) { background: #1e1e2e; }
+body.dark-mode table.excel-table tr:hover { background: #45475a; color: #a6e3a1; }
+body.dark-mode #resizer-h { background: #313244; border-color: #45475a; }
+body.dark-mode #resizer-h:hover, body.dark-mode #resizer-h.dragging { background: #2563eb; }
+
+/* Light Theme Styles */
+body.light-mode { background-color: #ffffff; color: #0f172a; }
+body.light-mode #header { background: #1e293b; border-bottom-color: #cbd5e1; }
+body.light-mode #sidebar { background: #f8fafc; border-right-color: #e2e8f0; color: #0f172a; }
+body.light-mode #data-panel { background: #f8fafc; border-left-color: #e2e8f0; color: #0f172a; }
+body.light-mode .control-group { background: #e2e8f0; }
+body.light-mode .control-title { color: #1e3a8a; }
+body.light-mode .stat-card { background: #ffffff; border-color: #cbd5e1; }
+body.light-mode .stat-title { color: #64748b; }
+body.light-mode .stat-value { color: #047857; }
+body.light-mode select, body.light-mode input[type="range"], body.light-mode input[type="file"], body.light-mode input[type="text"] { background: #ffffff; border-color: #94a3b8; color: #0f172a; }
+body.light-mode #colorbar-legend { background: rgba(255, 255, 255, 0.95); border-color: #cbd5e1; color: #0f172a; }
+body.light-mode #data-panel h3 { color: #1e3a8a; }
+body.light-mode table.excel-table { color: #0f172a; }
+body.light-mode table.excel-table th { background: #f1f5f9; color: #1e3a8a; border-color: #cbd5e1; }
+body.light-mode table.excel-table td { border-color: #cbd5e1; }
+body.light-mode table.excel-table tr:nth-child(even) { background: #f8fafc; }
+body.light-mode table.excel-table tr:hover { background: #e2e8f0; color: #047857; }
+body.light-mode #resizer-h { background: #e2e8f0; border-color: #cbd5e1; }
+body.light-mode #resizer-h:hover, body.light-mode #resizer-h.dragging { background: #2563eb; }
+
+#header { padding: 12px 25px; border-bottom: 2px solid; display: flex; justify-content: space-between; align-items: center; height: 50px; box-sizing: border-box; }
+h1 { margin: 0; font-size: 20px; color: #89b4fa; }
+
+/* Layout principal: sidebar de câmera/zoom | canvas 3D | divisor arrastável | painel de dados (abas) */
+#main-layout { display: flex; height: calc(100vh - 50px); min-height: 0; }
+/* overflow: visible (não só overflow-y) -- setar só um eixo faz o navegador forçar o outro pra
+   "auto" (regra do próprio CSS Overflow Module), e o tooltip customizado ([data-tip]::after)
+   precisa vazar pra fora dos 78px da sidebar pra ficar legível -- isso sozinho já faz o
+   scrollWidth estourar e o navegador desenhar uma barra horizontal, mesmo sem overflow vertical
+   real. */
+#sidebar { width: 78px; flex-shrink: 0; padding: 10px 8px; border-right: 2px solid; box-sizing: border-box; overflow: visible; }
+#sidebar .control-group { padding: 8px 4px; }
+#sidebar .control-title { font-size: 9px; text-align: center; }
+#sidebar .icon-toolbar { align-items: center; }
+#canvas-container { flex: 1; position: relative; min-width: 0; height: 100%; overflow: hidden; }
+#three-canvas { position: absolute; top: 0; left: 0; width: 100% !important; height: 100% !important; display: block; }
+
+#resizer-h { width: 8px; flex-shrink: 0; cursor: col-resize; user-select: none; border-left: 1px solid; border-right: 1px solid; box-sizing: border-box; display: flex; align-items: center; justify-content: center; transition: background 0.15s; }
+#resizer-h::after { content: '⋮'; font-size: 14px; opacity: 0.6; }
+
+#data-panel { width: 560px; flex-shrink: 0; min-width: 320px; max-width: 75vw; border-left: 2px solid; box-sizing: border-box; padding: 15px; display: flex; flex-direction: column; overflow: hidden; }
+#data-panel h3 { margin-top: 0; margin-bottom: 8px; font-size: 14px; flex-shrink: 0; }
+#bottom-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-shrink: 0; flex-wrap: wrap; }
+#bottom-tabs .btn-tab { font-size: 12px; padding: 6px 12px; }
+.bottom-tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; }
+.bottom-tab-panel.active { display: flex; }
+
+.control-group { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; }
+.control-title { font-size: 11px; font-weight: bold; margin-bottom: 6px; }
+.stat-card { padding: 6px 10px; border-radius: 6px; margin-bottom: 4px; border: 1px solid; }
+.stat-title { font-size: 9px; text-transform: uppercase; }
+.stat-value { font-size: 14px; font-weight: bold; margin-top: 1px; word-break: break-word; }
+
+select, input[type="range"], input[type="file"], input[type="text"] { width: 100%; padding: 6px; border-radius: 6px; box-sizing: border-box; font-size: 12px; }
+
+.btn-row { display: flex; gap: 5px; margin-top: 6px; }
+.btn-icon { flex: 1; background: #94a3b8; color: #ffffff; border: none; padding: 7px 4px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 12px; text-align: center; }
+.btn-icon:hover { opacity: 0.85; }
+.btn-primary { background: #2563eb; color: #ffffff; }
+.btn-theme { background: #f59e0b; color: #11111b; font-weight: bold; border-radius: 6px; padding: 6px 14px; border: none; cursor: pointer; }
+
+/* Barra fina de ícones (vistas/zoom), em coluna -- botões quadrados pequenos, sem rótulo
+   de texto longo, com tooltip customizado (data-tip) em vez de botões largos
+   "🎲 Isométrica". */
+.icon-toolbar { display: flex; flex-direction: column; gap: 4px; }
+.btn-icon-sm {
+    width: 28px; height: 28px; padding: 0; box-sizing: border-box;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px; border: 1px solid; font-size: 11px; font-weight: bold;
+    cursor: pointer; background: #313244; color: #cdd6f4; border-color: #45475a;
+}
+.btn-icon-sm:hover { opacity: 0.85; }
+.btn-icon-sm.btn-primary, .btn-icon-sm.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
+body.light-mode .btn-icon-sm { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
+
+/* Tooltip customizado -- title nativo do browser tem delay/estilo inconsistente entre
+   navegadores; este aparece rápido e consistente com o tema claro/escuro da página. */
+[data-tip] { position: relative; }
+[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+    background: #11111b; color: #cdd6f4; padding: 5px 9px; border-radius: 5px;
+    font-size: 11px; font-weight: normal; text-align: left; line-height: 1.35;
+    width: max-content; max-width: 190px;
+    opacity: 0; pointer-events: none; transition: opacity 0.12s ease 0.2s;
+    z-index: 60; border: 1px solid #313244; box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+}
+[data-tip]:hover::after { opacity: 1; }
+body.light-mode [data-tip]::after { background: #1e293b; color: #f8fafc; border-color: #334155; }
+
+/* Retângulo de arraste do "zoom por janela", desenhado sobre o canvas 3D. */
+#zoom-rect { position: absolute; display: none; border: 1px dashed #2563eb; background: rgba(37, 99, 235, 0.15); pointer-events: none; z-index: 25; }
+
+/* Parte comum da tabela estilo planilha -- alinhamento de texto fica de fora de propósito
+   (cada página declara o seu: esquerda no pré-processador -- listagens técnicas --, centro no
+   pós-processador -- dados numéricos de resultado). */
+table.excel-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.excel-table th, table.excel-table td { padding: 5px 10px; white-space: nowrap; }
+table.excel-table th { font-weight: bold; position: sticky; top: 0; }
+
+.btn-tab { background: #313244; color: #cdd6f4; border: 1px solid #45475a; padding: 4px 10px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 11px; }
+.btn-tab.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
+body.light-mode .btn-tab { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
+body.light-mode .btn-tab.active { background: #2563eb; color: #ffffff; }

@@ -91,7 +91,7 @@ def visualize_riser_3d(json_path="catenary_results.json"):
                     self.send_header('Access-Control-Allow-Headers', '*')
                     super().end_headers()
 
-            print(f"🌐 Abra seu navegador em: http://localhost:{PORT}/risersim/tools/viewer_3d.html")
+            print(f"🌐 Abra seu navegador em: http://localhost:{PORT}/risersim/tools/posprocessor.html")
             with socketserver.TCPServer(("", PORT), CORSRequestHandler) as httpd:
                 httpd.serve_forever()
 
