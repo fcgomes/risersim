@@ -115,15 +115,35 @@ def main():
         print(f"\n📦 Detectada pasta de análise XML+H5. Importando modelo robusto:")
         print(f"   XML: {xml_file}")
         print(f"   H5:  {h5_file}")
-        from xml_h5_reader import ANFLEXXmlH5Reader
+        from xml_h5_reader import ANFLEXXmlH5Reader, extract_assembly_flag, extract_static_convergence_criterium
         reader = ANFLEXXmlH5Reader(str(xml_file), str(h5_file))
         config = reader.to_risersim_json()
         reader.close()
-        
+
+        # %ASSEMBLY.USING real só existe no texto .aml/.pml, não no XML/H5 -- controla se o
+        # ANFLEX real roda a fase de assembly (rigidez artificial em todo passo + fase static
+        # separada) ou só uma rampa única (ver mapa_classes_anflex_estatica.md).
+        assembly_flag = extract_assembly_flag(str(aml_path))
+        if assembly_flag is not None:
+            config['analysis_options']['static']['use_assembly_phase'] = assembly_flag
+            print(f"   %ASSEMBLY.USING real: {assembly_flag}")
+
+        # %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM/MAX_UNBALANCED reais -- se o ANFLEX real
+        # combina o critério de deslocamento com um teto de força/momento desbalanceado
+        # ('DISP_AND_FORCE'), liga a mesma válvula de escape que o risersim já tinha implementada
+        # mas nunca lida do AML real (ver mapa_classes_anflex_estatica.md).
+        enable_unbalanced, max_unbalanced = extract_static_convergence_criterium(str(aml_path))
+        if enable_unbalanced:
+            config['analysis_options']['static']['enable_unbalanced_criteria'] = True
+            if max_unbalanced is not None:
+                config['analysis_options']['static']['unbalanced_force_tol'] = max_unbalanced
+                config['analysis_options']['static']['unbalanced_moment_tol'] = max_unbalanced
+            print(f"   %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM real: DISP_AND_FORCE (max_unbalanced={max_unbalanced})")
+
         # Sobrescreve parâmetros da linha de comando se informados
         if args.num_elements:
             print("⚠️ Nota: O número de elementos é fixado pela malha XML+H5 e não será sobrescrito.")
-            
+
         if '--duration' in sys.argv:
             config['analysis_options']['dynamic']['duration_s'] = args.duration
         if '--dt' in sys.argv:

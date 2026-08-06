@@ -585,6 +585,101 @@ investigados: o `BETA` de rigidez artificial do ANFLEX pode decair *entre* passo
 a cada novo passo como o risersim faz hoje), fazendo os 11 passos funcionarem como um refinamento
 gradual da regularização em vez de (só) um ramp de carga -- ainda não confirmado lendo o código real.
 
+## Correção estrutural: respeitar `%ASSEMBLY.USING` real em vez de forçar duas fases sempre
+
+Investigando o gap de eficiência (risersim precisando de ~240+ iterações vs. as 87 reais do
+Exemplo_01c pro mesmo caso solo+corrente), leitura cuidadosa de `newton_raphson.cpp`,
+`integrator.cpp`, `static_integrator.cpp` e `beam.cpp::calc_artificial_stiffness` descartou
+diferença de fórmula -- a rigidez artificial (`avg_EA_L * exp(-iter/1,25)`, rotacional=0,05x) já
+bate exatamente com o ANFLEX real, e nenhum dos dois lados tem relaxação/projeção no update de
+Newton.
+
+**Causa real, estrutural**: `StaticAnalysis::solve()` sempre rodava um pipeline de duas fases fixo
+-- Fase 1 "assembly" (rigidez artificial em todo passo) seguida de Fase 2 "static" (100% da carga
+num único passo). O Exemplo_01a/01c real tem `%ASSEMBLY.USING.FALSE` no `.aml`/`.pml` -- confirmado
+lendo `anflex_analysis.cpp`, o ANFLEX real **nunca roda a fase de assembly** pra esse modelo, só uma
+única rampa suave de 11 passos, rigidez artificial gated a `step==1` (nunca reativada depois,
+`static_integrator.cpp:196`) -- nunca há um salto de "todo o resto da carga num passo só".
+
+**Implementado**: `StaticAnalysis::use_assembly_phase` (default `true`, preserva o comportamento de
+duas fases pra qualquer JSON sem o dado real -- zero risco pra suíte de testes/modelo sintético).
+Quando `false`, `solve()` roda uma única chamada de `solve_catenary_static` com
+`ArtificialStiffnessMode::OnlyFirstStep` -- modo que **já existia** (era inclusive o default
+documentado de `solve_catenary_static`, "risersim's historical behavior"), só nunca era invocado
+por `solve()`. Fonte do dado real: `%ASSEMBLY.USING.TRUE`/`.FALSE` só existe no texto `.aml`/`.pml`
+(convenção autodescritiva, sem linha de valor separada); nova função `extract_assembly_flag()` em
+`xml_h5_reader.py`, chamada por `run_from_aml.py` (que já tem o caminho do `.aml` em mãos) e
+injetada em `analysis_options.static.use_assembly_phase` no JSON.
+
+**Resultado no Exemplo_01a real**: confirmado `use_assembly_phase=false` extraído corretamente do
+`.aml`. Com o orçamento padrão de 40 iterações/passo, o passo 1 ainda não converge -- mas o padrão
+mudou de "duas fases brigando" pra um resíduo pequeno (~7-8 N, `Rel R (ref) ~4,5e-4`, já abaixo da
+tolerância nominal) que oscila devagar sem nunca satisfazer o critério de razão de
+incremento -- a mesma assinatura de "chattering perto de um resíduo minúsculo" já documentada antes
+(seção "Retomando a investigação", resolvida lá pela válvula de escape `enable_unbalanced_criteria`).
+Testado com orçamento maior (300 iterações, só diagnóstico): passos 1-5 convergem (260, 10, 46, 65,
+176 iterações -- lento e irregular, mas convergindo de verdade, sem explosão), passo 6 falha em 300.
+É uma melhora real (antes, com o pipeline de duas fases, nem chegava no passo 6) mas ainda longe das
+~8 iterações/passo do ANFLEX real -- a causa provável remanescente é a mesma oscilação perto do
+critério de incremento já mapeada, agora afetando vários passos, não só um caso isolado de 20-30
+elementos. `enable_unbalanced_criteria` existe no código mas não está exposto via JSON/`main_test.cpp`
+-- candidato natural pra uma próxima correção, ainda não implementada nesta rodada.
+
+**Bateria de não-regressão**: `risersim_tests` (343 asserts) sem mudança de referência (default
+`true` preserva o pipeline de duas fases intacto); `risersim_diag_isolated_segment` (300 sem
+solo/corrente, 30 elementos touchdown solo-only, 500 corrente-only) -- resultados idênticos aos de
+antes desta mudança, como esperado (essa ferramenta não passa por `use_assembly_phase`).
+
+## Ligando a válvula de escape real (`%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`) -- melhora, não resolve
+
+Continuando a investigação do gap de eficiência: o AML real do Exemplo_01a tem
+`%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM = 'DISP_AND_FORCE'` e
+`%ANALYSIS_CASE.STATIC.MAX_UNBALANCED = 1.0` -- confirmação direta e real de que o ANFLEX de
+verdade usa o critério combinado (deslocamento + força/momento desbalanceado máximo), com o mesmo
+valor de tolerância (1.0) que já era o default hardcoded da válvula de escape do risersim
+(`StaticAnalysis::enable_unbalanced_criteria`/`unbalanced_force_tol`/`unbalanced_moment_tol`,
+implementada numa investigação anterior mas nunca lida do AML real).
+
+**Implementado**: `extract_static_convergence_criterium()` em `xml_h5_reader.py` (mesmo padrão de
+`extract_assembly_flag()`, lendo o `.aml`/`.pml` direto -- esse dado também não existe no XML/H5),
+chamada por `run_from_aml.py`, escrevendo `analysis_options.static.enable_unbalanced_criteria`/
+`unbalanced_force_tol`/`unbalanced_moment_tol` no JSON quando o critério real inclui força.
+`AnalysisOptionsConfig`/`main_test.cpp` ganharam os campos correspondentes, default `false`/`1.0`
+(zero mudança de comportamento sem o dado real).
+
+**Resultado no Exemplo_01a real, orçamento padrão de 40 iterações/passo (o mesmo do XML real)**:
+- **Passo 1**: converge em 38 iterações (antes falhava sempre) -- via a válvula de escape mesmo
+  (`norm_R=758,8 N`, ainda um resíduo relativamente alto, mas dentro do critério de força
+  desbalanceada máxima).
+- **Passo 2**: converge em 13 iterações, resíduo genuinamente pequeno (1,62 N) -- convergência
+  "de verdade", não só a válvula de escape.
+- **Passo 3**: ainda falha -- resíduo cresce a ~1,2-1,5e4 e **oscila nesse patamar** (não explode
+  sem limite) até esgotar as 40 iterações.
+
+É uma melhora real e mensurável (antes desta correção, nem o passo 1 convergia dentro do orçamento
+padrão) mas não fecha o gap completo contra as ~8 iterações/passo do ANFLEX real.
+
+**Achado colateral, revela a fragilidade da válvula de escape**: testado com orçamento maior (300
+iterações, só diagnóstico) -- contraintuitivamente, o **passo 1 passou a falhar** onde antes
+convergia com 40. Causa: a válvula de escape só é avaliada nas **últimas 3 iterações do orçamento**
+configurado (`ConvergenceTest`, já documentado). Com `max_iter=40`, a janela de escape cai nas
+iterações 38-40, pegando por sorte um momento do ciclo de oscilação onde o pior resíduo pontual já
+estava abaixo da tolerância; com `max_iter=300`, a mesma janela desliza pra 298-300, um ponto
+diferente (e aparentemente pior) do mesmo ciclo oscilatório. Ou seja, a convergência via válvula de
+escape hoje depende de "sorte" de onde a janela de 3 iterações cai dentro de um ciclo de chattering,
+não de uma garantia real -- consistente com a conclusão já registrada antes ("não resolve, é uma
+rede de segurança parcial").
+
+**Estado em aberto**: a causa raiz do chattering nos passos 3+ permanece a mesma já mapeada
+(oscilação perto de uma descontinuidade solo+corrente, sem nenhuma técnica de estabilização
+direcional tipo Armijo ou limitação de passo por nó/GDL implementada). Não investigado mais fundo
+nesta rodada -- ver as direções já listadas nas seções anteriores (line search direcional, limitar
+o passo por nó/GDL, suavizar a transição liga/desliga do contato).
+
+**Bateria de não-regressão**: `risersim_tests` (343 asserts) sem mudança; `risersim_diag_isolated_segment`
+(300 sem solo/corrente, 30 touchdown solo-only, 500 corrente-only) -- resultados idênticos aos de
+antes (essa ferramenta não passa por `enable_unbalanced_criteria`).
+
 ## Ver também
 
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).

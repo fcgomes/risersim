@@ -288,6 +288,10 @@ int main(int argc, char* argv[]) {
                         ao.static_steps = st.value("steps", ao.static_steps);
                         ao.static_max_iterations = st.value("max_iterations", ao.static_max_iterations);
                         ao.static_tolerance = st.value("tolerance", ao.static_tolerance);
+                        ao.static_use_assembly_phase = st.value("use_assembly_phase", ao.static_use_assembly_phase);
+                        ao.static_enable_unbalanced_criteria = st.value("enable_unbalanced_criteria", ao.static_enable_unbalanced_criteria);
+                        ao.static_unbalanced_force_tol = st.value("unbalanced_force_tol", ao.static_unbalanced_force_tol);
+                        ao.static_unbalanced_moment_tol = st.value("unbalanced_moment_tol", ao.static_unbalanced_moment_tol);
 
                         if (st.contains("vessel_offset")) {
                             auto off = st["vessel_offset"];
@@ -388,6 +392,10 @@ int main(int argc, char* argv[]) {
     static_analysis.load_steps = model->analysis_options.static_steps;
     static_analysis.max_iter_per_step = model->analysis_options.static_max_iterations;
     static_analysis.tol = model->analysis_options.static_tolerance;
+    static_analysis.use_assembly_phase = model->analysis_options.static_use_assembly_phase;
+    static_analysis.enable_unbalanced_criteria = model->analysis_options.static_enable_unbalanced_criteria;
+    static_analysis.unbalanced_force_tol = model->analysis_options.static_unbalanced_force_tol;
+    static_analysis.unbalanced_moment_tol = model->analysis_options.static_unbalanced_moment_tol;
     static_analysis.offset = risersim::VesselOffset(model->analysis_options.offset_mode, model->analysis_options.offset_magnitude);
     static_analysis.enable_offset = model->analysis_options.enable_vessel_offset;
 

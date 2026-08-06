@@ -1,9 +1,63 @@
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 import json
 import math
 import h5py
+
+
+def extract_assembly_flag(aml_path):
+    """Lê o flag real `%ASSEMBLY.USING.TRUE`/`%ASSEMBLY.USING.FALSE` do texto `.aml`/`.pml`.
+
+    Convenção AML autodescritiva (palavra-chave já carrega o valor booleano, sem linha de valor
+    separada -- ex.: `%ASSEMBLY.USING.FALSE` sozinho numa linha), diferente do padrão
+    chave/valor em duas linhas usado por outras diretivas (`%ASSEMBLY.TOTAL_TIME`, etc.).
+
+    Esse flag só existe no `.aml`/`.pml`, não no XML/H5 -- controla se o ANFLEX real roda uma
+    fase de "assembly" (rigidez artificial em todo passo, seguida de uma fase "static" separada)
+    antes da análise estática real, ou só uma única rampa suave (ver
+    docs/mapa_classes_anflex_estatica.md). Retorna True/False, ou None se não encontrado (JSON
+    fica sem o campo, risersim usa o próprio default seguro).
+    """
+    if not aml_path or not os.path.isfile(aml_path):
+        return None
+    with open(aml_path, "r", encoding="latin-1") as f:
+        text = f.read()
+    m = re.search(r"^%ASSEMBLY\.USING\.(TRUE|FALSE)\s*$", text, re.IGNORECASE | re.MULTILINE)
+    if not m:
+        return None
+    return m.group(1).upper() == "TRUE"
+
+
+def extract_static_convergence_criterium(aml_path):
+    """Lê `%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`/`%ANALYSIS_CASE.STATIC.MAX_UNBALANCED`
+    reais do texto `.aml`/`.pml` (padrão chave/valor em duas linhas, diferente da convenção
+    autodescritiva de `extract_assembly_flag`).
+
+    O ANFLEX real suporta combinar o critério de razão de deslocamento (sempre ativo) com um
+    critério de força/momento desbalanceado máximo (`'DISP_AND_FORCE'`, com um teto em
+    `MAX_UNBALANCED`) -- risersim já tem essa válvula de escape implementada
+    (`StaticAnalysis::enable_unbalanced_criteria`/`unbalanced_force_tol`/`unbalanced_moment_tol`,
+    ver docs/mapa_classes_anflex_estatica.md), só nunca lida do AML real antes.
+
+    Retorna `(enable_unbalanced: bool, max_unbalanced: float | None)`. `enable_unbalanced` é
+    `True` quando o critério real inclui força (contém `'FORCE'`, cobre `'DISP_AND_FORCE'` e
+    variantes), `False` caso contrário ou se não encontrado.
+    """
+    if not aml_path or not os.path.isfile(aml_path):
+        return False, None
+    with open(aml_path, "r", encoding="latin-1") as f:
+        text = f.read()
+
+    crit_m = re.search(r"%ANALYSIS_CASE\.STATIC\.CONVERGENCE_CRITERIUM\s*\n\s*'([^']*)'", text)
+    enable_unbalanced = bool(crit_m) and "FORCE" in crit_m.group(1).upper()
+
+    unb_m = re.search(r"%ANALYSIS_CASE\.STATIC\.MAX_UNBALANCED\s*\n\s*([-\d.eE+]+)", text)
+    max_unbalanced = float(unb_m.group(1)) if unb_m else None
+
+    return enable_unbalanced, max_unbalanced
+
 
 class ANFLEXXmlH5Reader:
     def __init__(self, xml_path, h5_path):

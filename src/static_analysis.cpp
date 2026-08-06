@@ -195,24 +195,36 @@ bool StaticAnalysis::solve() {
     // (mapa_classes_anflex_estatica.md) that had nothing to do with the actual input geometry.
     StepSnapshot true_step0 = capture_snapshot(model, 0, 0.0);
 
-    // Two-phase solve, mirroring real ANFLEX (cAnflexAnalysis::solve_assembly() ->
-    // solve_static()). Phase 1 ("assembly") gives the mesh artificial stiffness
-    // available on EVERY load step (not just the first) to find an approximate
-    // equilibrium configuration; phase 2 ("static") starts from that state and
-    // solves cleanly, without artificial stiffness, with the full load in a single
-    // step (the geometry is already consistent with 100% of the load at the end of
-    // phase 1 -- repeating the load ramp in phase 2 would reintroduce the same
-    // mismatch that broke the earlier external warm-start attempt).
-    std::cout << "\n--- Phase 1/2: Assembly (artificial stiffness on every step) ---" << std::endl;
-    bool ok_assembly = solve_catenary_static(load_steps, max_iter_per_step, tol, ArtificialStiffnessMode::EveryStep);
-    if (!ok_assembly) {
-        std::cout << "WARNING: assembly phase did not fully converge -- proceeding to the static phase "
-                     "from the state reached (the assembly phase is a pre-solve, it doesn't need to be perfect)."
-                  << std::endl;
-    }
+    bool ok_static;
+    if (use_assembly_phase) {
+        // Two-phase solve, mirroring real ANFLEX's cAnflexAnalysis::solve_assembly() ->
+        // solve_static() *when* `%ASSEMBLY.USING.TRUE` is actually set in the AML. Phase 1
+        // ("assembly") gives the mesh artificial stiffness available on EVERY load step (not
+        // just the first) to find an approximate equilibrium configuration; phase 2 ("static")
+        // starts from that state and solves cleanly, without artificial stiffness, with the full
+        // load in a single step (the geometry is already consistent with 100% of the load at the
+        // end of phase 1 -- repeating the load ramp in phase 2 would reintroduce the same
+        // mismatch that broke the earlier external warm-start attempt).
+        std::cout << "\n--- Phase 1/2: Assembly (artificial stiffness on every step) ---" << std::endl;
+        bool ok_assembly = solve_catenary_static(load_steps, max_iter_per_step, tol, ArtificialStiffnessMode::EveryStep);
+        if (!ok_assembly) {
+            std::cout << "WARNING: assembly phase did not fully converge -- proceeding to the static phase "
+                         "from the state reached (the assembly phase is a pre-solve, it doesn't need to be perfect)."
+                      << std::endl;
+        }
 
-    std::cout << "\n--- Phase 2/2: Static (no artificial stiffness, full load in 1 step) ---" << std::endl;
-    bool ok_static = solve_catenary_static(1, max_iter_per_step, tol, ArtificialStiffnessMode::Never);
+        std::cout << "\n--- Phase 2/2: Static (no artificial stiffness, full load in 1 step) ---" << std::endl;
+        ok_static = solve_catenary_static(1, max_iter_per_step, tol, ArtificialStiffnessMode::Never);
+    } else {
+        // Real ANFLEX never runs an assembly pre-phase for this model (`%ASSEMBLY.USING.FALSE`)
+        // -- just a single smooth multi-step ramp, artificial stiffness only on load step 1
+        // (`ArtificialStiffnessMode::OnlyFirstStep`, matching `static_integrator.cpp`'s
+        // `step==1` gate in real ANFLEX). Forcing the two-phase pipeline above onto a model that
+        // real ANFLEX solves this way was the dominant cause of a >10x Newton-iteration gap for
+        // Exemplo_01a/01c -- see docs/mapa_classes_anflex_estatica.md.
+        std::cout << "\n--- Static (single ramp, no assembly phase -- %ASSEMBLY.USING.FALSE) ---" << std::endl;
+        ok_static = solve_catenary_static(load_steps, max_iter_per_step, tol, ArtificialStiffnessMode::OnlyFirstStep);
+    }
 
     // Restores the true pristine geometry as "step 0" in the exported/viewed history -- see the
     // comment above `true_step0` for why history[0] (phase 2's own step0 capture) can't be

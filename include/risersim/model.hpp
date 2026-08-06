@@ -72,6 +72,13 @@ struct AnalysisOptionsConfig {
     int static_steps = 20;
     int static_max_iterations = 300;
     double static_tolerance = 0.01;
+    /// Real ANFLEX's `%ASSEMBLY.USING` -- see StaticAnalysis::use_assembly_phase.
+    bool static_use_assembly_phase = true;
+    /// Real ANFLEX's `%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`/`MAX_UNBALANCED` -- see
+    /// StaticAnalysis::enable_unbalanced_criteria.
+    bool static_enable_unbalanced_criteria = false;
+    double static_unbalanced_force_tol = 1.0;
+    double static_unbalanced_moment_tol = 1.0;
     bool enable_vessel_offset = false;
     OffsetMode offset_mode = OffsetMode::Far;
     double offset_magnitude = 0.0;

@@ -51,6 +51,21 @@ public:
     double unbalanced_force_tol = 1.0;   ///< N
     double unbalanced_moment_tol = 1.0;  ///< N.m
 
+    /**
+     * @brief Whether solve() runs the "assembly" pre-phase (artificial stiffness every step,
+     * followed by a single full-load step with no artificial stiffness) or a single ramped solve
+     * (ArtificialStiffnessMode::OnlyFirstStep, matching real ANFLEX's `solve_static()` alone).
+     *
+     * Default `true` preserves the historical two-phase pipeline exactly, for any model that
+     * doesn't carry the real `%ASSEMBLY.USING` flag (synthetic fallback model, older JSONs).
+     * Real ANFLEX only runs an assembly phase when `%ASSEMBLY.USING.TRUE` is set in the AML
+     * (`cAnflexAnalysis::solve()`, `anflex_analysis.cpp`); Exemplo_01a/01c both have
+     * `%ASSEMBLY.USING.FALSE` and solve with a single smooth multi-step ramp instead -- forcing
+     * the two-phase pipeline on them was the dominant cause of a >10x Newton-iteration-count gap
+     * against real ANFLEX for the same problem. See docs/mapa_classes_anflex_estatica.md.
+     */
+    bool use_assembly_phase = true;
+
     StaticAnalysis()
         : Analysis(),
           load_steps(20),
