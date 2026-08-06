@@ -28,10 +28,11 @@ struct BeamMaterialProps {
     double D_inner;    ///< Inner diameter (m).
     double rho_fluid;  ///< Internal fluid density (kg/m^3).
     double Ca;         ///< Hydrodynamic added mass coefficient (default 1.0).
+    double Cd;         ///< Hydrodynamic drag coefficient (default 1.0) -- distinct from Ca; previously the current-drag code reused Ca in its place.
 
     BeamMaterialProps()
         : E(2.1e11), G(8.0e10), A(0.015), IY(5.0e-5), IZ(5.0e-5), J(1.0e-4), rho(7850.0), EI(1.05e7),
-          D_outer(0.25), D_inner(0.20), rho_fluid(800.0), Ca(1.0) {}
+          D_outer(0.25), D_inner(0.20), rho_fluid(800.0), Ca(1.0), Cd(1.0) {}
 };
 
 /**

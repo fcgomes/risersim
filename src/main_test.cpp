@@ -39,55 +39,16 @@ int main(int argc, char* argv[]) {
         output_dir = argv[2];
     }
 
+    // Parâmetros relevantes só pro modelo sintético de fallback (usado quando não há JSON
+    // válido) -- tudo que vem de um JSON real vive em model->environmental/model->analysis_options
+    // (risersim/include/risersim/model.hpp), não em variáveis soltas aqui. Isso é o que permite
+    // as outras classes (StaticAnalysis/DynamicAnalysis/SeabedInteraction/CurrentProfile) serem
+    // alimentadas a partir de UM lugar só, em vez de ~35 variáveis espalhadas sendo atribuídas
+    // uma a uma depois de construídas.
     risersim::BeamMaterialProps props;
     int num_elements = 40;
     double total_length = 180.0;
-    double total_depth_z = -100.0;
-    double water_surface_z = 0.0; ///< Z of the sea surface, for the viewer's water-surface plane. Default 0.0 matches the synthetic fallback geometry's convention (top node at z=0).
     double total_span_x = 120.0;
-    double seabed_stiffness = 1.0e5;
-    double seabed_friction = 0.5;
-    // Axial/lateral overrides: absent from most exported JSONs today (they only carry an
-    // isotropic "friction_coeff"), so these fall back to seabed_friction/0.05 (the
-    // SeabedInteraction default) unless a JSON explicitly provides them -- see
-    // environmental.seabed.axial_friction etc below.
-    double seabed_axial_friction = -1.0;
-    double seabed_lateral_friction = -1.0;
-    double seabed_axial_elastic_limit = -1.0;
-    double seabed_lateral_elastic_limit = -1.0;
-    // "uncoupled" (independent per-axis Coulomb caps, ANFLEX's %SOIL.UNCOUPLED) or "coupled"
-    // (combined axial+lateral yield surface, ANFLEX's %OPTION.SOIL.COUPLED) -- see
-    // seabed.hpp:SoilModel. Real models pick one explicitly and they are physically different,
-    // not interchangeable defaults.
-    risersim::SoilModel soil_model = risersim::SoilModel::Uncoupled;
-    double water_density = 1025.0;
-
-    int static_steps = 20;
-    int static_max_iter = 300;
-    double static_tolerance = 0.01;
-
-    bool enable_offset = false;
-    risersim::OffsetMode offset_mode = risersim::OffsetMode::Far;
-    double offset_mag = 0.0;
-
-    bool enable_current = false;
-    double curr_v_surface = 1.5;
-    double curr_heading = 90.0;
-    double curr_alpha = 0.1428;
-
-    bool run_dynamic = true;
-    double dyn_duration = 20.0;
-    double dyn_dt = 0.05;
-    double dyn_wave_amp = 2.5;
-    double dyn_wave_period = 10.0;
-    double dyn_alpha_rayleigh = 0.05;
-    double dyn_beta_rayleigh = 0.01;
-    int dyn_max_nr_iters = 20;
-    double dyn_nr_tolerance = 1.0e-4;
-    double dyn_wave_angle_deg = 0.0;
-    double dyn_wave_gamma = 3.3;
-    std::string dyn_wave_type = "regular";
-    bool dyn_stop_on_first_non_convergence = false;
 
     // Load a structured JSON model, if one was provided
     auto* model = new risersim::RiserModel();
@@ -118,7 +79,7 @@ int main(int argc, char* argv[]) {
                         int id = e_j["id"];
                         int n1_idx = e_j["node1_id"].get<int>() - 1;
                         int n2_idx = e_j["node2_id"].get<int>() - 1;
-                        
+
                         risersim::BeamMaterialProps elem_props;
                         if (e_j.contains("section_properties")) {
                             auto sp = e_j["section_properties"];
@@ -128,6 +89,7 @@ int main(int argc, char* argv[]) {
                             elem_props.D_outer = sp.value("D_outer", elem_props.D_outer);
                             elem_props.D_inner = sp.value("D_inner", elem_props.D_inner);
                             elem_props.Ca = sp.value("Ca", elem_props.Ca);
+                            elem_props.Cd = sp.value("Cd", elem_props.Cd);
                             elem_props.EI = sp.value("EI", 21700.0);
 
                             // Maps density directly from the XML's real submerged weight, for pure physical consistency
@@ -138,18 +100,34 @@ int main(int argc, char* argv[]) {
                                 weight_wet_N = sp.value("rho", elem_props.rho) * sp.value("A", elem_props.A) * 9.81;
                             }
 
-                            elem_props.rho = (weight_wet_N / 9.81) / (elem_props.A > 0.0 ? elem_props.A : 0.0282);
-                            elem_props.rho_fluid = 0.0; // Net weight already embedded in the submerged weight
+                            // rho: usa o valor real do JSON quando presente (os dois conversores
+                            // Python já calculam com a mesma fórmula abaixo, então isso não muda
+                            // nada pra JSONs existentes -- só evita re-derivar à toa, e respeita
+                            // um `rho` divergente se algum conversor futuro vier a calcular
+                            // diferente).
+                            double rho_derived = (weight_wet_N / 9.81) / (elem_props.A > 0.0 ? elem_props.A : 0.0282);
+                            elem_props.rho = sp.value("rho", rho_derived);
 
-                            // Derives effective IY/IZ from the AML's real bending stiffness EI
+                            // rho_fluid: peso próprio do fluido interno (bore) -- termo real,
+                            // distinto do empuxo externo (que já vem líquido embutido em `rho`/
+                            // `weight_wet_kNm`, ver water_density abaixo). Antes ficava sempre
+                            // zerado; sem esse campo no JSON, mantém 0.0 (sem fluido interno
+                            // assumido), mas usa o valor real quando presente.
+                            elem_props.rho_fluid = sp.value("rho_fluid", 0.0);
+
+                            // Deriva IY/IZ/J geometricamente só como fallback -- fontes reais via
+                            // XML+H5 (xml_h5_reader.py) já carregam IY/IZ possivelmente
+                            // assimétricos e J real; fontes AML não têm eixo assimétrico real
+                            // (seção sempre tratada como tubo axissimétrico) e caem no mesmo
+                            // fallback derivado de antes.
                             double I_eff = elem_props.EI / elem_props.E;
-                            elem_props.IY = I_eff;
-                            elem_props.IZ = I_eff;
-                            
+                            elem_props.IY = sp.value("IY", I_eff);
+                            elem_props.IZ = sp.value("IZ", I_eff);
+
                             double do_m = elem_props.D_outer;
                             double di_m = elem_props.D_inner;
-                            double I_geom = std::numbers::pi * (std::pow(do_m, 4) - std::pow(di_m, 4)) / 64.0;
-                            elem_props.J = 2.0 * I_geom;
+                            double J_geom = 2.0 * (std::numbers::pi * (std::pow(do_m, 4) - std::pow(di_m, 4)) / 64.0);
+                            elem_props.J = sp.value("J", J_geom);
                         }
 
                         double L_unstretched = (model->nodes[n2_idx]->coords - model->nodes[n1_idx]->coords).norm();
@@ -217,28 +195,30 @@ int main(int argc, char* argv[]) {
                               << j["warm_start"].value("source", "?") << ")" << std::endl;
                 }
 
-                // 4. Environmental parameters
+                // 4. Environmental parameters -> model->environmental (single place other classes
+                // pull from below, instead of local variables scattered through this function).
                 if (j.contains("environmental")) {
                     auto env = j["environmental"];
+                    auto& ec = model->environmental;
+
                     // "enabled": false (diagnostic-only escape hatch, matching
                     // diag_isolated_segment.cpp's seabed_mode=0) pushes the seabed far below any
                     // real node instead of aligning it to the model's real minimum Z -- lets a
                     // JSON model be re-run with contact effectively disabled, to isolate whether
                     // the seabed is contributing to a convergence problem (see
                     // mapa_classes_anflex_estatica.md).
-                    bool seabed_enabled = true;
                     double water_depth_magnitude = 100.0; // fallback if "seabed" sub-object is absent
                     if (env.contains("seabed")) {
                         auto sb = env["seabed"];
-                        seabed_enabled = sb.value("enabled", true);
-                        seabed_stiffness = sb.value("stiffness_Nm", seabed_stiffness);
-                        seabed_friction = sb.value("friction_coeff", seabed_friction);
-                        seabed_axial_friction = sb.value("axial_friction", seabed_axial_friction);
-                        seabed_lateral_friction = sb.value("lateral_friction", seabed_lateral_friction);
-                        seabed_axial_elastic_limit = sb.value("axial_elastic_deflection_limit", seabed_axial_elastic_limit);
-                        seabed_lateral_elastic_limit = sb.value("lateral_elastic_deflection_limit", seabed_lateral_elastic_limit);
+                        ec.seabed_enabled = sb.value("enabled", true);
+                        ec.seabed_stiffness = sb.value("stiffness_Nm", ec.seabed_stiffness);
+                        ec.seabed_friction = sb.value("friction_coeff", ec.seabed_friction);
+                        ec.seabed_axial_friction = sb.value("axial_friction", ec.seabed_axial_friction);
+                        ec.seabed_lateral_friction = sb.value("lateral_friction", ec.seabed_lateral_friction);
+                        ec.seabed_axial_elastic_limit = sb.value("axial_elastic_deflection_limit", ec.seabed_axial_elastic_limit);
+                        ec.seabed_lateral_elastic_limit = sb.value("lateral_elastic_deflection_limit", ec.seabed_lateral_elastic_limit);
                         std::string soil_model_str = sb.value("soil_model", std::string("uncoupled"));
-                        soil_model = (soil_model_str == "coupled") ? risersim::SoilModel::Coupled : risersim::SoilModel::Uncoupled;
+                        ec.soil_model = (soil_model_str == "coupled") ? risersim::SoilModel::Coupled : risersim::SoilModel::Uncoupled;
                         // "depth_m" here comes from the AML's own Z origin, which the min_z
                         // override below deliberately does NOT trust for *position* (see that
                         // comment) -- but its *magnitude* (the total water depth) is still
@@ -252,85 +232,88 @@ int main(int argc, char* argv[]) {
                         if (node->coords.z() > max_z) max_z = node->coords.z();
                     }
 
-                    if (seabed_enabled) {
+                    if (ec.seabed_enabled) {
                         // Aligns the seabed with the real minimum Z of the nodes read from the H5
                         double min_z = 1e9;
                         for (const auto& node : model->nodes) {
                             if (node->coords.z() < min_z) min_z = node->coords.z();
                         }
-                        total_depth_z = min_z;
-                        water_surface_z = total_depth_z + water_depth_magnitude;
-                        std::cout << "Seabed positioned at the nodes' real Z: " << total_depth_z
-                                  << " m | Water surface at: " << water_surface_z << " m" << std::endl;
+                        ec.seabed_depth_z = min_z;
+                        ec.water_surface_z = ec.seabed_depth_z + water_depth_magnitude;
+                        std::cout << "Seabed positioned at the nodes' real Z: " << ec.seabed_depth_z
+                                  << " m | Water surface at: " << ec.water_surface_z << " m" << std::endl;
                     } else {
-                        total_depth_z = -1.0e6;
+                        ec.seabed_depth_z = -1.0e6;
                         // No real seabed reference left to add the water depth to -- approximate
                         // the surface as the model's highest node (a riser's top end is normally
                         // at/near the water surface).
-                        water_surface_z = max_z;
+                        ec.water_surface_z = max_z;
                         std::cout << "Seabed DISABLED (environmental.seabed.enabled=false) -- pushed to "
-                                  << total_depth_z << " m, no contact possible | Water surface approximated at: "
-                                  << water_surface_z << " m" << std::endl;
+                                  << ec.seabed_depth_z << " m, no contact possible | Water surface approximated at: "
+                                  << ec.water_surface_z << " m" << std::endl;
                     }
                     if (env.contains("current")) {
                         auto curr = env["current"];
                         auto vels = curr.value("velocities_ms", std::vector<double>{});
                         if (!vels.empty() && vels[0] > 0.0) {
-                            enable_current = true;
-                            curr_v_surface = vels[0];
-                            auto angles = curr.value("angles_deg", std::vector<double>{90.0});
-                            if (!angles.empty()) curr_heading = angles[0];
+                            ec.current_enabled = true;
+                            // Perfil tabulado completo (não só o primeiro ponto) -- CurrentProfile
+                            // interpola de verdade quando há 2+ pontos, ver current_profile.hpp.
+                            ec.current_depths_m = curr.value("depths_m", std::vector<double>{});
+                            ec.current_velocities_ms = vels;
+                            ec.current_angles_deg = curr.value("angles_deg", std::vector<double>{90.0});
                         }
                     }
                     if (env.contains("wave")) {
                         auto wave = env["wave"];
-                        dyn_wave_period = wave.value("period_s", dyn_wave_period);
-                        dyn_wave_amp = wave.value("amplitude_m", wave.value("height_m", 5.0) / 2.0);
-                        dyn_wave_angle_deg = wave.value("angle_deg", dyn_wave_angle_deg);
-                        dyn_wave_gamma = wave.value("gamma", dyn_wave_gamma);
-                        dyn_wave_type = wave.value("type", dyn_wave_type);
+                        ec.wave_period_s = wave.value("period_s", ec.wave_period_s);
+                        ec.wave_amplitude_m = wave.value("amplitude_m", wave.value("height_m", 5.0) / 2.0);
+                        ec.wave_angle_deg = wave.value("angle_deg", ec.wave_angle_deg);
+                        ec.wave_gamma = wave.value("gamma", ec.wave_gamma);
+                        ec.wave_type = wave.value("type", ec.wave_type);
                     }
                 }
 
-                // 5. Solver parameters (static / dynamic options)
+                // 5. Solver parameters (static / dynamic options) -> model->analysis_options
                 if (j.contains("analysis_options")) {
                     auto opts = j["analysis_options"];
+                    auto& ao = model->analysis_options;
                     if (opts.contains("static")) {
                         auto st = opts["static"];
-                        static_steps = st.value("steps", static_steps);
-                        static_max_iter = st.value("max_iterations", static_max_iter);
-                        static_tolerance = st.value("tolerance", static_tolerance);
-                        
+                        ao.static_steps = st.value("steps", ao.static_steps);
+                        ao.static_max_iterations = st.value("max_iterations", ao.static_max_iterations);
+                        ao.static_tolerance = st.value("tolerance", ao.static_tolerance);
+
                         if (st.contains("vessel_offset")) {
                             auto off = st["vessel_offset"];
                             double near_m = off.value("near_m", 0.0);
                             double far_m = off.value("far_m", 0.0);
                             if (far_m > 0.0) {
-                                enable_offset = true;
-                                offset_mode = risersim::OffsetMode::Far;
-                                offset_mag = far_m;
+                                ao.enable_vessel_offset = true;
+                                ao.offset_mode = risersim::OffsetMode::Far;
+                                ao.offset_magnitude = far_m;
                             } else if (near_m > 0.0) {
-                                enable_offset = true;
-                                offset_mode = risersim::OffsetMode::Near;
-                                offset_mag = near_m;
+                                ao.enable_vessel_offset = true;
+                                ao.offset_mode = risersim::OffsetMode::Near;
+                                ao.offset_magnitude = near_m;
                             } else {
-                                enable_offset = false;
+                                ao.enable_vessel_offset = false;
                             }
                         }
                     }
                     if (opts.contains("dynamic")) {
                         auto dy = opts["dynamic"];
-                        run_dynamic = dy.value("enabled", true);
-                        dyn_duration = dy.value("duration_s", dyn_duration);
-                        dyn_dt = dy.value("dt_s", dyn_dt);
-                        dyn_max_nr_iters = dy.value("max_iterations", dyn_max_nr_iters);
-                        dyn_nr_tolerance = dy.value("tolerance", dyn_nr_tolerance);
-                        dyn_stop_on_first_non_convergence = dy.value("stop_on_first_non_convergence", dyn_stop_on_first_non_convergence);
-                        
+                        ao.dynamic_enabled = dy.value("enabled", true);
+                        ao.dynamic_duration_s = dy.value("duration_s", ao.dynamic_duration_s);
+                        ao.dynamic_dt_s = dy.value("dt_s", ao.dynamic_dt_s);
+                        ao.dynamic_max_iterations = dy.value("max_iterations", ao.dynamic_max_iterations);
+                        ao.dynamic_tolerance = dy.value("tolerance", ao.dynamic_tolerance);
+                        ao.stop_on_first_non_convergence = dy.value("stop_on_first_non_convergence", ao.stop_on_first_non_convergence);
+
                         if (dy.contains("rayleigh_damping")) {
                             auto ray = dy["rayleigh_damping"];
-                            dyn_alpha_rayleigh = ray.value("alpha", dyn_alpha_rayleigh);
-                            dyn_beta_rayleigh = ray.value("beta", dyn_beta_rayleigh);
+                            ao.rayleigh_alpha = ray.value("alpha", ao.rayleigh_alpha);
+                            ao.rayleigh_beta = ray.value("beta", ao.rayleigh_beta);
                         }
                     }
                 }
@@ -347,8 +330,8 @@ int main(int argc, char* argv[]) {
     if (!parsed_from_json) {
         std::cout << "Generating default parabolic test geometry..." << std::endl;
         const int num_nodes = num_elements + 1;
-        double h_water = std::abs(total_depth_z); // 265.0 m
-        double L_total = total_length;            // 500.0 m
+        double h_water = std::abs(model->environmental.seabed_depth_z); // 100.0 m (EnvironmentalConfig default)
+        double L_total = total_length;            // 180.0 m
 
         double S_susp = std::min(L_total * 0.70, 310.0);
         double X_tdp = std::sqrt(std::max(1.0, S_susp * S_susp - h_water * h_water));
@@ -383,26 +366,40 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Static configuration
+    // Static configuration -- from here on, every parameter is read from model->environmental /
+    // model->analysis_options (populated above from the real JSON, or left at their struct
+    // defaults for the synthetic fallback path), not from local variables.
     risersim::StaticAnalysis static_analysis;
     static_analysis.model = model;
-    static_analysis.water_density = parsed_from_json ? 0.0 : water_density;
+    static_analysis.water_density = parsed_from_json ? 0.0 : model->environmental.water_density;
     static_analysis.water_density_for_mass = 1025.0;  // Always the real value, for added mass
-    static_analysis.seabed = risersim::SeabedInteraction(total_depth_z, seabed_stiffness, seabed_friction);
-    static_analysis.seabed.soil_model = soil_model;
-    if (seabed_axial_friction > 0.0) static_analysis.seabed.axial_friction = seabed_axial_friction;
-    if (seabed_lateral_friction > 0.0) static_analysis.seabed.lateral_friction = seabed_lateral_friction;
-    if (seabed_axial_elastic_limit > 0.0) static_analysis.seabed.axial_elastic_deflection_limit = seabed_axial_elastic_limit;
-    if (seabed_lateral_elastic_limit > 0.0) static_analysis.seabed.lateral_elastic_deflection_limit = seabed_lateral_elastic_limit;
-    static_analysis.load_steps = static_steps;
-    static_analysis.max_iter_per_step = static_max_iter;
-    static_analysis.tol = static_tolerance;
-    static_analysis.offset = risersim::VesselOffset(offset_mode, offset_mag);
-    static_analysis.enable_offset = enable_offset;
+    static_analysis.seabed = risersim::SeabedInteraction(
+        model->environmental.seabed_depth_z, model->environmental.seabed_stiffness, model->environmental.seabed_friction);
+    static_analysis.seabed.soil_model = model->environmental.soil_model;
+    if (model->environmental.seabed_axial_friction > 0.0) static_analysis.seabed.axial_friction = model->environmental.seabed_axial_friction;
+    if (model->environmental.seabed_lateral_friction > 0.0) static_analysis.seabed.lateral_friction = model->environmental.seabed_lateral_friction;
+    if (model->environmental.seabed_axial_elastic_limit > 0.0) static_analysis.seabed.axial_elastic_deflection_limit = model->environmental.seabed_axial_elastic_limit;
+    if (model->environmental.seabed_lateral_elastic_limit > 0.0) static_analysis.seabed.lateral_elastic_deflection_limit = model->environmental.seabed_lateral_elastic_limit;
+    static_analysis.load_steps = model->analysis_options.static_steps;
+    static_analysis.max_iter_per_step = model->analysis_options.static_max_iterations;
+    static_analysis.tol = model->analysis_options.static_tolerance;
+    static_analysis.offset = risersim::VesselOffset(model->analysis_options.offset_mode, model->analysis_options.offset_magnitude);
+    static_analysis.enable_offset = model->analysis_options.enable_vessel_offset;
 
-    if (enable_current) {
+    if (model->environmental.current_enabled) {
         static_analysis.enable_current = true;
-        static_analysis.current = risersim::CurrentProfile(curr_v_surface, total_depth_z, curr_heading, curr_alpha, model->elements.front()->props.Ca);
+        const auto& vels = model->environmental.current_velocities_ms;
+        const auto& angles = model->environmental.current_angles_deg;
+        double v_surface = vels.empty() ? 1.5 : vels.front();
+        double heading = angles.empty() ? 90.0 : angles.front();
+        // Cd real do elemento (antes reaproveitava Ca de forma incorreta) -- todos os elementos
+        // tipicamente compartilham a mesma seção num riser, então o do primeiro serve de default.
+        double cd = model->elements.empty() ? 1.0 : model->elements.front()->props.Cd;
+        static_analysis.current = risersim::CurrentProfile(v_surface, model->environmental.seabed_depth_z, heading, 0.1428, cd);
+        // Perfil tabulado real: com 2+ pontos, CurrentProfile interpola de verdade em vez de usar
+        // a lei de potência (que fica só como fallback pro caso raro de 1 ponto só).
+        static_analysis.current.set_profile(
+            model->environmental.current_depths_m, model->environmental.current_velocities_ms, model->environmental.current_angles_deg);
     }
 
     std::cout << "\n--- Running Static Analysis ---" << std::endl;
@@ -419,25 +416,25 @@ int main(int argc, char* argv[]) {
     risersim::DynamicAnalysis dynamic_analysis(static_analysis);
     bool success_dynamic = true;
 
-    if (run_dynamic && !success_static) {
+    if (model->analysis_options.dynamic_enabled && !success_static) {
         std::cout << "\nSkipping Dynamic Analysis: Static Analysis did not converge." << std::endl;
         success_dynamic = false;
-    } else if (run_dynamic) {
-        dynamic_analysis.duration_s = dyn_duration;
-        dynamic_analysis.dt_s = dyn_dt;
-        dynamic_analysis.wave_amplitude = dyn_wave_amp;
-        dynamic_analysis.wave_period = dyn_wave_period;
-        dynamic_analysis.wave_angle_deg = dyn_wave_angle_deg;
-        dynamic_analysis.wave_gamma = dyn_wave_gamma;
-        dynamic_analysis.alpha_rayleigh = dyn_alpha_rayleigh;
-        dynamic_analysis.beta_rayleigh = dyn_beta_rayleigh;
-        dynamic_analysis.max_nr_iters = dyn_max_nr_iters;
-        dynamic_analysis.nr_tolerance = dyn_nr_tolerance;
-        dynamic_analysis.stop_on_first_non_convergence = dyn_stop_on_first_non_convergence;
+    } else if (model->analysis_options.dynamic_enabled) {
+        dynamic_analysis.duration_s = model->analysis_options.dynamic_duration_s;
+        dynamic_analysis.dt_s = model->analysis_options.dynamic_dt_s;
+        dynamic_analysis.wave_amplitude = model->environmental.wave_amplitude_m;
+        dynamic_analysis.wave_period = model->environmental.wave_period_s;
+        dynamic_analysis.wave_angle_deg = model->environmental.wave_angle_deg;
+        dynamic_analysis.wave_gamma = model->environmental.wave_gamma;
+        dynamic_analysis.alpha_rayleigh = model->analysis_options.rayleigh_alpha;
+        dynamic_analysis.beta_rayleigh = model->analysis_options.rayleigh_beta;
+        dynamic_analysis.max_nr_iters = model->analysis_options.dynamic_max_iterations;
+        dynamic_analysis.nr_tolerance = model->analysis_options.dynamic_tolerance;
+        dynamic_analysis.stop_on_first_non_convergence = model->analysis_options.stop_on_first_non_convergence;
 
         std::cout << "\n--- Running Dynamic Analysis ---" << std::endl;
-        std::cout << "  Wave: type=" << dyn_wave_type << " | angle=" << dyn_wave_angle_deg
-                  << " deg | gamma=" << dyn_wave_gamma << std::endl;
+        std::cout << "  Wave: type=" << model->environmental.wave_type << " | angle=" << model->environmental.wave_angle_deg
+                  << " deg | gamma=" << model->environmental.wave_gamma << std::endl;
         success_dynamic = dynamic_analysis.solve();
         if (success_dynamic) {
             std::cout << "Dynamic Analysis Completed Successfully!" << std::endl;
@@ -447,8 +444,8 @@ int main(int argc, char* argv[]) {
     // Results export
     std::string json_out = output_dir + "/catenary_results.json";
     std::string h5_out = output_dir + "/catenary_results.h5";
-    risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, total_depth_z, water_surface_z, json_out);
-    risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, total_depth_z, water_surface_z, h5_out);
+    risersim::SimulationExporter::export_json(static_analysis, dynamic_analysis, model->environmental.seabed_depth_z, model->environmental.water_surface_z, json_out);
+    risersim::SimulationExporter::export_hdf5(static_analysis, dynamic_analysis, model->environmental.seabed_depth_z, model->environmental.water_surface_z, h5_out);
 
     std::cout << "\nResults exported to:" << std::endl;
     std::cout << "   " << json_out << std::endl;

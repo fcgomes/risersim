@@ -123,7 +123,9 @@ Minimal usage example:
         .def_readwrite("rho_fluid",  &BeamMaterialProps::rho_fluid,
                        "Internal fluid density (kg/m3).")
         .def_readwrite("Ca",         &BeamMaterialProps::Ca,
-                       "Hydrodynamic added mass coefficient.");
+                       "Hydrodynamic added mass coefficient.")
+        .def_readwrite("Cd",         &BeamMaterialProps::Cd,
+                       "Hydrodynamic drag coefficient.");
 
     // =========================================================================
     // CorotationalBeam3D

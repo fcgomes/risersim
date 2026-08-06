@@ -411,6 +411,7 @@ class PreprocessorApp {
                 <td>${this.formatKNm2(sp.EI)}</td>
                 <td>${fmt(sp.weight_wet_kNm, 4)}</td>
                 <td>${fmt(sp.Ca, 2)}</td>
+                <td>${fmt(sp.Cd, 2)}</td>
             `;
             tbody.appendChild(tr);
         });
@@ -448,7 +449,7 @@ class PreprocessorApp {
                 <td>${fmt(sp.D_outer)}</td><td>${fmt(sp.D_inner)}</td>
                 <td>${this.formatSci(sp.IY)}</td><td>${this.formatSci(sp.IZ)}</td><td>${this.formatSci(sp.J)}</td><td>${this.formatKNm2(sp.EI, 1)}</td>
                 <td>${fmt(sp.weight_wet_kNm)}</td><td>${fmt(sp.rho)}</td><td>${fmt(sp.rho_fluid)}</td>
-                <td>${fmt(sp.Ca)}</td>
+                <td>${fmt(sp.Ca)}</td><td>${fmt(sp.Cd)}</td>
             `;
             tbody.appendChild(tr);
         });

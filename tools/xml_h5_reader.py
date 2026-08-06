@@ -281,7 +281,8 @@ class ANFLEXXmlH5Reader:
                 "D_outer": material["outer_diameter_m"],
                 "D_inner": material["inner_diameter_m"],
                 "rho_fluid": material.get("internal_fluid_density_kgm3", 1025.0),
-                "Ca": material["Cm"] - 1.0
+                "Ca": material["Cm"] - 1.0,
+                "Cd": material.get("Cd", 1.0),
             }
 
         # 2. Condições de Contorno

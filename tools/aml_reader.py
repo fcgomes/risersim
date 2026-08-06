@@ -485,6 +485,7 @@ class ANFLEXAMLReader:
                 'D_inner':   mat['inner_diameter_m'],
                 'rho_fluid': glb['water_density_kgm3'],  # Assume fluido interno = água (conservador)
                 'Ca':        mat['Cm'] - 1.0,            # Cm = 1 + Ca
+                'Cd':        mat['Cd'],
             },
             'geometry': {
                 'num_elements': num_elements,
