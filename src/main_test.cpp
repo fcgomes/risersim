@@ -263,6 +263,11 @@ int main(int argc, char* argv[]) {
                             ec.current_velocities_ms = vels;
                             ec.current_angles_deg = curr.value("angles_deg", std::vector<double>{90.0});
                         }
+                        // Rampa de carga real da corrente (independente de current_enabled --
+                        // StaticAnalysis só a consome quando current_enabled é verdadeiro, mas não
+                        // custa nada guardar se veio no JSON).
+                        ec.current_ramp_x = curr.value("ramp_x", std::vector<double>{});
+                        ec.current_ramp_y = curr.value("ramp_y", std::vector<double>{});
                     }
                     if (env.contains("wave")) {
                         auto wave = env["wave"];

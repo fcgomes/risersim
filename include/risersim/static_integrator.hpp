@@ -26,12 +26,17 @@ public:
     explicit StaticIntegrator(Analysis* a) : analysis(a) {}
 
     /**
-     * @brief Assembles the external load vector (submerged weight + current drag) for a given load factor.
+     * @brief Assembles the external load vector (submerged weight + current drag).
      *
      * Mirrors the gravity/current portion of ANFLEX's `cStaticIntegrator::form_global_load_vector`.
-     * @param load_factor Load scaling factor in [0, 1], for incremental load stepping.
+     * Submerged weight (self-weight + buoyancy) is always applied at full magnitude -- real
+     * ANFLEX never ramps it either (`cBar::calc_weight_load`'s `m_has_gravitational_load` gate is
+     * never set anywhere in its source, so the ramp branch is dead code there). Only current
+     * drag is scaled, by its own independent ramp -- see `EnvironmentalConfig::current_ramp_x/y`
+     * and `docs/mapa_classes_anflex_estatica.md`.
+     * @param current_factor Current-drag load scaling factor in [0, 1], for incremental load stepping.
      */
-    Eigen::VectorXd assemble_load_vector(double load_factor) const;
+    Eigen::VectorXd assemble_load_vector(double current_factor) const;
 
     void assemble_stiffness_and_internal_forces(int iter,
                                                  Eigen::SparseMatrix<double>& K_global,

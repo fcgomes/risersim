@@ -192,13 +192,12 @@ class ANFLEXXmlH5Reader:
             }
         return material_data
 
-    def extract_current_profile(self):
-        """Lê o perfil de corrente real associado ao caso de carregamento do XML.
-
-        O perfil fica em Currents/<Nome>/profile/values, como linhas
-        "profundidade|ângulo|velocidade" (profundidade medida a partir do leito
-        marinho, crescente em direção à superfície). O current_id usado é o do
-        primeiro caso de carregamento (LoadingCases/<Caso>/current_id).
+    def _find_chosen_current(self):
+        """Localiza o elemento Currents/<Nome> associado ao primeiro caso de
+        carregamento (LoadingCases/<Caso>/current_id), com fallback pro primeiro
+        caso de corrente do XML se não achar/não houver current_id. Compartilhado
+        por extract_current_profile() e extract_current_ramp() -- mesmo caso de
+        corrente alimenta tanto o perfil quanto a curva de rampa de carga.
         """
         current_id = None
         loading_cases = self.root.find(".//LoadingCases")
@@ -225,6 +224,16 @@ class ANFLEXXmlH5Reader:
                         pass
             if chosen is None:
                 chosen = currents_root[0]
+        return chosen
+
+    def extract_current_profile(self):
+        """Lê o perfil de corrente real associado ao caso de carregamento do XML.
+
+        O perfil fica em Currents/<Nome>/profile/values, como linhas
+        "profundidade|ângulo|velocidade" (profundidade medida a partir do leito
+        marinho, crescente em direção à superfície).
+        """
+        chosen = self._find_chosen_current()
 
         depths, angles, vels = [], [], []
         if chosen is not None:
@@ -254,6 +263,69 @@ class ANFLEXXmlH5Reader:
         vels = [vels[i] for i in order]
 
         return depths, angles, vels
+
+    def extract_current_ramp(self):
+        """Lê a curva real de rampa de carga da corrente (Currents/<caso>/static_function_id
+        -> Functions/<Tag>/id -> Functions/<Tag>/points no HDF5).
+
+        No ANFLEX real, o peso próprio nunca é rampeado (m_has_gravitational_load nunca é
+        atribuído no código-fonte -- fica sempre com magnitude total), mas a corrente é
+        rampeada por uma curva própria e independente, tipicamente mantendo a corrente
+        praticamente zerada no primeiro passo de carga e só crescendo gradualmente até o
+        valor total no último passo -- ver mapa_classes_anflex_estatica.md. O eixo X é
+        normalizado pelo seu próprio máximo (domínio vira fração [0,1] do total de passos
+        daquela curva), pra poder ser reamostrado com qualquer número de passos de carga
+        configurado no risersim, sem depender do static_steps bater exatamente com o X
+        original do XML.
+
+        Retorna (ramp_x, ramp_y); listas vazias se o XML não tiver static_function_id ou a
+        função correspondente (fallback: risersim usa a mesma rampa do peso, comportamento
+        anterior a esta mudança).
+        """
+        chosen = self._find_chosen_current()
+        if chosen is None:
+            return [], []
+
+        func_id_el = chosen.find("static_function_id")
+        if func_id_el is None or not func_id_el.text:
+            return [], []
+        try:
+            func_id = int(float(func_id_el.text))
+        except ValueError:
+            return [], []
+
+        # Filho direto da raiz -- só o catálogo real de funções (TempFunc/StaTfDef/DispFunc/...).
+        # ".//Functions" pegaria o primeiro na ordem do documento, que na prática é outro elemento
+        # de mesmo nome em LoadingCases/.../Loads/Functions (X/Y/Z/RX/RY/RZ, sem relação nenhuma
+        # com static_function_id de corrente) -- confirmado lendo a árvore real do Exemplo_01a.
+        functions_root = self.root.find("Functions")
+        if functions_root is None:
+            return [], []
+        func_elem = None
+        for child in functions_root:
+            id_el = child.find("id")
+            if id_el is not None and id_el.text:
+                try:
+                    if int(float(id_el.text)) == func_id:
+                        func_elem = child
+                        break
+                except ValueError:
+                    pass
+        if func_elem is None:
+            return [], []
+
+        dataset_path = f"Functions/{func_elem.tag}/points"
+        if dataset_path not in self.h5:
+            return [], []
+        ds = self.h5[dataset_path]
+        xs = [float(row[0]) for row in ds]
+        ys = [float(row[1]) for row in ds]
+        if not xs or max(xs) <= 0.0:
+            return [], []
+
+        x_max = max(xs)
+        ramp_x = [x / x_max for x in xs]
+        return ramp_x, ys
 
     def to_risersim_json(self):
         """Converte a modelagem XML+H5 para o novo formato JSON estruturado."""
@@ -333,6 +405,7 @@ class ANFLEXXmlH5Reader:
         # 6. Corrente (perfil real lido de Currents/<id>/profile, associado ao
         # current_id do primeiro caso de carregamento)
         curr_depths, curr_angles, curr_vels = self.extract_current_profile()
+        curr_ramp_x, curr_ramp_y = self.extract_current_ramp()
 
         # Montagem do JSON estruturado
         data = {
@@ -354,7 +427,9 @@ class ANFLEXXmlH5Reader:
                 "current": {
                     "depths_m": curr_depths,
                     "velocities_ms": curr_vels,
-                    "angles_deg": curr_angles
+                    "angles_deg": curr_angles,
+                    "ramp_x": curr_ramp_x,
+                    "ramp_y": curr_ramp_y
                 },
                 "wave": {
                     "type": "JONSWAP",

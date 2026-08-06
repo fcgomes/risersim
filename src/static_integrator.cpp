@@ -9,7 +9,7 @@
 
 namespace risersim {
 
-Eigen::VectorXd StaticIntegrator::assemble_load_vector(double load_factor) const {
+Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) const {
     Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(analysis->num_dofs);
     auto* model = analysis->model;
     if (!model) return F_ext;
@@ -20,7 +20,7 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double load_factor) const
 
         double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
         double w_buoyancy = analysis->water_density * elem->outer_area() * g;
-        double elem_weight_total = (w_dry - w_buoyancy) * L * load_factor;
+        double elem_weight_total = (w_dry - w_buoyancy) * L;
 
         int eq1_z = elem->node1->eq_numbers[2];
         int eq2_z = elem->node2->eq_numbers[2];
@@ -65,10 +65,10 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double load_factor) const
                 int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
 
                 double L_exposed = L * exposed_fraction;
-                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L_exposed * 0.5 * load_factor;
-                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L_exposed * 0.5 * load_factor;
-                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L_exposed * 0.5 * load_factor;
-                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L_exposed * 0.5 * load_factor;
+                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L_exposed * 0.5 * current_factor;
+                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L_exposed * 0.5 * current_factor;
+                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L_exposed * 0.5 * current_factor;
+                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L_exposed * 0.5 * current_factor;
             }
         }
     }

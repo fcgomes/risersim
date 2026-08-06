@@ -39,6 +39,19 @@ struct EnvironmentalConfig {
     std::vector<double> current_velocities_ms;
     std::vector<double> current_angles_deg;
 
+    /**
+     * @brief Real load-ramp curve for current force, read from the ANFLEX XML's
+     * `Currents/<case>/static_function_id` function (`x` normalized to fraction-of-total-steps
+     * `[0,1]`, `y` the load fraction `[0,1]`). Empty when the source JSON doesn't carry this
+     * data (synthetic models, older JSONs) -- StaticAnalysis falls back to the same half-cosine
+     * ramp used for weight in that case. Real ANFLEX never ramps self-weight (its
+     * `m_has_gravitational_load` gate is never set anywhere in the source), only current uses a
+     * ramp -- and it's a curve of its own, independent from any structural load ramp. See
+     * docs/mapa_classes_anflex_estatica.md.
+     */
+    std::vector<double> current_ramp_x;
+    std::vector<double> current_ramp_y;
+
     // Onda: guardado aqui já (o JSON já traz esses dados reais), mas ainda não consumido pela
     // física da análise dinâmica -- ver docs/mapa_classes_anflex_estatica.md, fase 3 do plano de
     // eliminação de dados hardcoded (JONSWAP/Morison real fica pra uma rodada própria).

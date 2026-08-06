@@ -18,6 +18,26 @@ namespace risersim {
 
 namespace {
 
+/**
+ * @brief Linear interpolation of a real current load-ramp curve at fraction-of-steps `t`.
+ *
+ * `x_table` is assumed sorted ascending (already normalized to `[0,1]` at JSON-conversion time,
+ * see `xml_h5_reader.py::extract_current_ramp`); clamps to the first/last `y` outside the table's
+ * range, same edge behavior as `CurrentProfile`'s own depth interpolation.
+ */
+double interp_ramp(const std::vector<double>& x_table, const std::vector<double>& y_table, double t) {
+    if (t <= x_table.front()) return y_table.front();
+    if (t >= x_table.back()) return y_table.back();
+    for (size_t i = 0; i + 1 < x_table.size(); ++i) {
+        if (t >= x_table[i] && t <= x_table[i + 1]) {
+            double span = x_table[i + 1] - x_table[i];
+            double frac = (span > 1.0e-12) ? (t - x_table[i]) / span : 0.0;
+            return y_table[i] + frac * (y_table[i + 1] - y_table[i]);
+        }
+    }
+    return y_table.back();
+}
+
 /** @brief Per-node state saved/restored around a line-search trial step. */
 struct NodeStateSnapshot {
     Eigen::Vector3d disp, rot;
@@ -263,18 +283,28 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     ConvergenceTest convergence_test(convergence_config);
 
     for (int step = 1; step <= steps; ++step) {
-        // Rampa em meio-cosseno (0.5*(1-cos(pi*t))), igual à cRampFunction real do ANFLEX
-        // (libs/anf_movements/src/ramp_function.cpp), em vez de uma rampa linear. Derivada zero
-        // no início E no fim do carregamento -- uma rampa linear tem incremento de carga
-        // constante até o último passo, com uma quebra abrupta bem onde a saturação de atrito em
-        // muitos nós simultaneamente (o padrão de resíduo já observado na divergência
-        // solo+corrente) tende a acontecer. Ver mapa_classes_anflex_estatica.md.
         double t = static_cast<double>(step) / static_cast<double>(steps);
-        double load_factor = 0.5 * (1.0 - std::cos(std::numbers::pi * t));
-        std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Load Factor: "
-                  << std::fixed << std::setprecision(1) << (load_factor * 100.0) << "%" << std::endl;
 
-        Eigen::VectorXd F_ext = integrator.assemble_load_vector(load_factor);
+        // Peso próprio nunca é rampeado (nem aqui, nem no ANFLEX real -- ver o comentário em
+        // StaticIntegrator::assemble_load_vector). Só a corrente tem rampa, e é uma curva própria,
+        // independente do peso: quando o JSON traz a curva real (lida do XML/HDF5 do ANFLEX,
+        // Currents/<caso>/static_function_id), interpola linearmente nela; senão, cai de volta na
+        // mesma rampa de meio-cosseno de sempre (0.5*(1-cos(pi*t))), igual à cRampFunction real do
+        // ANFLEX (libs/anf_movements/src/ramp_function.cpp) -- comportamento inalterado para
+        // modelos sem dado real de rampa (sintéticos, JSONs antigos). Ver
+        // mapa_classes_anflex_estatica.md.
+        const auto& ramp_x = model->environmental.current_ramp_x;
+        const auto& ramp_y = model->environmental.current_ramp_y;
+        double current_factor;
+        if (ramp_x.size() >= 2 && ramp_x.size() == ramp_y.size()) {
+            current_factor = interp_ramp(ramp_x, ramp_y, t);
+        } else {
+            current_factor = 0.5 * (1.0 - std::cos(std::numbers::pi * t));
+        }
+        std::cout << "\n[Static Load Step " << std::setw(2) << step << "/" << steps << "] Current Factor: "
+                  << std::fixed << std::setprecision(1) << (current_factor * 100.0) << "%" << std::endl;
+
+        Eigen::VectorXd F_ext = integrator.assemble_load_vector(current_factor);
 
         // StaticIntegrator decides artificial stiffness via this flag, rather than
         // an inline condition inside the iteration loop -- which lets the same
@@ -376,7 +406,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 std::cout << "  ✅ Step " << step << " Converged in " << iter << " iterations! (incremento transl/rot = "
                           << ratio_transl << " / " << ratio_rot << ", norm_R = " << norm_R << " N)" << std::endl;
                 step_converged = true;
-                history.push_back(capture_snapshot(model, step, load_factor));
+                history.push_back(capture_snapshot(model, step, t));
                 break;
             }
         }

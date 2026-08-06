@@ -526,6 +526,65 @@ natural dado que a "parede" em ~iter 20-30 tem a assinatura de muitos nós mudan
 inspecionar diretamente quantos nós cruzam `pen=0` simultaneamente nessa janela de iterações antes
 de mudar mais código.
 
+## Correção da Hipótese 1: peso não é rampeado no ANFLEX real -- só a corrente, por uma curva própria
+
+Retomando solo+corrente numa nova rodada. A Hipótese 1 acima (rampa em meio-cosseno aplicada junto
+a peso/empuxo/corrente) estava **parcialmente errada**, descoberto lendo `bar.cpp`/`beamSD.cpp`
+diretamente em vez de só `ramp_function.cpp`: `cBar::calc_weight_load` (`bar.cpp:785-786`, idêntico
+em `beamSD.cpp:1225-1226`) só aplica o fator de rampa (`AFATDB`/`m_gravitational_factor`) se
+`m_has_gravitational_load` (`IWDB`) for verdadeiro -- e esse campo **nunca é atribuído em lugar
+nenhum do código-fonte** (`grep` completo em `src/`, só é lido). É código morto: **peso próprio
+(+ empuxo) sempre entra com magnitude total, sem rampa nenhuma, desde o primeiro passo**, em todo
+o ANFLEX real.
+
+A corrente, por sua vez, **é** rampeada -- mas por uma curva própria e independente, não a mesma
+rampa estrutural. `Currents/Cor_S/static_function_id` aponta pra uma função (`Functions/StaTfDef`
+no Exemplo_01a) cujos pontos reais (lidos do HDF5, `Functions/StaTfDef/points`) são
+`(X=0,Y=0), (X=1,Y=0), (X=11,Y=1)` -- a corrente fica praticamente **zerada durante todo o primeiro
+passo de carga** (`static_steps=11`) e só cresce gradualmente até o valor total no último passo. Não
+é a mesma curva de meio-cosseno usada antes, e não tem relação nenhuma com o peso.
+
+**Implementado**: peso desacoplado de qualquer rampa (`StaticIntegrator::assemble_load_vector`,
+`static_integrator.cpp`, magnitude total sempre); corrente ganhou sua própria curva de rampa real,
+lida do XML/HDF5 (`xml_h5_reader.py::extract_current_ramp()`, normalizada pro domínio `[0,1]` de
+fração-de-passos e escrita em `environmental.current.ramp_x`/`ramp_y` no JSON) e interpolada
+linearmente por passo em `StaticAnalysis::solve_catenary_static` (`static_analysis.cpp`); quando o
+JSON não tem essa curva (modelos sintéticos, JSONs antigos), cai de volta na mesma rampa de
+meio-cosseno de sempre para a corrente -- comportamento inalterado nesse caso.
+
+**Resultado no Exemplo_01a completo (500 elementos, solo+corrente reais)**: a Fase 2 (carga total
+num único passo, sem rigidez artificial) -- que antes explodia catastroficamente e nunca recuperava
+-- agora **converge de verdade**, dado um orçamento maior de iterações (300 em vez do padrão 40 lido
+do XML): resíduo sobe a ~3e7 nas primeiras iterações e depois **decresce establemente** até
+convergir na iteração 190 (T_eff=257,4 kN no topo, valor plausível). É uma mudança qualitativa real
+-- de "explode e nunca recupera" (o padrão de todas as tentativas anteriores desta investigação,
+incluindo com 150-200 iterações no Exemplo_02a) para "pico controlado e convergência genuína,
+só que mais devagar que o padrão de 40 iterações real do ANFLEX".
+
+**Trade-off real encontrado e aceito deliberadamente** (peso deixar de ser rampeado é incondicional,
+afeta qualquer caso, não só solo+corrente): dois casos que antes convergiam limpo com 40 iterações
+passaram a precisar de mais:
+- **300 elementos sem solo/corrente**: resíduo cai a ~1e-4 (praticamente zero) mas oscila sem nunca
+  satisfazer o critério de razão de incremento -- o mesmo "chattering perto do limite" já
+  documentado antes (seção "Retomando a investigação" acima), resolvido de verdade pela válvula de
+  escape já existente (`enable_unbalanced_criteria`).
+- **30 elementos perto do touchdown, só solo (sem corrente)**: mais sério -- falha no passo 6 com
+  resíduo genuinamente grande (~1,5e4), e a válvula de escape **não** resolve, nem com 200 iterações.
+  Atribuível ao peso pular pra 100% já no passo 1 em vez de entrar gradualmente, tornando a
+  regularização por rigidez artificial do primeiro passo mais difícil nesse caso específico.
+
+**Decisão do usuário**: aceitar e documentar como trade-off conhecido, sem mudar o default de
+`max_iterations` nem investigar mais fundo o caso de 30 elementos nesta rodada. Fidelidade real ao
+ANFLEX (peso sempre pleno) prevalece sobre manter esses dois casos convergindo com o orçamento
+padrão de iterações.
+
+**Lacuna que permanece em aberto**: mesmo no caso alvo (Exemplo_01a completo), risersim precisa de
+~190 iterações onde o `num_max_iter=40` real do XML sugere que o ANFLEX real converge dentro desse
+orçamento -- uma diferença de eficiência/fidelidade que esta correção não fecha. Candidatos não
+investigados: o `BETA` de rigidez artificial do ANFLEX pode decair *entre* passos (não ser resetado
+a cada novo passo como o risersim faz hoje), fazendo os 11 passos funcionarem como um refinamento
+gradual da regularização em vez de (só) um ramp de carga -- ainda não confirmado lendo o código real.
+
 ## Ver também
 
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).
