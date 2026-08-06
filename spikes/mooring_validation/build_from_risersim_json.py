@@ -1,6 +1,7 @@
 """
-Converte o JSON estruturado do risersim (o mesmo lido por risersim/src/main_test.cpp)
-em um moorpy.System pronto para resolver o equilibrio quasi-estatico.
+Converte o JSON estruturado do risersim (o mesmo lido por risersim::ModelBuilder,
+risersim/src/model_builder.cpp) em um moorpy.System pronto para resolver o equilibrio
+quasi-estatico.
 
 Nao mexe no motor C++ do risersim -- e um script isolado, so leitura do JSON.
 """
@@ -80,7 +81,7 @@ def build_system_from_json(json_path, rho_water_override=None, g=9.81, top_xyz_o
 
     # 3. Comprimento nao-esticado: soma das distancias no->no ao longo da
     #    linha, na mesma ordem dos elementos (mesma logica que
-    #    main_test.cpp usa por elemento, so que somada para a linha toda).
+    #    ModelBuilder usa por elemento, so que somada para a linha toda).
     #    As coordenadas do JSON ja sao a geometria "instalada" (lida do H5),
     #    entao essa soma e uma boa aproximacao do comprimento real da linha.
     L_unstretched = 0.0

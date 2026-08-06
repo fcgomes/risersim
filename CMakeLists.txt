@@ -42,6 +42,8 @@ add_library(risersim_core STATIC
     src/dynamic_analysis.cpp
     src/simulation_exporter.cpp
     src/hydrodynamics.cpp
+    src/model_builder.cpp
+    src/simulation.cpp
 )
 
 target_include_directories(risersim_core PUBLIC
@@ -83,7 +85,7 @@ endif()
 target_link_libraries(risersim_core PUBLIC Eigen3::Eigen nlohmann_json::nlohmann_json)
 
 # Executable test — links against risersim_core (no source duplication)
-add_executable(risersim_test_main src/main_test.cpp)
+add_executable(risersim_test_main src/main.cpp)
 target_link_libraries(risersim_test_main PRIVATE risersim_core)
 
 # Diagnostico: isola um pedaco pequeno da malha real para investigar a

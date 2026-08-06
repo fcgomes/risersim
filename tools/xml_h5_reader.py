@@ -308,9 +308,9 @@ class ANFLEXXmlH5Reader:
             return [0.0, 265.0], [90.0, 90.0], [1.02, 0.27]
 
         # "Depth" no XML é medido a partir do leito marinho (0=fundo, crescente
-        # até a superfície) — mesma convenção dos nós do modelo. main_test.cpp
-        # só consome o índice [0] como valor de superfície, então inverte-se a
-        # ordem para que o ponto mais raso (perto da superfície) fique primeiro.
+        # até a superfície) — mesma convenção dos nós do modelo. Simulation::run()
+        # (risersim/src/simulation.cpp) só consome o índice [0] como valor de superfície,
+        # então inverte-se a ordem para que o ponto mais raso (perto da superfície) fique primeiro.
         order = sorted(range(len(depths)), key=lambda i: depths[i], reverse=True)
         depths = [depths[i] for i in order]
         angles = [angles[i] for i in order]

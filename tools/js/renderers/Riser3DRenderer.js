@@ -214,7 +214,8 @@ export class Riser3DRenderer {
         // cobrir o fundo do mar e a superfície -- não só a extensão dos nós deste passo -- assim
         // a caixa (e os planos) nunca "escondem" parte da lâmina d'água real. `1.0e5` descarta o
         // sentinela usado quando o solo está desligado via `environmental.seabed.enabled=false`
-        // (empurrado a -1e6, ver main_test.cpp), que não representa uma posição real de solo.
+        // (empurrado a -1e6, ver ModelBuilder::load_from_json() em model_builder.cpp), que não
+        // representa uma posição real de solo.
         if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
             minY = Math.min(minY, seabedDepth);
             maxY = Math.max(maxY, seabedDepth);
@@ -326,8 +327,8 @@ export class Riser3DRenderer {
         };
 
         // Descarta o sentinela usado quando o solo está desligado (environmental.seabed.enabled=
-        // false empurra o fundo pra -1e6, ver main_test.cpp) -- nesse caso não há plano de fundo
-        // real pra desenhar.
+        // false empurra o fundo pra -1e6, ver ModelBuilder::load_from_json() em
+        // model_builder.cpp) -- nesse caso não há plano de fundo real pra desenhar.
         if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
             addPlane(seabedDepth, seabedColor, 0.4, 1);
         }

@@ -22,7 +22,7 @@
  *
  * The two nodes at the ends of the slice are fixed at their real position (read from the
  * JSON); internal nodes are free (translation + rotation), matching the full model. The rest
- * of the physics/solver is identical to `main_test.cpp`.
+ * of the physics/solver is identical to `risersim::Simulation::run()` (simulation.cpp).
  */
 #include <iostream>
 #include <fstream>
@@ -154,7 +154,7 @@ int main(int argc, char** argv) {
 
     risersim::StaticAnalysis sa;
     sa.model = model;
-    // Same as main_test.cpp when the model comes from JSON: submerged weight is
+    // Same as Simulation::run() when the model comes from JSON: submerged weight is
     // already embedded in props.rho, so water_density (for buoyancy) stays 0.
     sa.water_density = 0.0;
     sa.water_density_for_mass = 1025.0;
@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
     if (current_mode == 1) {
         // REAL current from Exemplo_01a (environmental.current in the full JSON):
         // v=1.78 m/s, heading=270 degrees, power-law profile (alpha=0.1428),
-        // exactly as main_test.cpp configures it from JSON.
+        // exactly as Simulation::run() configures it from JSON.
         sa.enable_current = true;
         sa.current = risersim::CurrentProfile(1.78, -1.52608e-05, 270.0, 0.1428, 1.0);
         std::cout << "REAL current enabled (v=1.78 m/s, heading=270)" << std::endl;

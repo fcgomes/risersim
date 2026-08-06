@@ -11,7 +11,8 @@ import { initThemeToggle } from './ui/ThemeToggle.js';
 /**
  * preprocessor_app.js
  * Controlador principal do pré-processador web: inspeciona/valida o JSON de ENTRADA consumido
- * por main_test.cpp, ANTES de rodar a simulação -- não os resultados (isso é posprocessor.html/app.js).
+ * por risersim::ModelBuilder, ANTES de rodar a simulação -- não os resultados (isso é
+ * posprocessor.html/app.js).
  */
 class PreprocessorApp {
     constructor() {
@@ -92,7 +93,8 @@ class PreprocessorApp {
     }
 
     /**
-     * Espelha a lógica de posicionamento de solo/superfície de main_test.cpp:104-336 --
+     * Espelha a lógica de posicionamento de solo/superfície de ModelBuilder::load_from_json()
+     * (risersim/src/model_builder.cpp) --
      * seabed.enabled=false empurra o fundo para -1e6 (sem contato possível) e aproxima a
      * superfície pelo nó mais alto; caso contrário o fundo fica no Z mínimo real dos nós.
      * @returns {[number|null, number|null]}
@@ -307,7 +309,7 @@ class PreprocessorApp {
     }
 
     /**
-     * Tabela elemento-por-elemento com TODAS as propriedades de seção lidas por main_test.cpp
+     * Tabela elemento-por-elemento com TODAS as propriedades de seção lidas por ModelBuilder
      * (não um subconjunto) -- só os IDs dos nós, sem coordenadas (isso fica na tabela de Nós,
      * evitando repetir a mesma coordenada uma vez por elemento adjacente).
      */

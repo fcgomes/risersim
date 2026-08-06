@@ -1,7 +1,7 @@
 /**
  * ElementSection.js
  * Encapsula um elemento de viga do JSON de ENTRADA (não deformado, pré-solução) -- conectividade
- * de nós + propriedades de seção brutas, como lidas pelo main_test.cpp (não escalares de
+ * de nós + propriedades de seção brutas, como lidas pelo ModelBuilder (não escalares de
  * resultado já resolvido, que é o que BeamElement3D representa).
  */
 export class ElementSection {

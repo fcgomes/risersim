@@ -5,7 +5,7 @@ risersim/spikes/mooring_validation/, ~1% de erro vs. o resultado real do
 ANFLEX no Exemplo_01a) e adiciona ao JSON uma secao `warm_start` com a
 posicao de cada no nessa geometria de equilibrio.
 
-`risersim/src/main_test.cpp` consome essa secao (se presente) para usar
+`risersim::ModelBuilder` (risersim/src/model_builder.cpp) consome essa secao (se presente) para usar
 como chute inicial do solver estatico proprio, em vez da geometria de
 referencia crua lida do H5 -- que hoje faz o Newton-Raphson do risersim
 divergir no Exemplo_01a real. Sem a secao `warm_start`, o comportamento do

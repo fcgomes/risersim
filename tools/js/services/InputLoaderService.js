@@ -3,9 +3,10 @@ import { ElementSection } from '../models/ElementSection.js';
 
 /**
  * InputLoaderService.js
- * Carrega e valida o JSON de ENTRADA consumido por main_test.cpp (não o JSON de resultados que
- * DataLoaderService.js lê) -- model.nodes/elements, boundary_conditions, environmental,
- * analysis_options. Ver risersim/src/main_test.cpp:104-336 para o schema exato que espelha.
+ * Carrega e valida o JSON de ENTRADA consumido por risersim::ModelBuilder (não o JSON de
+ * resultados que DataLoaderService.js lê) -- model.nodes/elements, boundary_conditions,
+ * environmental, analysis_options. Ver risersim/src/model_builder.cpp,
+ * ModelBuilder::load_from_json(), para o schema exato que espelha.
  */
 export class InputLoaderService {
     /**
@@ -51,7 +52,7 @@ export class InputLoaderService {
 
         if (!hasModel) {
             // Chaves conhecidas do schema legado produzido por aml_reader.py quando não há
-            // XML+H5 do modelo real -- main_test.cpp não entende esse schema e cai
+            // XML+H5 do modelo real -- ModelBuilder não entende esse schema e cai
             // silenciosamente no modelo sintético padrão (catenária de 40 elementos).
             const legacyKeys = ['beam_props', 'geometry', 'offsets', 'rayleigh', 'simulation_options']
                 .filter(k => j && j[k] !== undefined);
@@ -59,10 +60,10 @@ export class InputLoaderService {
                 level: 'error',
                 message: legacyKeys.length > 0
                     ? `Schema incompatível detectado (chaves do formato legado: ${legacyKeys.join(', ')}). ` +
-                      `Este arquivo NÃO será reconhecido por main_test.cpp -- ele vai cair silenciosamente ` +
+                      `Este arquivo NÃO será reconhecido por risersim (ModelBuilder) -- ele vai cair silenciosamente ` +
                       `no modelo sintético padrão (uma catenária de 40 elementos), ignorando os dados reais.`
                     : `"model.nodes"/"model.elements" ausentes ou vazios. Este arquivo vai cair no modelo ` +
-                      `sintético padrão do main_test.cpp em vez de usar os dados deste arquivo.`
+                      `sintético padrão do ModelBuilder em vez de usar os dados deste arquivo.`
             });
             return { valid: false, warnings, raw: j };
         }
@@ -86,7 +87,7 @@ export class InputLoaderService {
 
         // Detecção de dobra ("kink"): ângulo entre a direção de elementos consecutivos que
         // compartilham um nó. Assume que os elementos estão ordenados ao longo da linha, como
-        // main_test.cpp assume implicitamente (não há grafo de conectividade explícito checado).
+        // ModelBuilder assume implicitamente (não há grafo de conectividade explícito checado).
         const dirs = elements.map(e => {
             const n1 = nodeById.get(e.node1Id), n2 = nodeById.get(e.node2Id);
             if (!n1 || !n2) return null;
@@ -122,14 +123,14 @@ export class InputLoaderService {
             warnings.push({
                 level: 'info',
                 message: `environmental.seabed.axial_friction/lateral_friction ausentes -- ` +
-                          `main_test.cpp vai usar friction_coeff=${seabed.friction_coeff} isotrópico ` +
+                          `ModelBuilder vai usar friction_coeff=${seabed.friction_coeff} isotrópico ` +
                           `para as duas direções em vez de valores axial/lateral distintos.`
             });
         }
         if (env.seabed && seabed.soil_model === undefined) {
             warnings.push({
                 level: 'info',
-                message: `environmental.seabed.soil_model ausente -- main_test.cpp assume "uncoupled" por padrão.`
+                message: `environmental.seabed.soil_model ausente -- ModelBuilder assume "uncoupled" por padrão.`
             });
         }
 

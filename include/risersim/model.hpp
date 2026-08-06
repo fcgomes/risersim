@@ -19,8 +19,8 @@ namespace risersim {
 /**
  * @brief Environmental configuration (seabed/current/wave/water) parsed from the input JSON's
  * `environmental` block -- owned by RiserModel so it's the single place this data lives, instead
- * of scattered local variables in main_test.cpp that get assigned piecemeal onto
- * StaticAnalysis/DynamicAnalysis/SeabedInteraction/CurrentProfile after construction.
+ * of scattered local variables in ModelBuilder (model_builder.cpp) that get assigned piecemeal
+ * onto StaticAnalysis/DynamicAnalysis/SeabedInteraction/CurrentProfile after construction.
  */
 struct EnvironmentalConfig {
     bool seabed_enabled = true;
