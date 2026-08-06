@@ -1,16 +1,16 @@
 /**
  * shared.css
- * Casca de UI compartilhada entre preprocessor.html e posprocessor.html: tema claro/escuro,
- * esqueleto do layout de 3 regiões (sidebar de câmera | canvas | painel de dados em abas),
- * componentes genéricos (control-group/stat-card/botões/tabs), barra de ícones de câmera/zoom,
- * tooltip customizado, e a parte comum da tabela estilo planilha.
+ * UI shell shared between preprocessor.html and posprocessor.html: light/dark theme, the 3-region
+ * layout skeleton (camera sidebar | canvas | tabbed data panel), generic components
+ * (control-group/stat-card/buttons/tabs), the camera/zoom icon toolbar, the custom tooltip, and
+ * the common part of the spreadsheet-style table.
  *
- * O que NÃO está aqui, de propósito, porque é conteúdo específico de cada página (não duplicação
- * acidental): dimensionamento do #colorbar-legend/#colorbar-ticks/#colorbar-bar (o
- * pré-processador usa uma legenda simples de 140px pra diâmetro; o pós-processador usa uma versão
- * de 180px com offsets finos de tick pra resultados reais), table.kv-table (só
- * preprocessor.html), .warning-item/.tension-val/.status-seabed/.status-water, #model-status,
- * #current-chart, e o alinhamento de texto de table.excel-table (esquerda no pré, centro no pós).
+ * What's deliberately NOT here, because it's content specific to each page (not accidental
+ * duplication): sizing of #colorbar-legend/#colorbar-ticks/#colorbar-bar (the preprocessor uses a
+ * simple 140px diameter legend; the postprocessor uses a 180px version with fine tick offsets for
+ * real results), table.kv-table (preprocessor.html only), .warning-item/.tension-val/
+ * .status-seabed/.status-water, #model-status, #current-chart, and table.excel-table's text
+ * alignment (left in the preprocessor, center in the postprocessor).
  */
 
 body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #1e1e2e; color: #cdd6f4; overflow: hidden; transition: background-color 0.3s; }
@@ -60,13 +60,13 @@ body.light-mode #resizer-h:hover, body.light-mode #resizer-h.dragging { backgrou
 #header { padding: 12px 25px; border-bottom: 2px solid; display: flex; justify-content: space-between; align-items: center; height: 50px; box-sizing: border-box; }
 h1 { margin: 0; font-size: 20px; color: #89b4fa; }
 
-/* Layout principal: sidebar de câmera/zoom | canvas 3D | divisor arrastável | painel de dados (abas) */
+/* Main layout: camera/zoom sidebar | 3D canvas | drag handle | tabbed data panel */
 #main-layout { display: flex; height: calc(100vh - 50px); min-height: 0; }
-/* overflow: visible (não só overflow-y) -- setar só um eixo faz o navegador forçar o outro pra
-   "auto" (regra do próprio CSS Overflow Module), e o tooltip customizado ([data-tip]::after)
-   precisa vazar pra fora dos 78px da sidebar pra ficar legível -- isso sozinho já faz o
-   scrollWidth estourar e o navegador desenhar uma barra horizontal, mesmo sem overflow vertical
-   real. */
+/* overflow: visible (not just overflow-y) -- setting only one axis makes the browser force the
+   other one to "auto" (a CSS Overflow Module rule), and the custom tooltip ([data-tip]::after)
+   needs to overflow past the sidebar's 78px to stay legible -- that alone is enough to blow out
+   scrollWidth and make the browser draw a horizontal scrollbar, even with no real vertical
+   overflow. */
 #sidebar { width: 78px; flex-shrink: 0; padding: 10px 8px; border-right: 2px solid; box-sizing: border-box; overflow: visible; }
 #sidebar .control-group { padding: 8px 4px; }
 #sidebar .control-title { font-size: 9px; text-align: center; }
@@ -98,9 +98,8 @@ select, input[type="range"], input[type="file"], input[type="text"] { width: 100
 .btn-primary { background: #2563eb; color: #ffffff; }
 .btn-theme { background: #f59e0b; color: #11111b; font-weight: bold; border-radius: 6px; padding: 6px 14px; border: none; cursor: pointer; }
 
-/* Barra fina de ícones (vistas/zoom), em coluna -- botões quadrados pequenos, sem rótulo
-   de texto longo, com tooltip customizado (data-tip) em vez de botões largos
-   "🎲 Isométrica". */
+/* Thin column icon bar (views/zoom) -- small square buttons, no long text label, with a custom
+   tooltip (data-tip) instead of wide buttons like "🎲 Isometric". */
 .icon-toolbar { display: flex; flex-direction: column; gap: 4px; }
 .btn-icon-sm {
     width: 28px; height: 28px; padding: 0; box-sizing: border-box;
@@ -112,8 +111,8 @@ select, input[type="range"], input[type="file"], input[type="text"] { width: 100
 .btn-icon-sm.btn-primary, .btn-icon-sm.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
 body.light-mode .btn-icon-sm { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
 
-/* Tooltip customizado -- title nativo do browser tem delay/estilo inconsistente entre
-   navegadores; este aparece rápido e consistente com o tema claro/escuro da página. */
+/* Custom tooltip -- the browser's native title has inconsistent delay/styling across browsers;
+   this one appears quickly and matches the page's light/dark theme. */
 [data-tip] { position: relative; }
 [data-tip]::after {
     content: attr(data-tip);
@@ -127,12 +126,12 @@ body.light-mode .btn-icon-sm { background: #e2e8f0; color: #0f172a; border-color
 [data-tip]:hover::after { opacity: 1; }
 body.light-mode [data-tip]::after { background: #1e293b; color: #f8fafc; border-color: #334155; }
 
-/* Retângulo de arraste do "zoom por janela", desenhado sobre o canvas 3D. */
+/* Drag rectangle for "zoom by window", drawn over the 3D canvas. */
 #zoom-rect { position: absolute; display: none; border: 1px dashed #2563eb; background: rgba(37, 99, 235, 0.15); pointer-events: none; z-index: 25; }
 
-/* Parte comum da tabela estilo planilha -- alinhamento de texto fica de fora de propósito
-   (cada página declara o seu: esquerda no pré-processador -- listagens técnicas --, centro no
-   pós-processador -- dados numéricos de resultado). */
+/* Common part of the spreadsheet-style table -- text alignment is deliberately left out (each
+   page declares its own: left in the preprocessor -- technical listings --, center in the
+   postprocessor -- numeric result data). */
 table.excel-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.excel-table th, table.excel-table td { padding: 5px 10px; white-space: nowrap; }
 table.excel-table th { font-weight: bold; position: sticky; top: 0; }

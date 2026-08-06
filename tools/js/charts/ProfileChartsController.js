@@ -1,12 +1,12 @@
 /**
  * ProfileChartsController.js
- * Controlador OO de gráficos 2D interativos de perfil de engenharia (Plotly.js).
+ * OO controller for interactive 2D engineering profile charts (Plotly.js).
  */
 export class ProfileChartsController {
     /**
-     * @param {string} tensionChartDivId 
-     * @param {string} momentCurvChartDivId 
-     * @param {string} vonMisesChartDivId 
+     * @param {string} tensionChartDivId
+     * @param {string} momentCurvChartDivId
+     * @param {string} vonMisesChartDivId
      */
     constructor(tensionChartDivId = 'tension-chart', momentCurvChartDivId = 'moment-curv-chart', vonMisesChartDivId = 'vonmises-chart') {
         this.tensionDiv = tensionChartDivId;
@@ -16,14 +16,14 @@ export class ProfileChartsController {
     }
 
     /**
-     * Atualiza todos os 3 gráficos de perfil para o passo ativo
-     * @param {SimulationStep} step 
-     * @param {'dark'|'light'} currentTheme 
+     * Updates all 3 profile charts for the active step.
+     * @param {SimulationStep} step
+     * @param {'dark'|'light'} currentTheme
      */
     updateCharts(step, currentTheme = 'dark') {
         if (typeof Plotly === 'undefined' || !step || !step.elements || step.elements.length === 0) return;
 
-        // 1. Calcula o comprimento acumulado do arco s (arc-length s) ao longo da linha
+        // 1. Compute the cumulative arc length s along the line
         const arcLengths = [];
         let cumulativeS = 0;
         arcLengths.push(0);
@@ -39,7 +39,7 @@ export class ProfileChartsController {
             arcLengths.push(cumulativeS);
         }
 
-        // Pontos nos centros dos elementos
+        // Points at element centers
         const elementS = [];
         for (let i = 0; i < step.elements.length; ++i) {
             elementS.push(0.5 * (arcLengths[i] + arcLengths[i + 1]));
@@ -65,7 +65,7 @@ export class ProfileChartsController {
             yaxis: { gridcolor: gridColor, zerolinecolor: gridColor, font: { size: 13 } }
         };
 
-        // --- GRÁFICO 1: TRAÇÃO EFETIVA vs s ---
+        // --- CHART 1: EFFECTIVE TENSION vs s ---
         const traceTension = {
             x: elementS,
             y: tensions,
@@ -84,7 +84,7 @@ export class ProfileChartsController {
 
         Plotly.react(this.tensionDiv, [traceTension], layoutTension, { responsive: true, displayModeBar: true });
 
-        // --- GRÁFICO 2: MOMENTO FLETOR & CURVATURA vs s ---
+        // --- CHART 2: BENDING MOMENT & CURVATURE vs s ---
         const traceMoment = {
             x: elementS,
             y: moments,
@@ -122,7 +122,7 @@ export class ProfileChartsController {
 
         Plotly.react(this.momentCurvDiv, [traceMoment, traceCurvature], layoutMomentCurv, { responsive: true, displayModeBar: true });
 
-        // --- GRÁFICO 3: TENSÃO VON MISES vs s ---
+        // --- CHART 3: VON MISES STRESS vs s ---
         const traceVonMises = {
             x: elementS,
             y: vonMises,
@@ -133,10 +133,10 @@ export class ProfileChartsController {
             marker: { size: 6 }
         };
 
-        // 350 MPa casa com o default real do solver (CorotationalBeam3D::compute_stress_and_curvature,
-        // yield_stress_MPa=350.0 em element_beam.hpp) usado para normalizar o fator de segurança MBR --
-        // não é um valor exportado por modelo (o exportador não grava a tensão de escoamento usada),
-        // então isso é uma suposição alinhada ao default do código, não um dado real desta simulação.
+        // 350 MPa matches the solver's real default (CorotationalBeam3D::compute_stress_and_curvature,
+        // yield_stress_MPa=350.0 in element_beam.hpp) used to normalize the MBR safety factor --
+        // it's not a value exported per model (the exporter doesn't record the yield stress used),
+        // so this is an assumption aligned with the code's default, not real data from this simulation.
         const yieldStressMPa = 350;
         const traceYield = {
             x: [0, Math.max(...elementS)],

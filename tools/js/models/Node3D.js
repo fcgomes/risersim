@@ -1,13 +1,13 @@
 /**
  * Node3D.js
- * Encapsula as coordenadas e propriedades tridimensionais de um nó da malha FEA.
+ * Wraps the coordinates and 3D properties of an FEA mesh node.
  */
 export class Node3D {
     /**
-     * @param {number} id - Identificador único do nó (1-indexed)
-     * @param {number} x - Coordenada X (m)
-     * @param {number} y - Coordenada Y (m)
-     * @param {number} z - Coordenada Z (m / profundidade)
+     * @param {number} id - Unique node identifier (1-indexed)
+     * @param {number} x - X coordinate (m)
+     * @param {number} y - Y coordinate (m)
+     * @param {number} z - Z coordinate (m / depth)
      */
     constructor(id, x, y, z) {
         this.id = id;
@@ -17,9 +17,9 @@ export class Node3D {
     }
 
     /**
-     * Calcula a distância euclidiana até outro nó
-     * @param {Node3D} other 
-     * @returns {number} Distância em metros
+     * Computes the Euclidean distance to another node.
+     * @param {Node3D} other
+     * @returns {number} Distance in meters
      */
     distanceTo(other) {
         const dx = this.x - other.x;

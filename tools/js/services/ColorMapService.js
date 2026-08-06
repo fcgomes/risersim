@@ -1,15 +1,15 @@
 /**
  * ColorMapService.js
- * Serviço responsável por interpolar paletas de cores científicas (Jet, Viridis, Plasma, Turbo, Coolwarm).
+ * Service responsible for interpolating scientific color palettes (Jet, Viridis, Plasma, Turbo, Coolwarm).
  *
- * Viridis/Plasma/Turbo/Coolwarm são interpolados linearmente entre pontos de controle reproduzindo
- * as paletas reais (matplotlib/Google Turbo/Kenneth Moreland Coolwarm), em vez das fórmulas
- * trigonométricas ad-hoc usadas antes (que eram só visualmente parecidas, sem relação real com as
- * paletas cujo nome usavam). Poucos pontos de controle (8-9), não a LUT de 256 cores completa --
- * suficiente para uma legenda de cores contínua, sem embutir uma tabela grande no código.
+ * Viridis/Plasma/Turbo/Coolwarm are linearly interpolated between control points reproducing the
+ * real palettes (matplotlib/Google Turbo/Kenneth Moreland Coolwarm), instead of the ad-hoc
+ * trigonometric formulas used before (which were only visually similar, with no real relation to
+ * the palettes whose name they used). A handful of control points (8-9), not the full 256-color
+ * LUT -- enough for a continuous color legend, without embedding a large table in the code.
  */
 
-// Pontos de controle [t, r, g, b] (r,g,b em 0-255), t de 0.0 a 1.0.
+// Control points [t, r, g, b] (r,g,b in 0-255), t from 0.0 to 1.0.
 const STOPS = {
     Viridis: [
         [0.00, 68, 1, 84], [0.13, 72, 40, 120], [0.25, 62, 74, 137], [0.38, 49, 104, 142],
@@ -34,17 +34,17 @@ const STOPS = {
 
 export class ColorMapService {
     /**
-     * Interpola uma cor RGB baseada em um valor normalizado (0.0 a 1.0)
-     * @param {string} colormapName - Nome do mapa de cores
-     * @param {number} t - Valor entre 0.0 e 1.0
-     * @returns {{r: number, g: number, b: number}} Componentes normalizados de 0.0 a 1.0
+     * Interpolates an RGB color based on a normalized value (0.0 to 1.0).
+     * @param {string} colormapName - Colormap name
+     * @param {number} t - Value between 0.0 and 1.0
+     * @returns {{r: number, g: number, b: number}} Normalized components from 0.0 to 1.0
      */
     static getColor(colormapName, t) {
         t = Math.max(0.0, Math.min(1.0, t));
 
         const stops = STOPS[colormapName];
         if (!stops) {
-            // Jet (default clássico de engenharia) -- fórmula analítica padrão, não uma LUT.
+            // Jet (classic engineering default) -- a standard analytic formula, not a LUT.
             const r = Math.min(1.0, Math.max(0.0, 1.5 - Math.abs(t * 4.0 - 3.0)));
             const g = Math.min(1.0, Math.max(0.0, 1.5 - Math.abs(t * 4.0 - 2.0)));
             const b = Math.min(1.0, Math.max(0.0, 1.5 - Math.abs(t * 4.0 - 1.0)));

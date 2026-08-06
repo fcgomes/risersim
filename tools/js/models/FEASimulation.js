@@ -1,15 +1,15 @@
 /**
  * FEASimulation.js
- * Agregador principal de simulação FEA, mantendo o histórico de passos e estatísticas.
+ * Main FEA simulation aggregator, holding the step history and statistics.
  */
 export class FEASimulation {
     /**
-     * @param {string} simulationType - Nome/Descrição da Simulação
-     * @param {number} seabedDepth - Profundidade do Fundo do Mar (m)
-     * @param {number} waterSurfaceZ - Cota Z da superfície do mar (m)
-     * @param {SimulationStep[]} steps - Coleção de passos incrementais padrão
-     * @param {SimulationStep[]} staticSteps - Passos estáticos
-     * @param {SimulationStep[]} dynamicSteps - Passos dinâmicos temporais
+     * @param {string} simulationType - Simulation name/description
+     * @param {number} seabedDepth - Seabed depth (m)
+     * @param {number} waterSurfaceZ - Water surface Z elevation (m)
+     * @param {SimulationStep[]} steps - Default incremental step collection
+     * @param {SimulationStep[]} staticSteps - Static steps
+     * @param {SimulationStep[]} dynamicSteps - Time-domain dynamic steps
      */
     constructor(simulationType = "riserSim Equilibrium", seabedDepth = -100.0, waterSurfaceZ = 0.0, steps = [], staticSteps = [], dynamicSteps = []) {
         this.simulationType = simulationType;

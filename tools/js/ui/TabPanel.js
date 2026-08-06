@@ -1,15 +1,15 @@
 /**
  * TabPanel.js
- * Alterna qual painel de aba (`.bottom-tab-panel`) fica visível dentro de `#data-panel`, e marca
- * o botão correspondente como ativo -- mesmo algoritmo usado tanto pelas abas do pré-processador
- * (Carregar/Geometria/Ambiental/Análise) quanto pelas do pós-processador
- * (Controles/Visualização/Tabela/Carregar), só o conjunto de abas muda de uma página pra outra.
+ * Switches which tab panel (`.bottom-tab-panel`) is visible inside `#data-panel`, and marks the
+ * corresponding button as active -- the same algorithm used by both the preprocessor's tabs
+ * (Load/Geometry/Environmental/Analysis) and the postprocessor's tabs
+ * (Controls/Visualization/Table/Load), only the set of tabs changes between pages.
  */
 
 /**
- * @param {Record<string, string>} tabMap Mapa `{chave: idDoPainel}` -- o botão correspondente é
- * `tab-${chave}-btn`.
- * @param {string} activeKey Chave (do tabMap) a ativar.
+ * @param {Record<string, string>} tabMap `{key: panelId}` map -- the corresponding button is
+ * `tab-${key}-btn`.
+ * @param {string} activeKey Key (from tabMap) to activate.
  */
 export function switchTab(tabMap, activeKey) {
     Object.entries(tabMap).forEach(([key, panelId]) => {

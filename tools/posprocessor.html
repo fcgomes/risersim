@@ -9,12 +9,12 @@
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="css/shared.css">
     <style>
-        /* Só o que é específico do pós-processador -- o resto (tema, layout de 3 regiões,
-           control-group/stat-card, botões, icon-toolbar/tooltip/zoom-rect, btn-tab, tabela
-           estilo planilha) está em css/shared.css, compartilhado com preprocessor.html. */
+        /* Only what's specific to the postprocessor -- everything else (theme, 3-region layout,
+           control-group/stat-card, buttons, icon-toolbar/tooltip/zoom-rect, btn-tab, spreadsheet-
+           style table) is in css/shared.css, shared with preprocessor.html. */
 
-        /* Legenda de resultados -- versão de 180px com offsets finos de tick e gradiente real,
-           diferente da legenda simples de diâmetro do pré-processador. */
+        /* Results legend -- 180px version with fine tick offsets and a real gradient, unlike the
+           preprocessor's simple diameter legend. */
         #colorbar-legend {
             position: absolute;
             top: 20px;
@@ -89,7 +89,7 @@
         </div>
 
         <div id="canvas-container">
-            <!-- Abas Superiores Flutuantes no Viewport (Cena 3D vs Gráficos 2D) -->
+            <!-- Floating top tabs over the viewport (3D scene vs. 2D charts) -->
             <div id="viewport-tabs" style="position: absolute; top: 10px; left: 10px; z-index: 25; display: flex; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px);">
                 <button class="btn-tab active" id="vtab-3d-btn">🧊 Cena 3D WebGL</button>
                 <button class="btn-tab" id="vtab-tension-btn">📈 Tração Efetiva T_eff</button>
@@ -100,7 +100,7 @@
             <!-- 1. Canvas 3D -->
             <canvas id="three-canvas" style="width:100%; height:100%; display:block;"></canvas>
 
-            <!-- 2. Gráficos 2D de Alta Resolução (Full Viewport Height) -->
+            <!-- 2. High-resolution 2D charts (full viewport height) -->
             <div id="tension-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
             <div id="moment-curv-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
             <div id="vonmises-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
@@ -247,7 +247,7 @@
         </div>
     </div>
 
-    <!-- Módulo Principal da Aplicação Orientada a Objetos (OO) -->
+    <!-- Main OO application module -->
     <script type="module" src="js/app.js"></script>
 </body>
 </html>

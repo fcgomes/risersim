@@ -1,15 +1,15 @@
 /**
  * CameraViewController.js
- * Controlador OO de vistas predefinidas de câmera CAD (Isométrica, XY, XZ, YZ).
+ * OO controller for predefined CAD camera views (Isometric, XY, XZ, YZ).
  */
 export class CameraViewController {
     /**
      * @param {THREE.Camera} camera
      * @param {OrbitControls} controls
-     * @param {Riser3DRenderer|null} renderer - opcional; se informado, o enquadramento reusa
-     *   renderer.computeSceneBounds() (mesma caixa/margens que o renderer efetivamente desenha)
-     *   em vez de recalcular a caixa envolvente por conta própria -- evita as duas lógicas de
-     *   margem divergirem com o tempo.
+     * @param {Riser3DRenderer|null} renderer - optional; when given, framing reuses
+     *   renderer.computeSceneBounds() (the same box/margins the renderer actually draws)
+     *   instead of recomputing the bounding box independently -- avoids the two margin
+     *   calculations drifting apart over time.
      */
     constructor(camera, controls, renderer = null) {
         this.camera = camera;
@@ -18,12 +18,12 @@ export class CameraViewController {
     }
 
     /**
-     * Define a vista da câmera baseada na opção selecionada
+     * Sets the camera view based on the selected option.
      * @param {'ISO'|'XY'|'XZ'|'YZ'} viewType
      * @param {SimulationStep} currentStep
-     * @param {number|null} seabedDepth - Se informado, garante que o enquadramento cubra até o
-     *   fundo do mar, mesmo que os nós deste passo não cheguem lá.
-     * @param {number|null} waterSurfaceZ - Idem, para a superfície do mar.
+     * @param {number|null} seabedDepth - When given, ensures the framing covers the seabed even
+     *   if this step's nodes don't reach it.
+     * @param {number|null} waterSurfaceZ - Same, for the water surface.
      */
     setView(viewType, currentStep, seabedDepth = null, waterSurfaceZ = null) {
         if (!this.camera || !this.controls) return;
@@ -31,29 +31,30 @@ export class CameraViewController {
         const bounds = this._computeBounds(currentStep, seabedDepth, waterSurfaceZ);
         const target = new THREE.Vector3(bounds.centerX, bounds.centerY, bounds.centerZ);
 
-        // Direção câmera->alvo de cada vista predefinida. XY leva uma componente residual em Z
-        // (não exatamente vertical) só para o produto vetorial com o "up" do mundo não degenerar
-        // numa vista de cima perfeitamente reta.
+        // Camera->target direction for each predefined view. XY carries a tiny residual Z
+        // component (not exactly vertical) only so the cross product with world "up" doesn't
+        // degenerate for a perfectly straight top-down view.
         let dir;
         let fillFraction = 0.7;
         if (viewType === 'XY') { dir = new THREE.Vector3(0, -1, -0.001); fillFraction = 0.55; }
         else if (viewType === 'XZ') { dir = new THREE.Vector3(0, 0, -1); fillFraction = 0.55; }
         else if (viewType === 'YZ') { dir = new THREE.Vector3(-1, 0, 0); fillFraction = 0.55; }
-        else dir = new THREE.Vector3(-0.55, -0.55, -1.3); // ISO (padrão)
+        else dir = new THREE.Vector3(-0.55, -0.55, -1.3); // ISO (default)
         dir.normalize();
 
-        // Vistas ortogonais (olhando reto ao longo de um eixo) projetam a caixa envolvente no seu
-        // corte EXATO (o retângulo mínimo mesmo) -- já a ISO, sendo uma vista diagonal, projeta
-        // uma "sombra" da caixa inteira, que é sempre maior que qualquer corte ortogonal. Com a
-        // mesma fração-alvo de preenchimento, isso deixa XY/XZ/YZ visualmente mais "coladas" no
-        // modelo que a ISO -- por isso uma folga maior (fillFraction menor) só pras ortogonais.
+        // Orthogonal views (looking straight along one axis) project the bounding box at its
+        // EXACT cross-section (the true minimal rectangle) -- ISO, being a diagonal view,
+        // projects a "shadow" of the whole box, which is always larger than any orthogonal
+        // cross-section. With the same target fill fraction, this makes XY/XZ/YZ look visually
+        // "tighter" around the model than ISO -- hence the extra margin (smaller fillFraction)
+        // for orthogonal views only.
         this._frameBounds(target, bounds, dir, fillFraction);
     }
 
     /**
-     * Reenquadra (zoom extents) o modelo inteiro SEM mudar a direção de vista atual -- ao
-     * contrário de setView(), que pula para uma vista predefinida. Útil depois de orbitar/dar
-     * zoom manualmente e perder o modelo de vista.
+     * Reframes (zoom extents) the whole model WITHOUT changing the current view direction --
+     * unlike setView(), which jumps to a predefined view. Useful after manually orbiting/zooming
+     * and losing the model from view.
      * @param {SimulationStep} currentStep
      * @param {number|null} seabedDepth
      * @param {number|null} waterSurfaceZ
@@ -64,17 +65,17 @@ export class CameraViewController {
         const target = new THREE.Vector3(bounds.centerX, bounds.centerY, bounds.centerZ);
 
         const dir = new THREE.Vector3();
-        this.camera.getWorldDirection(dir); // mantém o ângulo de vista atual
+        this.camera.getWorldDirection(dir); // keeps the current view angle
 
         this._frameBounds(target, bounds, dir);
     }
 
     /**
-     * Caixa envolvente (coordenadas Three.js: Y-three = Z-riser/profundidade), já com as mesmas
-     * margens que o renderer usa pra desenhar o wireframe/planos ambientais -- delega pra
-     * renderer.computeSceneBounds() quando disponível, pra a câmera sempre enquadrar exatamente o
-     * que está sendo desenhado (não só a linha fina dos nós). Sem o renderer, cai numa versão sem
-     * margem (só nós + solo/superfície) como default de segurança.
+     * Bounding box (Three.js coordinates: Y-three = Z-riser/depth), already using the same
+     * margins the renderer uses to draw the wireframe/environmental planes -- delegates to
+     * renderer.computeSceneBounds() when available, so the camera always frames exactly what's
+     * being drawn (not just the thin line of nodes). Without a renderer, falls back to a
+     * marginless version (nodes + seabed/surface only) as a safe default.
      */
     _computeBounds(currentStep, seabedDepth, waterSurfaceZ) {
         const nodes = (currentStep && currentStep.nodes) || [];
@@ -113,18 +114,19 @@ export class CameraViewController {
     }
 
     /**
-     * Posiciona a câmera olhando de `target` na direção `dir` (câmera->alvo, já normalizada), a
-     * uma distância calculada para que a caixa envolvente `bounds` caiba inteira no frustum --
-     * projeta os 8 cantos da caixa nos eixos direita/cima da câmera e resolve a distância mínima
-     * que satisfaz o FOV vertical E o FOV horizontal (== FOV vertical * aspect), em vez de um
-     * multiplicador fixo -- um fator fixo (ex. `span * 0.9`) sub-dimensiona a distância sempre
-     * que o canvas fica mais estreito que alto (ex. painel de dados largo ocupando a tela), daí o
-     * modelo cortado nas bordas ("fica pra fora do quadro").
+     * Positions the camera looking from `target` along `dir` (camera->target, already
+     * normalized), at a distance computed so the `bounds` bounding box fits entirely in the
+     * frustum -- projects the box's 8 corners onto the camera's right/up axes and solves for the
+     * minimum distance that satisfies both the vertical FOV AND the horizontal FOV
+     * (== vertical FOV * aspect), instead of a fixed multiplier -- a fixed factor (e.g.
+     * `span * 0.9`) under-sizes the distance whenever the canvas is narrower than it is tall
+     * (e.g. a wide data panel taking up screen space), leaving the model clipped at the edges
+     * ("falls outside the frame").
      * @param {THREE.Vector3} target
      * @param {{minX,maxX,minY,maxY,minZ,maxZ}} bounds
-     * @param {THREE.Vector3} dir - direção câmera->alvo, normalizada
-     * @param {number} fillFraction - fração do quadro que o modelo deve ocupar (1.0 = tocando a
-     *   borda). Menor = mais folga ao redor.
+     * @param {THREE.Vector3} dir - camera->target direction, normalized
+     * @param {number} fillFraction - fraction of the frame the model should occupy (1.0 =
+     *   touching the edge). Smaller = more margin around it.
      */
     _frameBounds(target, bounds, dir, fillFraction = 0.7) {
         const { minX, maxX, minY, maxY, minZ, maxZ } = bounds;
@@ -149,27 +151,28 @@ export class CameraViewController {
         const fovRad = THREE.MathUtils.degToRad(this.camera.fov);
         const distV = halfH / Math.tan(fovRad / 2.0);
         const distH = halfW / (Math.tan(fovRad / 2.0) * Math.max(this.camera.aspect, 0.01));
-        // distV/distH acima já são a distância EXATA de enquadramento (modelo tocando a borda,
-        // 100% do quadro) -- para o modelo ocupar só uma fração do quadro (folga visível em
-        // volta, espaço pra rótulos/legendas), a distância precisa ser 1/fillFraction vezes maior.
+        // distV/distH above are already the EXACT framing distance (model touching the edge,
+        // 100% of the frame) -- for the model to occupy only a fraction of the frame (visible
+        // margin around it, room for labels/legends), the distance needs to be 1/fillFraction
+        // times larger.
         const margin = 1.0 / fillFraction;
         const dist = Math.max(distV, distH, 5.0) * margin;
 
         this.camera.far = Math.max(2000, dist * 6.0);
         this.camera.updateProjectionMatrix();
 
-        // Alinha camera.up ao "cima de tela" usado no cálculo de halfH acima -- sem isso,
-        // OrbitControls.update() chama object.lookAt(target) usando o camera.up ANTERIOR (que
-        // pode ficar quase paralelo à nova direção de vista, ex. na troca pra vista de topo XY),
-        // um caso degenerado pro lookAt e o resultado fica com orientação inconsistente com o
-        // enquadramento calculado.
+        // Aligns camera.up to the "screen up" used in the halfH calculation above -- without
+        // this, OrbitControls.update() calls object.lookAt(target) using the PREVIOUS camera.up
+        // (which can end up nearly parallel to the new view direction, e.g. when switching to
+        // the XY top view), a degenerate case for lookAt that leaves the orientation inconsistent
+        // with the computed framing.
         this.camera.up.copy(camUp);
         this.camera.position.copy(target).addScaledVector(dir, -dist);
         this.controls.target.copy(target);
         this.controls.update();
     }
 
-    /** Aproxima/afasta a câmera ao longo da linha atual até o alvo, sem mudar de vista. */
+    /** Zooms the camera in/out along the current line to the target, without changing view. */
     zoom(factor) {
         if (!this.camera || !this.controls) return;
         const offset = new THREE.Vector3().subVectors(this.camera.position, this.controls.target);
@@ -179,9 +182,9 @@ export class CameraViewController {
         this.controls.update();
     }
 
-    /** Passo equivalente a N "ticks" da roda do mouse no OrbitControls: getZoomScale() lá é
-     *  Math.pow(0.95, zoomSpeed) por tick -- reproduzido aqui pra o botão dar um passo familiar
-     *  de orbitar/dar zoom manualmente na cena, só que mais perceptível que um único tick. */
+    /** Step equivalent to N mouse-wheel "ticks" on OrbitControls: its getZoomScale() is
+     *  Math.pow(0.95, zoomSpeed) per tick -- reproduced here so the button gives a step that
+     *  feels like manually orbiting/zooming the scene, just more noticeable than a single tick. */
     _wheelStepScale(ticks = 3) {
         const zoomSpeed = (this.controls && this.controls.zoomSpeed) || 1.0;
         return Math.pow(0.95, zoomSpeed * ticks);
@@ -191,20 +194,21 @@ export class CameraViewController {
     zoomOut() { this.zoom(1.0 / this._wheelStepScale()); }
 
     /**
-     * Zoom "por janela" (tipo AutoCAD/CAD): recebe um retângulo em coordenadas normalizadas de
-     * tela (NDC, -1..1, Y para cima) e reenquadra a câmera nele, mantendo a mesma direção de
-     * vista atual (não pula para ISO/XY/etc, só aproxima/recentraliza no recorte escolhido).
-     * Interseta os 4 raios dos cantos do retângulo com o plano focal (perpendicular à direção
-     * da câmera, passando pelo alvo atual) e escala a distância câmera-alvo pela fração de tela
-     * que o retângulo ocupava -- aproximação heurística mais simples que _frameBounds() (não
-     * reprojeta cantos, só escala a distância atual pela fração de tela do retângulo).
+     * "Window" zoom (AutoCAD/CAD-style): takes a rectangle in normalized screen coordinates
+     * (NDC, -1..1, Y up) and reframes the camera onto it, keeping the current view direction
+     * (doesn't jump to ISO/XY/etc, just zooms/recenters onto the chosen crop). Intersects the
+     * rectangle's 4 corner rays with the focal plane (perpendicular to the camera direction,
+     * passing through the current target) and scales the camera-target distance by the fraction
+     * of the screen the rectangle occupied -- a simpler heuristic approximation than
+     * _frameBounds() (doesn't reproject corners, just scales the current distance by the
+     * rectangle's screen fraction).
      * @param {{x1:number,y1:number,x2:number,y2:number}} rectNDC
      */
     zoomToWindow(rectNDC) {
         if (!this.camera || !this.controls) return;
 
         const fraction = Math.max(Math.abs(rectNDC.x2 - rectNDC.x1), Math.abs(rectNDC.y2 - rectNDC.y1)) / 2.0;
-        if (fraction < 0.01) return; // clique sem arrastar de verdade -- ignora
+        if (fraction < 0.01) return; // click without a real drag -- ignore
 
         const dir = new THREE.Vector3();
         this.camera.getWorldDirection(dir);

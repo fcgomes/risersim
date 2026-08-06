@@ -1,13 +1,13 @@
 /**
  * ThemeToggle.js
- * Liga o botão #theme-toggle-btn à alternância claro/escuro -- idêntico entre
- * preprocessor.html/posprocessor.html: troca a classe do <body>, o texto do botão, a cor de
- * fundo da cena Three.js, e força um re-render.
+ * Wires the #theme-toggle-btn button to the light/dark toggle -- identical between
+ * preprocessor.html/posprocessor.html: swaps the <body> class, the button text, the Three.js
+ * scene background color, and forces a re-render.
  */
 
 /**
- * @param {{currentTheme: string, renderer3D: object, render: () => void}} app Instância da app
- * (PreprocessorApp/RiserSimApp) -- só usa `currentTheme`/`renderer3D`/`render()`, que as duas já têm.
+ * @param {{currentTheme: string, renderer3D: object, render: () => void}} app App instance
+ * (PreprocessorApp/RiserSimApp) -- only uses `currentTheme`/`renderer3D`/`render()`, which both already have.
  */
 export function initThemeToggle(app) {
     document.getElementById('theme-toggle-btn').addEventListener('click', () => {

@@ -1,13 +1,13 @@
 /**
  * PanelResizer.js
- * Divisor arrastável entre o canvas 3D e o painel de dados lateral (#resizer-h/#data-panel) --
- * compartilhado entre preprocessor.html e posprocessor.html, que têm o mesmo layout de 3 regiões
- * (sidebar de câmera | canvas | painel de dados).
+ * Drag handle between the 3D canvas and the side data panel (#resizer-h/#data-panel) -- shared
+ * between preprocessor.html and posprocessor.html, which have the same 3-region layout (camera
+ * sidebar | canvas | data panel).
  */
 
 /**
- * @param {() => void} [onResize] Chamado a cada frame de arraste e ao soltar -- tipicamente
- * `renderer3D.onWindowResize()`, pra manter o canvas 3D em sincronia com a nova largura.
+ * @param {() => void} [onResize] Called on every drag frame and on release -- typically
+ * `renderer3D.onWindowResize()`, to keep the 3D canvas in sync with the new width.
  */
 export function initPanelResizer(onResize) {
     const resizer = document.getElementById('resizer-h');

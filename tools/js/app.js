@@ -11,7 +11,7 @@ import { initThemeToggle } from './ui/ThemeToggle.js';
 
 /**
  * app.js
- * Controlador principal da aplicação Web riserSim 3D.
+ * Main controller for the riserSim 3D web application.
  */
 class RiserSimApp {
     constructor() {
@@ -39,13 +39,13 @@ class RiserSimApp {
         await this.loadSimulationData('../catenary_results.json');
     }
 
-    /** Alterna entre as abas do painel de dados lateral (Controles/Visualização/Tabela/Carregar). */
+    /** Switches between the side data-panel tabs (Controls/Visualization/Table/Load). */
     setDataTab(tab) {
         switchTab({ controls: 'tab-controls', viz: 'tab-viz', table: 'tab-table', load: 'tab-load' }, tab);
     }
 
     bindEvents() {
-        // Alternância de Abas Flutuantes no Topo do Viewport
+        // Floating tab switcher at the top of the viewport
         const vtabs = [
             { id: 'vtab-3d-btn', view: '3d' },
             { id: 'vtab-tension-btn', view: 'tension' },
@@ -69,7 +69,7 @@ class RiserSimApp {
             this.render();
         });
 
-        // Animação
+        // Animation
         document.getElementById('play-btn').addEventListener('click', () => this.play());
         document.getElementById('pause-btn').addEventListener('click', () => this.pause());
         document.getElementById('prev-btn').addEventListener('click', () => {
@@ -84,20 +84,20 @@ class RiserSimApp {
             this.render();
         });
 
-        // Atalhos de câmera/zoom (ISO/XY/XZ/YZ, fit/+/−/janela)
+        // Camera/zoom shortcuts (ISO/XY/XZ/YZ, fit/+/−/window)
         bindCameraToolbar(this.cameraController, this.zoomWindow, () => this.getCurrentStep(), () => this.getEnvBounds());
 
-        // Abas do painel de dados lateral
+        // Side data-panel tabs
         document.getElementById('tab-controls-btn').addEventListener('click', () => this.setDataTab('controls'));
         document.getElementById('tab-viz-btn').addEventListener('click', () => this.setDataTab('viz'));
         document.getElementById('tab-table-btn').addEventListener('click', () => this.setDataTab('table'));
         document.getElementById('tab-load-btn').addEventListener('click', () => this.setDataTab('load'));
 
-        // Alternância Elementos / Nós dentro da aba "Tabela"
+        // Elements / Nodes toggle within the "Table" tab
         document.getElementById('table-view-elements-btn').addEventListener('click', () => this.setTableViewMode('elements'));
         document.getElementById('table-view-nodes-btn').addEventListener('click', () => this.setTableViewMode('nodes'));
 
-        // Seletor de Modo de Análise (Estática / Dinâmica)
+        // Analysis mode selector (Static / Dynamic)
         const modeSelect = document.getElementById('analysis-mode-select');
         if (modeSelect) {
             modeSelect.addEventListener('change', (e) => {
@@ -112,7 +112,7 @@ class RiserSimApp {
             });
         }
 
-        // Seletor de Grandeza / Campo Escalar
+        // Scalar field selector
         const scalarSelect = document.getElementById('scalar-field-select');
         if (scalarSelect) {
             scalarSelect.addEventListener('change', (e) => {
@@ -126,7 +126,7 @@ class RiserSimApp {
             });
         }
 
-        // Mapa de cores
+        // Colormap
         document.getElementById('colormap-select').addEventListener('change', () => this.render());
 
         // File Upload
@@ -135,7 +135,7 @@ class RiserSimApp {
             if (file) this.loadSimulationData(file);
         });
 
-        // Tema Claro/Escuro
+        // Light/dark theme
         initThemeToggle(this);
     }
 
@@ -190,7 +190,7 @@ class RiserSimApp {
     async loadSimulationData(fileOrUrl) {
         try {
             this.simulation = await DataLoaderService.load(fileOrUrl);
-            
+
             const modeSelect = document.getElementById('analysis-mode-select');
             if (modeSelect) {
                 this.simulation.mode = 'static';
@@ -202,11 +202,11 @@ class RiserSimApp {
             slider.value = Math.max(0, this.simulation.totalSteps - 1);
             this.currentStepIdx = Math.max(0, this.simulation.totalSteps - 1);
 
-            // Enquadra a câmera no modelo recém-carregado -- sem isso, a câmera fica parada no
-            // chute inicial de Riser3DRenderer (calibrado para a escala do Exemplo_01a, ~130m),
-            // o que faz qualquer modelo de escala bem diferente (ex. um riser de 1800m de lâmina
-            // d'água) aparecer como uma fatia minúscula e distorcida -- visualmente indistinguível
-            // de "a linha está dobrada/caída", mesmo com as coordenadas corretas.
+            // Frames the camera on the newly-loaded model -- without this, the camera stays at
+            // Riser3DRenderer's initial guess (calibrated for Exemplo_01a's scale, ~130m), which
+            // makes any model at a very different scale (e.g. a riser in 1800m of water) show up
+            // as a tiny, distorted sliver -- visually indistinguishable from "the line is
+            // bent/collapsed", even with correct coordinates.
             this.cameraController.setView('ISO', this.getCurrentStep(), ...this.getEnvBounds());
 
             this.render();
@@ -220,7 +220,7 @@ class RiserSimApp {
         return this.simulation ? this.simulation.getStep(this.currentStepIdx) : null;
     }
 
-    /** @returns {[number|null, number|null]} [seabedDepth, waterSurfaceZ] da simulação carregada, para os planos/enquadramento 3D. */
+    /** @returns {[number|null, number|null]} [seabedDepth, waterSurfaceZ] of the loaded simulation, for the 3D planes/framing. */
     getEnvBounds() {
         return this.simulation ? [this.simulation.seabedDepth, this.simulation.waterSurfaceZ] : [null, null];
     }
@@ -250,13 +250,13 @@ class RiserSimApp {
         const colormap = document.getElementById('colormap-select').value;
         const scalarFieldEl = document.getElementById('scalar-field-select');
         const scalarField = scalarFieldEl ? scalarFieldEl.value : 'tension';
-        
+
         const globalRange = this.simulation ? this.simulation.getScalarRange(scalarField) : { min: 0, max: 100 };
         const stepValues = step.elements.map(e => this.simulation ? this.simulation.getElementScalar(e, scalarField) : 0);
-        
+
         let minVal = Math.min(...stepValues);
         let maxVal = Math.max(...stepValues);
-        
+
         if (isNaN(minVal) || isNaN(maxVal) || maxVal <= minVal) {
             minVal = globalRange.min;
             maxVal = globalRange.max;
@@ -264,7 +264,7 @@ class RiserSimApp {
 
         const scalarRange = { min: minVal, max: maxVal };
 
-        // Atualiza Cards de Métricas
+        // Update metric cards
         const isDynamic = this.simulation ? this.simulation.mode === 'dynamic' : true;
         const totalSteps = this.simulation ? this.simulation.totalSteps - 1 : 0;
         const topNode = step.nodes && step.nodes.length > 0 ? step.nodes[0] : null;
@@ -284,14 +284,14 @@ class RiserSimApp {
         document.getElementById('top-tension').innerText = `${step.getTopTension().toFixed(2)} kN`;
         document.getElementById('max-depth').innerText = `${step.getMaxDepth().toFixed(2)} m`;
 
-        // Atualiza Legenda Flutuante
+        // Update floating legend
         this.updateColorbar(colormap, minVal, maxVal, scalarField);
 
-        // Renderiza Cena 3D
+        // Render the 3D scene
         this.renderer3D.renderStep(step, colormap, scalarRange, this.currentTheme, scalarField, ...this.getEnvBounds());
         this.updateTable(step);
 
-        // Atualiza Gráficos 2D de Perfil
+        // Update the 2D profile charts
         if (this.chartsController) {
             this.chartsController.updateCharts(step, this.currentTheme);
         }
@@ -299,9 +299,9 @@ class RiserSimApp {
 
     updateColorbar(colormap, minVal, maxVal, scalarField = 'tension') {
         const bar = document.getElementById('colorbar-bar');
-        // Gera o gradiente a partir dos mesmos pontos de controle usados para colorir os tubos 3D
-        // (ColorMapService), em vez de uma segunda paleta hardcoded independente que podia
-        // divergir silenciosamente da cor realmente renderizada.
+        // Generates the gradient from the same control points used to color the 3D tubes
+        // (ColorMapService), instead of a second, independent hardcoded palette that could
+        // silently drift from the color actually rendered.
         const gradientStr = ColorMapService.getCssGradient(colormap);
 
         if (bar) bar.style.background = gradientStr;
@@ -347,7 +347,7 @@ class RiserSimApp {
         if (minEl) minEl.innerText = formatter(minVal);
     }
 
-    /** Alterna entre a tabela de elementos e a tabela de nós na aba "Tabela". */
+    /** Switches between the elements table and the nodes table in the "Table" tab. */
     setTableViewMode(mode) {
         this.tableViewMode = mode;
         const elTable = document.getElementById('elements-table');
@@ -372,7 +372,7 @@ class RiserSimApp {
         const nodes = step.nodes;
         const elements = step.elements;
 
-        // Tabela de Elementos (tensão, momento, curvatura, von Mises, MBR, status da seção)
+        // Elements table (tension, moment, curvature, von Mises, MBR, section status)
         const elTbody = document.getElementById('elements-tbody');
         if (elTbody) {
             elTbody.innerHTML = '';
@@ -381,20 +381,20 @@ class RiserSimApp {
 
                 const n2 = nodes[idx + 1] || nodes[idx];
 
-                // Fundo do mar detectado pela profundidade real desta simulação (não um valor
-                // fixo), já que o índice/faixa de elementos varia de modelo para modelo. Não há
-                // como detectar módulos de flutuação (Lazy Wave) a partir dos dados exportados --
-                // o exportador não inclui diâmetro/metadado de módulo por elemento (ver
-                // simulation_exporter.cpp), então esse status foi removido em vez de "adivinhado".
+                // Seabed detected from this simulation's real depth (not a fixed value), since the
+                // element index/range varies from model to model. There's no way to detect
+                // buoyancy modules (Lazy Wave) from the exported data -- the exporter doesn't
+                // include per-element diameter/module metadata (see simulation_exporter.cpp), so
+                // that status was removed instead of "guessed".
                 let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
                 const seabedDepth = this.simulation ? this.simulation.seabedDepth : -100.0;
                 if (n2 && n2.z <= seabedDepth + 0.5) {
                     statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
                 }
 
-                // Tração efetiva e von Mises em notação científica (valores tipicamente grandes
-                // ou de faixa dinâmica ampla); as demais grandezas continuam em ponto fixo. As
-                // unidades ficam só no cabeçalho da coluna, não repetidas em cada célula.
+                // Effective tension and von Mises in scientific notation (typically large values
+                // or a wide dynamic range); the other quantities stay in fixed-point. Units only
+                // appear in the column header, not repeated in every cell.
                 const tensionStr = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn.toExponential(2) : "0.00e+0";
                 const momentStr = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm.toFixed(2) : "0.00";
                 const curvStr = elem.curvature !== undefined ? elem.curvature.toExponential(3) : "0.000e+00";
@@ -415,7 +415,7 @@ class RiserSimApp {
             });
         }
 
-        // Tabela de Nós (coordenadas)
+        // Nodes table (coordinates)
         const nodeTbody = document.getElementById('nodes-tbody');
         if (nodeTbody) {
             nodeTbody.innerHTML = '';
@@ -433,7 +433,7 @@ class RiserSimApp {
     }
 }
 
-// Inicializa a aplicação ao carregar a página
+// Bootstraps the application once the page loads
 window.addEventListener('DOMContentLoaded', () => {
     window.riserApp = new RiserSimApp();
 });

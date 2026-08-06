@@ -5,12 +5,12 @@ import { FEASimulation } from '../models/FEASimulation.js';
 
 /**
  * DataLoaderService.js
- * Serviço unificado de I/O capaz de carregar arquivos de resultados em formato HDF5 (.h5) e JSON (.json).
+ * Unified I/O service able to load result files in HDF5 (.h5) and JSON (.json) format.
  */
 export class DataLoaderService {
     /**
-     * Carregador autodetector de formato (HDF5 ou JSON)
-     * @param {string|File} fileOrUrl 
+     * Format-autodetecting loader (HDF5 or JSON)
+     * @param {string|File} fileOrUrl
      * @returns {Promise<FEASimulation>}
      */
     static async load(fileOrUrl) {
@@ -160,7 +160,7 @@ export class DataLoaderService {
     }
 
     /**
-     * Carrega e parseia arquivos JSON (.json)
+     * Loads and parses JSON (.json) files.
      */
     static async loadJSON(fileOrUrl) {
         let jsonObject;

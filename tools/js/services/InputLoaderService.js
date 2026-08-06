@@ -3,15 +3,15 @@ import { ElementSection } from '../models/ElementSection.js';
 
 /**
  * InputLoaderService.js
- * Carrega e valida o JSON de ENTRADA consumido por risersim::ModelBuilder (não o JSON de
- * resultados que DataLoaderService.js lê) -- model.nodes/elements, boundary_conditions,
- * environmental, analysis_options. Ver risersim/src/model_builder.cpp,
- * ModelBuilder::load_from_json(), para o schema exato que espelha.
+ * Loads and validates the INPUT JSON consumed by risersim::ModelBuilder (not the results JSON
+ * that DataLoaderService.js reads) -- model.nodes/elements, boundary_conditions, environmental,
+ * analysis_options. See risersim/src/model_builder.cpp, ModelBuilder::load_from_json(), for the
+ * exact schema this mirrors.
  */
 export class InputLoaderService {
     /**
      * @param {string|File} fileOrUrl
-     * @returns {Promise<object>} ver parse()
+     * @returns {Promise<object>} see parse()
      */
     static async load(fileOrUrl) {
         let jsonObject;
@@ -28,14 +28,14 @@ export class InputLoaderService {
     }
 
     /**
-     * Ângulo (graus) acima do qual dois segmentos consecutivos são reportados como uma possível
-     * dobra ("kink") na geometria de entrada -- inspirado no protótipo 2D que o usuário já tinha
-     * feito manualmente (scratchpad ex02a_geometry.html) para achar esse tipo de problema.
+     * Angle (degrees) above which two consecutive segments are reported as a possible "kink" in
+     * the input geometry -- inspired by the 2D prototype the user had already built by hand
+     * (scratchpad ex02a_geometry.html) to find this kind of issue.
      */
     static KINK_ANGLE_THRESHOLD_DEG = 15.0;
 
     /**
-     * @param {object} j - JSON já parseado.
+     * @param {object} j - Already-parsed JSON.
      * @returns {{
      *   valid: boolean, warnings: Array<{level:'error'|'warning'|'info', message:string}>,
      *   nodes?: Node3D[], elements?: ElementSection[], nodeIds?: Set<number>,
@@ -51,9 +51,9 @@ export class InputLoaderService {
             && Array.isArray(j.model.elements) && j.model.elements.length > 0;
 
         if (!hasModel) {
-            // Chaves conhecidas do schema legado produzido por aml_reader.py quando não há
-            // XML+H5 do modelo real -- ModelBuilder não entende esse schema e cai
-            // silenciosamente no modelo sintético padrão (catenária de 40 elementos).
+            // Known keys of the legacy schema produced by aml_reader.py when there's no real
+            // XML+H5 model -- ModelBuilder doesn't understand this schema and silently falls
+            // back to the default synthetic model (a 40-element catenary).
             const legacyKeys = ['beam_props', 'geometry', 'offsets', 'rayleigh', 'simulation_options']
                 .filter(k => j && j[k] !== undefined);
             warnings.push({
@@ -85,9 +85,9 @@ export class InputLoaderService {
             }
         });
 
-        // Detecção de dobra ("kink"): ângulo entre a direção de elementos consecutivos que
-        // compartilham um nó. Assume que os elementos estão ordenados ao longo da linha, como
-        // ModelBuilder assume implicitamente (não há grafo de conectividade explícito checado).
+        // "Kink" detection: angle between the direction of consecutive elements sharing a node.
+        // Assumes elements are ordered along the line, as ModelBuilder implicitly assumes (no
+        // explicit connectivity graph is checked).
         const dirs = elements.map(e => {
             const n1 = nodeById.get(e.node1Id), n2 = nodeById.get(e.node2Id);
             if (!n1 || !n2) return null;

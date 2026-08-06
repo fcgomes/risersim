@@ -2,11 +2,11 @@ import { ColorMapService } from '../services/ColorMapService.js';
 
 /**
  * Riser3DRenderer.js
- * Encapsula a cena Three.js, iluminação, malha do mar/fundo, tubos do riser e bounding box.
+ * Wraps the Three.js scene, lighting, seabed/water mesh, riser tubes, and bounding box.
  */
 export class Riser3DRenderer {
     /**
-     * @param {HTMLCanvasElement} canvasElement 
+     * @param {HTMLCanvasElement} canvasElement
      */
     constructor(canvasElement) {
         this.canvas = canvasElement;
@@ -29,10 +29,10 @@ export class Riser3DRenderer {
 
         this.scene.background = new THREE.Color(0x1e1e2e);
 
-        // far=2000/posição inicial são só um chute razoável para a escala típica do
-        // Exemplo_01a -- CameraViewController.setView() reenquadra e ajusta o far plane pra
-        // escala real do modelo assim que os dados carregam (ver app.js), então isso nunca
-        // fica sendo o que o usuário vê de fato para um modelo de escala diferente.
+        // far=2000/initial position are just a reasonable guess for Exemplo_01a's typical scale
+        // -- CameraViewController.setView() reframes and adjusts the far plane to the model's
+        // real scale as soon as data loads (see app.js), so this is never actually what the user
+        // sees for a model at a different scale.
         this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
         this.camera.position.set(60, 50, 160);
 
@@ -41,7 +41,7 @@ export class Riser3DRenderer {
         this.controls.dampingFactor = 0.05;
         this.controls.target.set(60, -50, 0);
 
-        // Iluminação
+        // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
         this.scene.add(ambientLight);
 
@@ -49,12 +49,12 @@ export class Riser3DRenderer {
         dirLight.position.set(100, 200, 100);
         this.scene.add(dirLight);
 
-        // Adiciona os grupos
+        // Add the groups
         this.scene.add(this.riserGroup);
         this.scene.add(this.nodesGroup);
         this.scene.add(this.envGroup);
 
-        // Loop de Renderização 60 FPS
+        // 60 FPS render loop
         const animate = () => {
             requestAnimationFrame(animate);
             this.controls.update();
@@ -62,7 +62,7 @@ export class Riser3DRenderer {
         };
         animate();
 
-        // Redimensionamento de Janela
+        // Window resize handling
         window.addEventListener('resize', () => this.onWindowResize());
     }
 
@@ -80,19 +80,19 @@ export class Riser3DRenderer {
     }
 
     /**
-     * Renderiza o estado 3D do riser em um determinado passo
+     * Renders the riser's 3D state at a given step.
      * @param {SimulationStep} step
      * @param {string} colormap
      * @param {{min: number, max: number}} scalarRange
      * @param {'dark'|'light'} currentTheme
      * @param {string} scalarField - 'tension' | 'moment' | 'curvature' | 'vonmises' | 'mbr'
-     * @param {number|null} seabedDepth - Cota Z do fundo do mar (null/ausente = não desenha o plano)
-     * @param {number|null} waterSurfaceZ - Cota Z da superfície do mar (null/ausente = não desenha o plano)
+     * @param {number|null} seabedDepth - Seabed Z elevation (null/absent = plane not drawn)
+     * @param {number|null} waterSurfaceZ - Water surface Z elevation (null/absent = plane not drawn)
      */
     renderStep(step, colormap = 'Jet', scalarRange = { min: 0, max: 10 }, currentTheme = 'dark', scalarField = 'tension', seabedDepth = null, waterSurfaceZ = null) {
         if (!step) return;
 
-        // Limpa geometrias anteriores completamente
+        // Fully clear previous geometry
         while (this.riserGroup.children.length > 0) {
             const obj = this.riserGroup.children[0];
             if (obj.geometry) obj.geometry.dispose();
@@ -113,12 +113,11 @@ export class Riser3DRenderer {
         this.updateBoundingBox(bounds, currentTheme);
         this.updateEnvironmentPlanes(bounds, seabedDepth, waterSurfaceZ, currentTheme);
 
-        // Raio do tubo proporcional ao tamanho real do modelo -- um valor fixo (0.6, calibrado
-        // para a escala do Exemplo_01a, ~130m) vira uma linha de espessura sub-pixel, quase
-        // invisível, num modelo bem maior (ex. Exemplo_02a, ~1800m) -- mesmo com a câmera
-        // corretamente enquadrada, a linha em si fica difícil demais de enxergar/interpretar
-        // (mapa_classes_anflex_estatica.md). 0.0045 * 130 ≈ 0.585, preservando a aparência
-        // original para modelos da escala do Exemplo_01a.
+        // Tube radius proportional to the model's real size -- a fixed value (0.6, calibrated for
+        // Exemplo_01a's scale, ~130m) turns into a sub-pixel-thick, nearly invisible line on a
+        // much larger model (e.g. Exemplo_02a, ~1800m) -- even with the camera correctly framed,
+        // the line itself becomes too hard to see/interpret (mapa_classes_anflex_estatica.md).
+        // 0.0045 * 130 ≈ 0.585, preserving the original look for Exemplo_01a-scale models.
         let modelSpan = 130.0;
         if (nodes.length > 0) {
             const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y), zs = nodes.map(n => n.z);
@@ -188,10 +187,10 @@ export class Riser3DRenderer {
     }
 
     /**
-     * Calcula a caixa envolvente da cena (nós do passo + fundo do mar + superfície), já com as
-     * margens de exibição aplicadas -- fonte única usada tanto pelo wireframe da bounding box
-     * quanto pelos planos ambientais, para que os planos fiquem sempre exatamente do tamanho da
-     * caixa, nunca maiores/menores de forma independente.
+     * Computes the scene's bounding box (this step's nodes + seabed + surface), already with
+     * display margins applied -- the single source used by both the bounding-box wireframe and
+     * the environmental planes, so the planes are always exactly the box's size, never
+     * independently larger/smaller.
      * @param {Node3D[]} nodes
      * @param {number|null} seabedDepth
      * @param {number|null} waterSurfaceZ
@@ -210,12 +209,12 @@ export class Riser3DRenderer {
             minZ = Math.min(minZ, n.y); maxZ = Math.max(maxZ, n.y);
         });
 
-        // Estende o alcance vertical (Y do Three.js = Z do risersim/profundidade) para sempre
-        // cobrir o fundo do mar e a superfície -- não só a extensão dos nós deste passo -- assim
-        // a caixa (e os planos) nunca "escondem" parte da lâmina d'água real. `1.0e5` descarta o
-        // sentinela usado quando o solo está desligado via `environmental.seabed.enabled=false`
-        // (empurrado a -1e6, ver ModelBuilder::load_from_json() em model_builder.cpp), que não
-        // representa uma posição real de solo.
+        // Extends the vertical range (Three.js Y = risersim Z/depth) to always cover the seabed
+        // and the surface -- not just this step's node extent -- so the box (and the planes)
+        // never "hide" part of the real water column. `1.0e5` discards the sentinel used when the
+        // seabed is disabled via `environmental.seabed.enabled=false` (pushed to -1e6, see
+        // ModelBuilder::load_from_json() in model_builder.cpp), which doesn't represent a real
+        // seabed position.
         if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
             minY = Math.min(minY, seabedDepth);
             maxY = Math.max(maxY, seabedDepth);
@@ -225,14 +224,14 @@ export class Riser3DRenderer {
             maxY = Math.max(maxY, waterSurfaceZ);
         }
 
-        // Margens proporcionais ao span de cada eixo (com piso mínimo), em vez de uma distância
-        // fixa -- um valor fixo (ex. marginPerpendicular=35 sempre) fica bem em modelos com
-        // espalhamento horizontal razoável, mas domina o quadro quando um eixo é naturalmente
-        // pequeno (ex. riser quase vertical, com pouco desvio lateral): a vista de topo (XY)
-        // acabava mostrando uma caixa enorme e vazia em volta de uma linha minúscula.
+        // Margins proportional to each axis's span (with a minimum floor), instead of a fixed
+        // distance -- a fixed value (e.g. marginPerpendicular=35 always) looks fine on models with
+        // a reasonable horizontal spread, but dominates the frame when one axis is naturally small
+        // (e.g. a near-vertical riser with little lateral offset): the top view (XY) ended up
+        // showing a huge, empty box around a tiny line.
         const spanX = maxX - minX, spanY = maxY - minY, spanZ = maxZ - minZ;
         const boxMargin = Math.max(2.0, Math.min(spanX, spanY) * 0.08);
-        const marginPerpendicular = Math.max(5.0, spanZ * 0.25); // Distância maior no eixo perpendicular (Y)
+        const marginPerpendicular = Math.max(5.0, spanZ * 0.25); // Larger distance on the perpendicular axis (Y)
 
         minX -= boxMargin; maxX += boxMargin;
         minY -= boxMargin; maxY += boxMargin;
@@ -242,7 +241,7 @@ export class Riser3DRenderer {
     }
 
     /**
-     * @param {{minX,maxX,minY,maxY,minZ,maxZ}|null} bounds - ver computeSceneBounds()
+     * @param {{minX,maxX,minY,maxY,minZ,maxZ}|null} bounds - see computeSceneBounds()
      * @param {'dark'|'light'} currentTheme
      */
     updateBoundingBox(bounds, currentTheme = 'dark') {
@@ -266,10 +265,10 @@ export class Riser3DRenderer {
     }
 
     /**
-     * Desenha os planos horizontais de referência ambiental: fundo do mar e superfície do mar.
-     * Ambos semitransparentes, com o mesmo footprint X/Z (planta) da bounding box -- nunca maior
-     * nem menor que ela -- na cota Z correta de cada um.
-     * @param {{minX,maxX,minY,maxY,minZ,maxZ}|null} bounds - ver computeSceneBounds()
+     * Draws the horizontal environmental reference planes: seabed and water surface. Both
+     * semi-transparent, sharing the same X/Z (plan) footprint as the bounding box -- never larger
+     * or smaller than it -- at each one's correct Z elevation.
+     * @param {{minX,maxX,minY,maxY,minZ,maxZ}|null} bounds - see computeSceneBounds()
      * @param {number|null} seabedDepth
      * @param {number|null} waterSurfaceZ
      * @param {'dark'|'light'} currentTheme
@@ -292,12 +291,12 @@ export class Riser3DRenderer {
         const seabedColor = currentTheme === 'dark' ? 0x8a7355 : 0xb8a074;
         const waterColor = currentTheme === 'dark' ? 0x4a9fd8 : 0x7fc0ec;
 
-        // Adiciona um plano horizontal (área semitransparente) + um contorno retangular sólido na
-        // borda, na cota Y dada. O contorno existe porque um plano fino visto quase de perfil
-        // (ex. a vista ISO, com a câmera bem acima do centro da caixa olhando para baixo, vê o
-        // plano de cima quase de raspão) fica praticamente invisível como área preenchida --
-        // mas a borda, sendo uma linha (sem espessura a esconder), continua visível de qualquer
-        // ângulo, igual ao wireframe da bounding box.
+        // Adds a horizontal plane (semi-transparent area) + a solid rectangular outline at the
+        // edge, at the given Y elevation. The outline exists because a thin plane seen nearly
+        // edge-on (e.g. the ISO view, with the camera well above the box's center looking down,
+        // sees the top plane almost at a grazing angle) becomes practically invisible as a filled
+        // area -- but the border, being a line (no thickness to hide), stays visible from any
+        // angle, just like the bounding-box wireframe.
         const addPlane = (y, color, opacity, order) => {
             const mesh = new THREE.Mesh(
                 new THREE.PlaneGeometry(planeW, planeD),
@@ -326,9 +325,9 @@ export class Riser3DRenderer {
             this.envGroup.add(border);
         };
 
-        // Descarta o sentinela usado quando o solo está desligado (environmental.seabed.enabled=
-        // false empurra o fundo pra -1e6, ver ModelBuilder::load_from_json() em
-        // model_builder.cpp) -- nesse caso não há plano de fundo real pra desenhar.
+        // Discards the sentinel used when the seabed is disabled (environmental.seabed.enabled=
+        // false pushes the bottom to -1e6, see ModelBuilder::load_from_json() in
+        // model_builder.cpp) -- in that case there's no real seabed plane to draw.
         if (Number.isFinite(seabedDepth) && Math.abs(seabedDepth) < 1.0e5) {
             addPlane(seabedDepth, seabedColor, 0.4, 1);
         }

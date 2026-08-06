@@ -1,11 +1,11 @@
 /**
  * ZoomWindowController.js
- * "Zoom por janela" (tipo CAD): ativa via botão, o próximo arraste do mouse sobre o canvas
- * desenha um retângulo de seleção; ao soltar, converte o retângulo para NDC e pede ao
- * CameraViewController para reenquadrar nele (zoomToWindow()), e desativa o modo.
+ * "Zoom by window" (CAD-style): activated via a button, the next mouse drag over the canvas
+ * draws a selection rectangle; on release, converts the rectangle to NDC and asks
+ * CameraViewController to reframe onto it (zoomToWindow()), then deactivates the mode.
  *
- * Compartilhado entre preprocessor.html e posprocessor.html -- assume os IDs fixos que as duas
- * páginas já usam (#three-canvas, #canvas-container, #zoom-rect, #zoom-window-btn).
+ * Shared between preprocessor.html and posprocessor.html -- assumes the fixed IDs both pages
+ * already use (#three-canvas, #canvas-container, #zoom-rect, #zoom-window-btn).
  */
 export class ZoomWindowController {
     /**

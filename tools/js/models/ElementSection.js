@@ -1,15 +1,15 @@
 /**
  * ElementSection.js
- * Encapsula um elemento de viga do JSON de ENTRADA (não deformado, pré-solução) -- conectividade
- * de nós + propriedades de seção brutas, como lidas pelo ModelBuilder (não escalares de
- * resultado já resolvido, que é o que BeamElement3D representa).
+ * Wraps a beam element from the INPUT JSON (undeformed, pre-solution) -- node connectivity +
+ * raw section properties, as read by ModelBuilder (not the solved-result scalars that
+ * BeamElement3D represents).
  */
 export class ElementSection {
     /**
      * @param {number} id
-     * @param {number} node1Id - 1-indexed, igual ao JSON (node1_id).
-     * @param {number} node2Id - 1-indexed, igual ao JSON (node2_id).
-     * @param {object} sectionProperties - E, G, A, D_outer, D_inner, Ca, EI, weight_wet_kNm (o que estiver presente).
+     * @param {number} node1Id - 1-indexed, same as the JSON (node1_id).
+     * @param {number} node2Id - 1-indexed, same as the JSON (node2_id).
+     * @param {object} sectionProperties - E, G, A, D_outer, D_inner, Ca, EI, weight_wet_kNm (whatever is present).
      */
     constructor(id, node1Id, node2Id, sectionProperties = {}) {
         this.id = id;
@@ -19,9 +19,9 @@ export class ElementSection {
     }
 
     /**
-     * Chave de agrupamento -- elementos com propriedades de seção idênticas colapsam na mesma
-     * linha da tabela em vez de uma linha por elemento (modelos reais têm centenas de elementos,
-     * a maioria compartilhando a mesma seção).
+     * Grouping key -- elements with identical section properties collapse into the same table
+     * row instead of one row per element (real models have hundreds of elements, most sharing
+     * the same section).
      * @returns {string}
      */
     get groupKey() {

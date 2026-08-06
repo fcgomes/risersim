@@ -1,15 +1,15 @@
 /**
  * CameraToolbar.js
- * Liga os 8 botões da barra de câmera/zoom (#view-iso-btn/xy/xz/yz, #zoom-fit/in/out/window-btn)
- * ao CameraViewController e ao ZoomWindowController -- mesmos IDs, mesmo comportamento, nas duas
- * páginas (preprocessor.html/posprocessor.html); só a função "qual step usar" difere entre elas
- * (dados sintéticos de entrada vs. o passo de simulação atualmente selecionado).
+ * Wires the 8 camera/zoom toolbar buttons (#view-iso-btn/xy/xz/yz, #zoom-fit/in/out/window-btn)
+ * to CameraViewController and ZoomWindowController -- same IDs, same behavior, on both pages
+ * (preprocessor.html/posprocessor.html); only the "which step to use" function differs between
+ * them (synthetic input data vs. the currently selected simulation step).
  */
 
 /**
  * @param {import('../renderers/CameraViewController.js').CameraViewController} cameraController
  * @param {import('./ZoomWindowController.js').ZoomWindowController} zoomWindow
- * @param {() => object|null} getStep Nós/elementos a enquadrar (formato que CameraViewController espera).
+ * @param {() => object|null} getStep Nodes/elements to frame (the shape CameraViewController expects).
  * @param {() => [number|null, number|null]} getEnvBounds [seabedDepth, waterSurfaceZ].
  */
 export function bindCameraToolbar(cameraController, zoomWindow, getStep, getEnvBounds) {

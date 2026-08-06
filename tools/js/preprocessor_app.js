@@ -10,13 +10,13 @@ import { initThemeToggle } from './ui/ThemeToggle.js';
 
 /**
  * preprocessor_app.js
- * Controlador principal do pré-processador web: inspeciona/valida o JSON de ENTRADA consumido
- * por risersim::ModelBuilder, ANTES de rodar a simulação -- não os resultados (isso é
+ * Main controller for the web preprocessor: inspects/validates the INPUT JSON consumed by
+ * risersim::ModelBuilder, BEFORE the simulation runs -- not the results (that's
  * posprocessor.html/app.js).
  */
 class PreprocessorApp {
     constructor() {
-        this.input = null; // resultado de InputLoaderService.parse()
+        this.input = null; // result of InputLoaderService.parse()
         this.currentTheme = 'dark';
         this.tableViewMode = 'grouped'; // 'grouped' | 'byElement'
         this.initUI();
@@ -62,10 +62,10 @@ class PreprocessorApp {
         try {
             this.input = await InputLoaderService.load(fileOrUrl);
 
-            // Reenquadra a câmera no modelo recém-carregado -- sem isso, a câmera fica parada no
-            // chute inicial de Riser3DRenderer (calibrado para ~130m), e um modelo de escala bem
-            // diferente aparece como uma fatia minúscula/distorcida (mesmo bug já visto e
-            // corrigido no viewer de resultados nesta sessão).
+            // Reframes the camera on the newly-loaded model -- without this, the camera stays at
+            // Riser3DRenderer's initial guess (calibrated for ~130m), and a model at a very
+            // different scale shows up as a tiny/distorted sliver (the same bug already fixed in
+            // the results viewer earlier this session).
             this.cameraController.setView('ISO', this.getSyntheticStep(), ...this.getEnvBounds());
 
             this.render();
@@ -81,7 +81,7 @@ class PreprocessorApp {
         }
     }
 
-    /** Sintetiza um objeto no formato {nodes, elements} que Riser3DRenderer/CameraViewController já entendem, colorindo pelo diâmetro externo (D_outer) em vez de um resultado resolvido (que não existe para dados de entrada). */
+    /** Synthesizes a {nodes, elements} object that Riser3DRenderer/CameraViewController already understand, coloring by outer diameter (D_outer) instead of a solved result (which doesn't exist for input data). */
     getSyntheticStep() {
         if (!this.input || !this.input.valid) return null;
         const elements = this.input.elements.map(e => ({
@@ -93,10 +93,10 @@ class PreprocessorApp {
     }
 
     /**
-     * Espelha a lógica de posicionamento de solo/superfície de ModelBuilder::load_from_json()
-     * (risersim/src/model_builder.cpp) --
-     * seabed.enabled=false empurra o fundo para -1e6 (sem contato possível) e aproxima a
-     * superfície pelo nó mais alto; caso contrário o fundo fica no Z mínimo real dos nós.
+     * Mirrors the seabed/surface positioning logic from ModelBuilder::load_from_json()
+     * (risersim/src/model_builder.cpp) -- seabed.enabled=false pushes the bottom to -1e6 (no
+     * contact possible) and approximates the surface with the highest node; otherwise the bottom
+     * sits at the nodes' real minimum Z.
      * @returns {[number|null, number|null]}
      */
     getEnvBounds() {
@@ -143,17 +143,17 @@ class PreprocessorApp {
         this.renderAnalysisOptions();
     }
 
-    /** Alterna entre as 4 abas do painel de dados: Carregar / Geometria / Condições Ambientais / Análise. */
+    /** Switches between the 4 data-panel tabs: Load / Geometry / Environmental Conditions / Analysis. */
     setBottomTab(tab) {
         switchTab({ load: 'tab-load', geometry: 'tab-geometry', environmental: 'tab-environmental', analysis: 'tab-analysis' }, tab);
         if (tab === 'environmental' && typeof Plotly !== 'undefined') {
-            // Plotly não desenha corretamente num container que estava com display:none --
-            // força um resize assim que a aba fica visível.
+            // Plotly doesn't draw correctly in a container that had display:none -- force a
+            // resize as soon as the tab becomes visible.
             setTimeout(() => Plotly.Plots.resize('current-chart'), 50);
         }
     }
 
-    /** Alterna entre a tabela de seções agrupadas, a tabela de elementos completa e a tabela de nós. */
+    /** Switches between the grouped-sections table, the full element table, and the node table. */
     setTableViewMode(mode) {
         this.tableViewMode = mode;
         document.getElementById('section-table').style.display = mode === 'grouped' ? 'table' : 'none';
@@ -168,7 +168,7 @@ class PreprocessorApp {
         this.renderer3D.renderStep({ nodes: [], elements: [] }, 'Viridis', { min: 0, max: 1 }, this.currentTheme, 'tension', null, null);
     }
 
-    /** Marca nós com condição de contorno (prescritos/restringidos) com esferas coloridas -- Riser3DRenderer não faz isso sozinho (nodesGroup fica vazio em renderStep), então preenchido diretamente aqui, depois da chamada a renderStep (que limpa nodesGroup no início). */
+    /** Marks boundary-condition nodes (prescribed/restrained) with colored spheres -- Riser3DRenderer doesn't do this on its own (nodesGroup stays empty in renderStep), so it's filled in directly here, after the renderStep call (which clears nodesGroup at the start). */
     highlightBoundaryNodes() {
         const group = this.renderer3D.nodesGroup;
         while (group.children.length > 0) {
@@ -187,7 +187,7 @@ class PreprocessorApp {
                 new THREE.SphereGeometry(radius, 12, 12),
                 new THREE.MeshStandardMaterial({ color })
             );
-            mesh.position.set(n.x, n.z, n.y); // mesma convenção de eixos do Riser3DRenderer (Y-three = Z-riser)
+            mesh.position.set(n.x, n.z, n.y); // same axis convention as Riser3DRenderer (Y-three = Z-riser)
             group.add(mesh);
         };
 
@@ -197,21 +197,21 @@ class PreprocessorApp {
         this.input.prescribedIds.forEach(id => addMarker(id, 0xef4444, radius * 1.15));
     }
 
-    /** Pa -> MPa, 1 casa decimal (E/G ficam mais legíveis assim do que em Pa cru). */
+    /** Pa -> MPa, 1 decimal place (E/G are more readable this way than in raw Pa). */
     formatMPa(v) {
         if (v === undefined || v === null) return '—';
         const num = Number(v);
         return Number.isFinite(num) ? (num / 1.0e6).toFixed(1) : String(v);
     }
 
-    /** Notação científica -- para grandezas como IY/IZ/J (m⁴) onde a forma decimal fixa vira uma sequência de zeros ilegível. */
+    /** Scientific notation -- for quantities like IY/IZ/J (m⁴) where fixed decimal form turns into an unreadable string of zeros. */
     formatSci(v, digits = 3) {
         if (v === undefined || v === null) return '—';
         const num = Number(v);
         return Number.isFinite(num) ? num.toExponential(digits) : String(v);
     }
 
-    /** N·m² -> kN·m² (EI vem em N·m² no JSON de entrada). */
+    /** N·m² -> kN·m² (EI comes in N·m² in the input JSON). */
     formatKNm2(v, digits = 0) {
         if (v === undefined || v === null) return '—';
         const num = Number(v);
@@ -309,9 +309,9 @@ class PreprocessorApp {
     }
 
     /**
-     * Tabela elemento-por-elemento com TODAS as propriedades de seção lidas por ModelBuilder
-     * (não um subconjunto) -- só os IDs dos nós, sem coordenadas (isso fica na tabela de Nós,
-     * evitando repetir a mesma coordenada uma vez por elemento adjacente).
+     * Element-by-element table with ALL section properties read by ModelBuilder (not a subset) --
+     * only node IDs, no coordinates (that's in the Nodes table, avoiding repeating the same
+     * coordinate once per adjacent element).
      */
     renderElementTable(elements) {
         const tbody = document.getElementById('element-tbody');
@@ -346,7 +346,7 @@ class PreprocessorApp {
         });
     }
 
-    /** Tabela de nós: coordenadas + condição de contorno (prescrito/restringido/livre). */
+    /** Node table: coordinates + boundary condition (prescribed/restrained/free). */
     renderNodeTable(nodes) {
         const tbody = document.getElementById('node-tbody');
         if (!tbody) return;
