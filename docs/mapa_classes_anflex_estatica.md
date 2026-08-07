@@ -760,8 +760,240 @@ as duas fases quando `use_assembly_phase=true`, e `xml_h5_reader.py` não extrai
 é um candidato real para investigar em qualquer exemplo que tenha o assembly ligado — ver
 [`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md).
 
+## Limitar o passo de Newton por norma física: ajuda casos isolados, mas piora o modelo completo
+
+Primeira tentativa das três técnicas ainda não experimentadas listadas no
+[roadmap](roadmap.md) (Eixo 1a). Implementado `StaticAnalysis::enable_step_limiting`/
+`max_translation_step_m`/`max_rotation_step_rad` (default `false`/`0.5`/`0.3`, zero mudança de
+comportamento a menos que habilitado): `apply_newton_step_with_line_search()`
+(`static_analysis.cpp`) agora calcula, **antes** do laço de backtracking já existente, o maior
+`alpha` inicial que mantém o deslocamento/rotação de todo nó dentro desse teto — em vez de sempre
+começar o backtracking em `alpha=1` (passo cheio) e só cortar depois se o resíduo não melhorar. A
+ideia: quando a rigidez tangente local de um nó fica quase singular (contato+atrito saturando ao
+mesmo tempo), `K⁻¹·Resíduo` pode produzir um `step_dU` gigante mesmo para um resíduo modesto — um
+nó sendo arremessado vários metros numa única iteração, o padrão já documentado de "chattering".
+Capar o passo pela própria norma física ataca isso na origem, antes do line search por resíduo (um
+teto frouxo de 100x, ver seção acima) sequer ter chance de intervir.
+
+**Bateria de não-regressão**: `risersim_tests` (343 asserts) sem nenhuma mudança de valor de
+referência, como esperado (default desligado).
+
+**Resultado no caso isolado de 33 elementos (touchdown, solo+corrente reais)** — combinado com
+`enable_unbalanced_criteria` (já necessário mesmo sem step limiting, ver seções acima), varrendo o
+teto de deslocamento/rotação de 0.05 m até 0.001 m:
+
+| Teto (m/rad) | Resultado |
+|---|---|
+| 0.05 (ou mais frouxo) | Idêntico a sem step limiting — nunca chega a ativar o corte nesse caso |
+| 0.01 | Passos 1-3 convergem, passo 4 falha (resíduo oscilando ~2,4-16,7×10³) |
+| **0.002-0.004** | **Passos 1-5 convergem, passo 6 falha** (resíduo oscilando ~500-1400 N, sem explodir) — melhor resultado, uma faixa estável, não um ponto isolado de sorte |
+| 0.001 (mais apertado) | Piora — passo 5 falha (mais cedo que com 0.002) |
+| 0.002 com `max_iter=150` (em vez de 40) | Piora — passo 3 falha (mais cedo). Mesma fragilidade já documentada da válvula de escape: mais iterações desliza a janela de "últimas 3" pra outro ponto do ciclo de chattering, não necessariamente melhor |
+
+Isolado, é uma melhora real e mensurável: o caso de 20 elementos touchdown solo-only (que falhava
+no passo 1 baseline, por uma diferença de resíduo minúscula — 1,28 N, perto da tolerância) passa a
+**convergir completamente** com teto 0.002. O caso de 33 elementos avança do passo 2 (sem step
+limiting, só com a válvula de escape) até o passo 5.
+
+**Mas o mesmo teto piora o caso de 300 elementos sem solo/corrente** (que já convergia quase por
+completo no baseline — falhava só no passo 3, com resíduo já em ~1,2×10⁻⁴, essencialmente zero,
+perto da tolerância): com teto 0.002 passa a falhar já no **passo 1**, com resíduo bem mais alto
+(~5,5×10³) — uma regressão clara, não uma melhora.
+
+**Confirmado no Exemplo_01a completo real** (500 elementos, com a correção de atrito anisotrópico
+já aplicada nesta sessão): o mesmo padrão se repete, pior ainda —
+- Teto 0.002/0.002: passo 1 (que convergia em 25 iterações sem step limiting) passa a **falhar**,
+  resíduo estagnando em ~6,5×10³.
+- Teto 0.05/0.05 (bem mais frouxo, "inerte" no caso isolado de 33 elementos): passo 1 volta a
+  convergir em 25 iterações (idêntico ao baseline), mas o **passo 2** (que convergia em 9 iterações
+  sem step limiting) passa a **falhar**, resíduo crescendo até ~5,8×10³.
+
+**Conclusão honesta**: o mecanismo funciona exatamente como projetado (verificado por varredura, não
+só por leitura de código) e ajuda genuinamente casos isolados pequenos, mas **capar o passo
+uniformemente para o modelo inteiro** penaliza justamente as correções grandes e legítimas que
+outras partes da malha de 500 elementos precisam para avançar — o mesmo teto que resolve o
+touchdown atrapalha o resto. Isso não é o mesmo tipo de fragilidade já visto no line search por
+resíduo (que também não resolveu, mas pelo menos não regredia casos bons quando frouxo o
+suficiente) — aqui, qualquer teto apertado o bastante pra ajudar o touchdown já é apertado o
+bastante pra atrapalhar em outro lugar do modelo completo, uma faixa útil estreita demais que não
+sobrevive à escala real do modelo.
+
+O código fica no repositório (opt-in, `enable_step_limiting=false` por padrão, zero risco pra
+qualquer caller existente) — é uma ferramenta real de diagnóstico/ajuste fino por caso, não uma
+correção de propósito geral. **Não resolve o bug solo+corrente no modelo completo.** Próximo passo
+recomendado: uma das outras duas técnicas do roadmap (line search direcional tipo Armijo, ou
+suavizar a transição liga/desliga do contato vertical) — ou uma versão *seletiva* deste mecanismo
+(aplicar o teto só a nós perto de uma transição de contato/atrito ativa, não à malha inteira),
+fora de escopo desta rodada.
+
+> **Nota retroativa**: os dois testes acima (caso isolado de 33 elementos e Exemplo_01a completo)
+> rodaram sob a corrente **uniforme e superestimada** descrita na seção seguinte (o perfil real
+> nunca era consultado por profundidade) — ou seja, o "chattering" que o step limiting tentava
+> conter era, pelo menos em parte, causado por uma carga de corrente fisicamente errada demais
+> perto do touchdown, não só por uma dificuldade numérica intrínseca do Newton. Isso não invalida
+> o achado (a técnica genuinamente não generalizava bem pro modelo completo, medido como estava),
+> mas explica por que ela nunca teria sido suficiente sozinha — e por que vale reconsiderar,
+> depois da correção abaixo, se ainda é necessária.
+
+## Bug real encontrado e corrigido: perfil de corrente sempre avaliado na superfície -- resolve o bug solo+corrente
+
+A pedido do usuário ("vamos revisar os dados agora com AML e XML, vamos verificar se não está
+faltando nenhum dado ou se tem algum dado com unidade errada"), uma auditoria direta comparando o
+XML real, `xml_h5_reader.py` e o consumo em C++ encontrou dois bugs encadeados na extração/uso do
+perfil de corrente -- juntos, a causa raiz de boa parte (talvez toda) a divergência solo+corrente
+investigada ao longo deste documento inteiro.
+
+**Bug 1 (`xml_h5_reader.py::extract_current_profile()`)**: o perfil real no XML
+(`Currents/Cor_S/profile/values`, confirmado em `Exemplo_01a_A1.xml:928-935`) é tabulado como
+"profundidade a partir do leito marinho" (0=fundo, crescente até a superfície) -- ex.: `(0m, 90°,
+0.34 m/s)` no fundo até `(265m, 270°, 1.78 m/s)` na superfície. A função só reordenava os
+**índices** (mais raso primeiro, pra `Simulation::run()` usar `.front()` como valor de superfície)
+mas nunca transformava os **valores** de profundidade -- o array `depths_m` ficava
+`[265, 225, ..., 0]`, ainda na convenção "altura acima do leito", só que descendente.
+
+**Bug 2 (`current_profile.hpp::get_velocity()`/`get_heading()`)**: essas funções calculavam
+`depth_from_surface = std::max(0.0, -z)`, assumindo implicitamente que a superfície do mar está em
+`z=0` e o leito em `z` negativo -- a convenção do modelo **sintético** de fallback. Mas
+`ModelBuilder` alinha `seabed_depth_z` ao Z **real** dos nós lidos do XML/H5
+(`model_builder.cpp:258-263`), que no frame nativo do AML fica com o leito perto de `z≈0` e a
+**superfície em `z≈+265`** -- exatamente o oposto. Como todo `z` real deste modelo é `>=0`,
+`depth_from_surface = max(0, -z)` dava **sempre 0**, para qualquer nó, em qualquer profundidade.
+
+**Efeito combinado**: `interp1(depths_m, velocities_ms, depth_from_surface=0)` -- com uma tabela
+descendente (bug 1) e uma consulta sempre em `x=0` (bug 2) -- caía sempre no primeiro ramo de
+`interp1()` (`x <= x_table.front()`) e devolvia `velocities_ms.front()` = **1.78 m/s / 270°, o
+ponto de SUPERFÍCIE, para todo elemento da linha inteira**, inclusive os que estão encostados no
+leito marinho na zona de touchdown (onde o valor real é 0.34 m/s). Como a força de arrasto escala
+com v², isso aplicava até **~27x mais carga lateral que a real** exatamente na região onde
+solo+atrito já são mais delicados -- coerente com o padrão de "chattering" perseguido a sessão
+inteira (rotação → decaimento → atrito → rampa de carga → critério de convergência → step
+limiting), sem que nenhuma dessas correções anteriores pudesse ter revelado o problema, já que
+todas eram testadas sob essa mesma carga de corrente uniformemente superestimada.
+
+Corrigidos os dois: `extract_current_profile()` agora transforma cada ponto para
+`profundidade_da_superfície = profundidade_total_da_água - altura_acima_do_leito` antes de
+guardar (mantendo a mesma ordem de índices, que já ficava correta por coincidência);
+`CurrentProfile` ganhou um novo campo `water_surface_z` (default `0.0`, preserva exatamente o
+comportamento do modelo sintético, que nunca seta esse campo), e `get_velocity()`/`get_heading()`
+passaram a calcular `depth_from_surface = water_surface_z - z` em vez de `-z`;
+`Simulation::run()` agora propaga `model->environmental.water_surface_z` (já calculado por
+`ModelBuilder`, só nunca chegava até o `CurrentProfile`) pro novo campo.
+
+**Bateria de não-regressão**: `risersim_tests` (343 asserts) sem nenhuma mudança de valor de
+referência -- o modelo sintético usado nos testes automatizados nunca seta `water_surface_z`
+(fica no default `0.0`, idêntico à convenção "superfície em z=0" que o código sempre assumiu),
+então esse caminho é bit-a-bit inalterado. O bug só existia para modelos reais derivados de
+XML/H5, que nunca tiveram cobertura automatizada de regressão para o comportamento por
+profundidade da corrente.
+
+**Resultado no Exemplo_01a completo real** (500 elementos, com a correção de atrito anisotrópico
+já aplicada nesta sessão, **sem** step limiting habilitado):
+
+```
+✅ Step  1 Converged in 25 iterations! (norm_R = 0.61 N)
+✅ Step  2 Converged in  4 iterations! (norm_R = 0.004 N)
+✅ Step  3 Converged in 38 iterations! (norm_R = 7.49 N)
+✅ Step  4 Converged in  4 iterations! (norm_R = 0.63 N)
+✅ Step  5 Converged in 26 iterations! (norm_R = 1.01 N)
+✅ Step  6 Converged in 38 iterations! (norm_R = 128 N)
+✅ Step  7 Converged in 38 iterations! (norm_R = 531 N)
+✅ Step  8 Converged in 38 iterations! (norm_R = 109 N)
+✅ Step  9 Converged in 38 iterations! (norm_R = 332 N)
+✅ Step 10 Converged in 38 iterations! (norm_R = 60 N)
+✅ Step 11 Converged in 38 iterations! (norm_R = 51 N)
+
+🎉 STATIC CATENARY ANALYSIS CONVERGED SUCCESSFULLY!
+  [TOP] X=-47.73 m, Z=257 m
+  [T_eff TOP] 217.3 kN
+```
+
+**Todos os 11 passos convergem** -- o bug de convergência estática solo+corrente do Exemplo_01a,
+investigado exaustivamente ao longo deste documento inteiro (rotação total-vs-local, decaimento da
+rigidez artificial, atrito elástico-plástico incremental, atrito axial/lateral real, rampa de
+carga real da corrente, critério de convergência combinado, `%ASSEMBLY.USING` real, atrito
+anisotrópico do solo, e por fim o perfil de corrente por profundidade), **está resolvido**. A
+tração efetiva no topo (217,3 kN) é um valor fisicamente plausível para este riser.
+
+Vale registrar o padrão da investigação inteira: cada correção anterior (rotação, decaimento,
+atrito, rampa, critério combinado) era real, bem fundamentada e mediu uma melhora genuína -- mas
+nenhuma delas *sozinha* fechava o gap porque a causa dominante remanescente (corrente uniforme e
+superestimada na zona de touchdown) continuava lá, atrapalhando qualquer uma delas. Isso é consistente
+com a "auditoria de dados" ter sido a abordagem certa depois de esgotar as hipóteses puramente
+numéricas/algorítmicas -- o problema não estava em como o Newton-Raphson lidava com a
+não-linearidade, estava em qual carga ele via em primeiro lugar.
+
+## Pendências resolvidas: step limiting, outros consumidores de `CurrentProfile`, e um novo bug de massa dinâmica
+
+Três pendências deixadas na seção anterior, resolvidas na mesma rodada:
+
+**1. Step limiting não é mais necessário.** O resultado acima (11/11 passos convergindo) não usa
+`enable_step_limiting`. Confirma a suspeita já registrada: o "chattering" que o step limiting
+tentava conter era, pelo menos em grande parte, sintoma da corrente uniformemente superestimada,
+não uma dificuldade numérica intrínseca do Newton. O código continua no repositório (opt-in,
+desligado por padrão) como ferramenta de ajuste fino, sem uso conhecido no momento.
+
+**2. `CurrentProfile` é usado também pela análise dinâmica -- já corrigido automaticamente.**
+`DynamicAnalysis(const Analysis&)` (`dynamic_analysis.hpp:59-74`) copia `current` por valor de
+`StaticAnalysis` (`current = static_analysis.current;`), então o `water_surface_z` corrigido já
+chega à dinâmica sem nenhuma mudança adicional -- confirmado lendo o construtor, não só supondo.
+Não foi encontrado nenhum bug análogo em `hydrodynamics.hpp`/força de onda: a força de onda neste
+código não é um carregamento distribuído dependente de profundidade (Airy/Morison ao longo da
+linha inteira) -- é só um deslocamento prescrito no nó de topo (`disp_z = amplitude*sin(omega*t)`,
+`dynamic_analysis.cpp:69`, representando o RAO/heave do casco), então não há eixo `z` de onda para
+ter a mesma confusão de convenção.
+
+**3. Novo bug real encontrado ao investigar a dinâmica: `rho` (peso submerso) reaproveitado como
+massa estrutural.** Rodando o Exemplo_01a completo com dinâmica habilitada pela primeira vez desde
+que a estática passou a convergir, a dinâmica falhava em **todos os 20 passos de tempo**. Auditando
+os dados de massa (mesma disciplina desta seção): `element_beam.hpp:24` documentava `rho` como
+"Structural mass density (kg/m^3)" (default 7850, aço), mas `model_builder.cpp` (comentário
+original: *"Maps density directly from the XML's real submerged weight, for pure physical
+consistency"*) na verdade deriva `rho` do **peso já submerso** (líquido de empuxo) do XML --
+correto para a fórmula de peso estático (`w_dry = rho*A*g`, com `water_density=0` quando o modelo
+vem de JSON real, pra não subtrair empuxo duas vezes), mas fisicamente errado para inércia: empuxo
+reduz o peso líquido de um corpo, mas nunca reduz sua massa inercial (F=ma). E
+`CorotationalBeam3D::total_linear_mass()` (`element_beam.hpp:135-140`, usada só por
+`DynamicAnalysis`, nunca pela estática) reaproveitava esse mesmo `rho` pra massa. Pro Exemplo_01a:
+`rho` (peso submerso) ≈ 1587 kg/m³ vs. `rho_structural` real (derivado do peso **seco**, também já
+calculado no Python mas descartado) ≈ 3790 kg/m³ -- a massa dinâmica estava subestimada em **~2,4x**.
+
+**Corrigido**: novo campo `rho_structural` em `BeamMaterialProps` (default 7850, igual a `rho`,
+pra modelos sintéticos ficarem exatamente como antes), usado por `total_linear_mass()` no lugar de
+`rho`; `xml_h5_reader.py` agora calcula e escreve `rho_structural` a partir do peso seco real
+(`weight_dry_kNm`, já computado, só nunca exposto no JSON); `model_builder.cpp` lê o novo campo com
+fallback pra `elem_props.rho` quando ausente (preserva o comportamento -- com o mesmo bug -- de
+JSONs antigos, em vez de piorar). `risersim.BeamMaterialProps` (binding Python) ganhou a mesma
+propriedade. Bateria de regressão (343 asserts) sem mudança -- `total_linear_mass()` só é exercida
+pela dinâmica, que não tem cobertura automatizada nenhuma ainda.
+
+**Resultado no Exemplo_01a completo** (com todos os fixes desta sessão): a dinâmica passa a
+convergir em **15 dos 20 passos de tempo** (antes: 0 de 20) -- os passos que ainda falham são 1, 5,
+6, 7 e 8 (resíduo crescendo: 326→354→666→1276 N nos passos 5-8). Testado se era só falta de
+orçamento de iteração (`max_iterations` de 20 pra 60): **não ajudou**, os mesmos 5 passos continuam
+falhando, com resíduos ainda maiores -- descarta "faltam iterações" como explicação, mesma
+assinatura já vista na estática (mais iterações desliza a janela de convergência pra um ponto pior
+do ciclo, não resolve). É uma melhora real e substancial, mas **a dinâmica ainda não está
+totalmente resolvida** -- fica como próximo passo dedicado do Eixo 1b (não investigado mais fundo
+nesta rodada: candidatos óbvios a checar primeiro são o amortecimento de Rayleigh
+(`alpha_rayleigh`/`beta_rayleigh`, ainda hardcoded no construtor de `DynamicAnalysis`, nunca lidos
+do JSON) e a magnitude/fase da força de onda nos primeiros ciclos).
+
+**Achado colateral importante -- o sistema está bem na borda da convergência via válvula de
+escape.** Durante essa investigação, comparando duas rodadas do Exemplo_01a que deveriam ser
+idênticas (só a presença ou não da chave `rho_structural` no JSON, um campo que a estática **nunca
+lê**), a trajetória de convergência da fase estática mudou visivelmente passo a passo (ex.: passo 2
+levou 4 iterações numa rodada e 17 na outra) -- mas o resultado físico final foi **idêntico**
+(T_eff = 217,3 kN nas duas). Isso confirma que o sistema, mesmo convergindo, está operando bem
+perto de uma bifurcação numérica onde qualquer perturbação incidental (nada relacionado à física
+em si) pode deslocar exatamente qual passo precisa da válvula de escape -- consistente com todo o
+histórico de "chattering" já documentado neste arquivo. Não é uma regressão nem um bug novo, mas é
+um lembrete de que comparações passo-a-passo entre rodadas devem olhar o resultado físico final
+(tração, posição), não o número exato de iterações de cada passo individual, que tem ruído
+inerente.
+
 ## Ver também
 
+- [`roadmap.md`](roadmap.md) — plano de trabalho consolidado (Eixo 1a é este bug).
 - [`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md) — mapa da interface
   gráfica real (`trunk/interfaces/src`): construção de modelo, leitura AML/PML, exportação DAT/XML.
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).

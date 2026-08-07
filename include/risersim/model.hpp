@@ -79,6 +79,11 @@ struct AnalysisOptionsConfig {
     bool static_enable_unbalanced_criteria = false;
     double static_unbalanced_force_tol = 1.0;
     double static_unbalanced_moment_tol = 1.0;
+    /// risersim-only stabilization, no real-ANFLEX equivalent -- see
+    /// StaticAnalysis::enable_step_limiting.
+    bool static_enable_step_limiting = false;
+    double static_max_translation_step_m = 0.5;
+    double static_max_rotation_step_rad = 0.3;
     bool enable_vessel_offset = false;
     OffsetMode offset_mode = OffsetMode::Far;
     double offset_magnitude = 0.0;

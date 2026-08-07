@@ -52,6 +52,29 @@ public:
     double unbalanced_moment_tol = 1.0;  ///< N.m
 
     /**
+     * @brief Caps each node's Newton-Raphson correction, per iteration, to a physical
+     * displacement/rotation limit -- applied as a starting `alpha` for
+     * apply_newton_step_with_line_search()'s existing backtracking (see static_analysis.cpp),
+     * instead of always starting that loop at the full step (`alpha=1`).
+     *
+     * Disabled by default -- matches every other opt-in flag added while investigating the
+     * Exemplo_01a soil+current divergence (mapa_classes_anflex_estatica.md): zero behavior
+     * change unless a caller explicitly turns this on.
+     *
+     * Targets the documented "chattering" failure mode directly: when contact and friction
+     * saturate at several nodes simultaneously, the local tangent stiffness there goes nearly
+     * singular, so `K⁻¹·Residual` can produce a huge raw `step_dU` even for a modest residual --
+     * a node gets flung several meters (or through a large rotation) in a single iteration,
+     * which the existing residual-based line search (a 100x-loose safety net, see
+     * apply_newton_step_with_line_search()'s docstring) doesn't catch in time. Capping the step
+     * by its own physical size, before that residual check even runs, prevents the throw in the
+     * first place rather than trying to recover from it afterwards.
+     */
+    bool enable_step_limiting = false;
+    double max_translation_step_m = 0.5;   ///< Cap on |Δu| per node, per Newton iteration.
+    double max_rotation_step_rad = 0.3;    ///< Cap on |Δrot| (linearized) per node, per iteration.
+
+    /**
      * @brief Whether solve() runs the "assembly" pre-phase (artificial stiffness every step,
      * followed by a single full-load step with no artificial stiffness) or a single ramped solve
      * (ArtificialStiffnessMode::OnlyFirstStep, matching real ANFLEX's `solve_static()` alone).

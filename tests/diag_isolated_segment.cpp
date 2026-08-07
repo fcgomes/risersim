@@ -4,7 +4,7 @@
  *
  * Usage:
  * @code
- *   risersim_diag_isolated_segment <input.json> <start_elem_id> <num_elements> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode] [current_mode] [enable_unbalanced]
+ *   risersim_diag_isolated_segment <input.json> <start_elem_id> <num_elements> [artif_mode] [fix_mode] [load_steps] [max_iter] [seabed_mode] [current_mode] [enable_unbalanced] [enable_step_limiting] [max_translation_step_m] [max_rotation_step_rad]
  * @endcode
  *     artif_mode:   0=OnlyFirstStep (default), 1=EveryStep, 2=Never
  *     fix_mode:     0=clamped-clamped at both ends (default, original condition)
@@ -19,6 +19,12 @@
  *                   (UnbalancedForces/UnbalancedMoments escape-hatch criterion, see
  *                   static_analysis.hpp) -- targets the near-touchdown limit-cycle chattering
  *                   pattern (see mapa_classes_anflex_estatica.md).
+ *     enable_step_limiting: 0=off (default), 1=enable StaticAnalysis::enable_step_limiting
+ *                   (caps each node's Newton correction to a physical displacement/rotation
+ *                   size before the existing residual-based line search runs, see
+ *                   static_analysis.hpp) -- targets the soil+current chattering/blow-up pattern.
+ *     max_translation_step_m: cap in meters when enable_step_limiting=1 (default 0.5).
+ *     max_rotation_step_rad: cap in radians when enable_step_limiting=1 (default 0.3).
  *
  * The two nodes at the ends of the slice are fixed at their real position (read from the
  * JSON); internal nodes are free (translation + rotation), matching the full model. The rest
@@ -195,6 +201,15 @@ int main(int argc, char** argv) {
         sa.enable_unbalanced_criteria = true;
         std::cout << "Unbalanced force/moment escape-hatch criterion enabled (tol="
                   << sa.unbalanced_force_tol << " N / " << sa.unbalanced_moment_tol << " N.m)" << std::endl;
+    }
+
+    if (argc > 11 && std::stoi(argv[11]) == 1) {
+        sa.enable_step_limiting = true;
+        sa.max_translation_step_m = argc > 12 ? std::stod(argv[12]) : sa.max_translation_step_m;
+        sa.max_rotation_step_rad = argc > 13 ? std::stod(argv[13]) : sa.max_rotation_step_rad;
+        std::cout << "Physical step limiting enabled (max_translation_step_m="
+                  << sa.max_translation_step_m << ", max_rotation_step_rad="
+                  << sa.max_rotation_step_rad << ")" << std::endl;
     }
 
     bool converged = sa.solve_catenary_static(sa.load_steps, sa.max_iter_per_step, sa.tol, artif_mode);

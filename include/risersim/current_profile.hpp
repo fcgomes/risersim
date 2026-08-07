@@ -25,11 +25,32 @@ namespace risersim {
  */
 class CurrentProfile {
 public:
-    double v_surface;     ///< Current velocity at sea surface z=0 (m/s) -- fallback path only.
-    double seabed_depth;  ///< Seabed depth z_seabed (m, e.g. -80.0) -- fallback path only.
+    double v_surface;     ///< Current velocity at the sea surface (m/s) -- fallback path only.
+    double seabed_depth;  ///< Seabed Z coordinate (m, e.g. -80.0 in the "surface=0" convention, or
+                           ///< ~0.0 for a real XML/H5-derived model, see `water_surface_z` below).
     double heading_deg;   ///< Current direction in degrees (0 = +X, 90 = +Y) -- fallback path only.
     double power_exponent;///< Power law exponent alpha (default 1/7 = 0.1428) -- fallback path only.
     double Cd;            ///< Drag coefficient (default 1.0).
+
+    /**
+     * @brief Z coordinate of the sea surface, in the SAME frame as `seabed_depth` and the
+     * model's node Z coordinates -- NOT assumed to be 0.
+     *
+     * Defaults to `0.0`, matching risersim's synthetic-model convention (surface at z=0,
+     * seabed at negative z, e.g. `seabed_depth=-80.0`) -- so any caller that never sets this
+     * (the synthetic fallback path, older callers) keeps its exact previous behavior.
+     *
+     * Real XML/H5-derived models do NOT use that convention: `ModelBuilder` aligns
+     * `seabed_depth_z` with the nodes' own real (unshifted) Z coordinates
+     * (`model_builder.cpp`), which for the ANFLEX AML's native frame sit near `z=0` at the
+     * SEABED, with the water surface at `z=+water_depth` (e.g. Exemplo_01a: seabed z≈0,
+     * surface z≈265) -- the opposite orientation. `get_velocity()`/`get_heading()` need this
+     * value to compute "how far below the surface is z" correctly regardless of which frame the
+     * caller's nodes actually live in -- see `mapa_classes_anflex_estatica.md` for how assuming
+     * `water_surface_z=0` for a real model silently collapsed the whole depth-varying current
+     * profile to a single, constant, surface-only value along the entire riser.
+     */
+    double water_surface_z = 0.0;
 
     /**
      * @brief Real tabulated profile, sorted ascending by depth_from_surface (0 = surface, positive
@@ -55,22 +76,23 @@ public:
      *
      * Interpolates the real tabulated profile when 2+ points are available; otherwise falls back
      * to the power-law formula between seabed (0) and surface (`v_surface`).
-     * @param z Elevation (m), 0 at the surface, negative below it.
+     * @param z Elevation (m), in the same frame as `water_surface_z`/`seabed_depth` (NOT assumed
+     *          to be 0 at the surface -- see `water_surface_z`).
      * @return Velocity magnitude (m/s).
      */
     double get_velocity(double z) const {
-        double depth_from_surface = std::max(0.0, -z);
+        double depth_from_surface = std::max(0.0, water_surface_z - z);
         if (depths_m.size() >= 2) {
             return interp1(depths_m, velocities_ms, depth_from_surface);
         }
 
-        if (z >= 0.0) return v_surface;
+        if (z >= water_surface_z) return v_surface;
         if (z <= seabed_depth) return 0.0;
 
-        double total_water_depth = std::abs(seabed_depth);
-        double height_above_seabed = total_water_depth - depth_from_surface;
+        double total_water_depth = water_surface_z - seabed_depth;
+        double height_above_seabed = z - seabed_depth;
 
-        double ratio = height_above_seabed / total_water_depth;
+        double ratio = (total_water_depth > 1.0e-9) ? (height_above_seabed / total_water_depth) : 1.0;
         ratio = std::max(0.0, std::min(1.0, ratio));
 
         return v_surface * std::pow(ratio, power_exponent);
@@ -83,7 +105,7 @@ public:
      * falls back to the single fixed `heading_deg`.
      */
     double get_heading(double z) const {
-        double depth_from_surface = std::max(0.0, -z);
+        double depth_from_surface = std::max(0.0, water_surface_z - z);
         if (angles_deg.size() >= 2 && angles_deg.size() == depths_m.size()) {
             return interp1(depths_m, angles_deg, depth_from_surface);
         }

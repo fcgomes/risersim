@@ -43,6 +43,9 @@ void Simulation::run() {
     static_analysis.enable_unbalanced_criteria = model->analysis_options.static_enable_unbalanced_criteria;
     static_analysis.unbalanced_force_tol = model->analysis_options.static_unbalanced_force_tol;
     static_analysis.unbalanced_moment_tol = model->analysis_options.static_unbalanced_moment_tol;
+    static_analysis.enable_step_limiting = model->analysis_options.static_enable_step_limiting;
+    static_analysis.max_translation_step_m = model->analysis_options.static_max_translation_step_m;
+    static_analysis.max_rotation_step_rad = model->analysis_options.static_max_rotation_step_rad;
     static_analysis.offset = VesselOffset(model->analysis_options.offset_mode, model->analysis_options.offset_magnitude);
     static_analysis.enable_offset = model->analysis_options.enable_vessel_offset;
 
@@ -56,6 +59,12 @@ void Simulation::run() {
         // tipicamente compartilham a mesma seção num riser, então o do primeiro serve de default.
         double cd = model->elements.empty() ? 1.0 : model->elements.front()->props.Cd;
         static_analysis.current = CurrentProfile(v_surface, model->environmental.seabed_depth_z, heading, 0.1428, cd);
+        // Superfície real, não necessariamente Z=0: ModelBuilder alinha seabed_depth_z ao Z real
+        // dos nós (model_builder.cpp), que no frame nativo do AML fica perto de 0 no leito e
+        // sobe até +water_depth na superfície -- sem isso, get_velocity()/get_heading() (que
+        // assumiam superfície em Z=0) nunca viam profundidade real nenhuma, sempre avaliando no
+        // ponto de superfície do perfil tabulado (ver mapa_classes_anflex_estatica.md).
+        static_analysis.current.water_surface_z = model->environmental.water_surface_z;
         // Perfil tabulado real: com 2+ pontos, CurrentProfile interpola de verdade em vez de usar
         // a lei de potência (que fica só como fallback pro caso raro de 1 ponto só).
         static_analysis.current.set_profile(

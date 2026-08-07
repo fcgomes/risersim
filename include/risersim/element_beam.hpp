@@ -21,7 +21,22 @@ struct BeamMaterialProps {
     double IY;         ///< Moment of inertia Y (m^4).
     double IZ;         ///< Moment of inertia Z (m^4).
     double J;          ///< Torsional constant (m^4).
-    double rho;        ///< Structural mass density (kg/m^3).
+    /**
+     * @brief Weight-equivalent density (kg/m^3), used ONLY for the static self-weight formula
+     * (`w_dry = rho*A*g` combined with a separate buoyancy subtraction, see
+     * `static_integrator.cpp`/`static_analysis.cpp`).
+     *
+     * Despite the name, this is NOT a physical structural mass density: `ModelBuilder` derives
+     * it directly from the real XML's already-net (submerged, buoyancy-subtracted) weight per
+     * length -- `rho*A*g` alone reproduces the correct net gravitational force, which is why
+     * `Simulation::run()` also zeroes `StaticAnalysis::water_density` for real (JSON-parsed)
+     * models, to avoid double-subtracting buoyancy. Do NOT use this for inertia/mass-matrix
+     * purposes -- see `rho_structural` below, added after this field was found being reused (in
+     * `total_linear_mass()`) for exactly that, understating a real riser's dynamic mass by a
+     * large factor (~2.4x for Exemplo_01a) since buoyancy legitimately reduces net weight but
+     * never reduces inertial mass. See `docs/mapa_classes_anflex_estatica.md`.
+     */
+    double rho;
     double EI;         ///< Bending stiffness EI (N.m^2).
 
     double D_outer;    ///< Outer diameter (m).
@@ -30,9 +45,19 @@ struct BeamMaterialProps {
     double Ca;         ///< Hydrodynamic added mass coefficient (default 1.0).
     double Cd;         ///< Hydrodynamic drag coefficient (default 1.0) -- distinct from Ca; previously the current-drag code reused Ca in its place.
 
+    /**
+     * @brief True physical structural mass density (kg/m^3), for inertia (`total_linear_mass()`,
+     * the dynamic mass matrix) -- distinct from `rho` above (the static weight-equivalent
+     * value). Defaults to the same value as `rho`'s own default (steel, 7850.0) so a model that
+     * never sets either field behaves identically either way; a real JSON that only sets `rho`
+     * (older format, before this field existed) also falls back to `rho`, preserving the
+     * previous (buggy but not worse) behavior until regenerated with the real value.
+     */
+    double rho_structural;
+
     BeamMaterialProps()
         : E(2.1e11), G(8.0e10), A(0.015), IY(5.0e-5), IZ(5.0e-5), J(1.0e-4), rho(7850.0), EI(1.05e7),
-          D_outer(0.25), D_inner(0.20), rho_fluid(800.0), Ca(1.0), Cd(1.0) {}
+          D_outer(0.25), D_inner(0.20), rho_fluid(800.0), Ca(1.0), Cd(1.0), rho_structural(7850.0) {}
 };
 
 /**
@@ -108,7 +133,7 @@ public:
      * @param rho_water Seawater density used for the added-mass term (kg/m^3).
      */
     double total_linear_mass(double rho_water = 1025.0) const {
-        double m_pipe = props.rho * props.A;
+        double m_pipe = props.rho_structural * props.A;
         double m_fluid = props.rho_fluid * inner_area();
         double m_added = rho_water * outer_area() * props.Ca;
         return m_pipe + m_fluid + m_added;

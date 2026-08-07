@@ -237,6 +237,101 @@ igualmente restrito — uma linha, sem boias/tendões/turret/ruptura — e cresc
 crescer. Isso não muda a decisão de arquitetura (dois JSONs continua certo mesmo num escopo
 pequeno), só limita o que um primeiro formulário poderia cobrir.
 
+## Auditoria de conversões de valor e proposta de unificação de nomenclatura
+
+Pergunta que motivou esta seção: por que o JSON de simulação não guarda exatamente os mesmos campos
+que o XML, nos mesmos nomes/unidades, sem contas de conversão? Auditoria campo a campo de
+`xml_h5_reader.py`/`model_builder.cpp`, separando **restruturação** (segura — remontar
+nós/elementos, resolver corrente/solo por ID, converter unidade de uma mesma grandeza) de
+**conversão de valor real** (a categoria que gerou os dois bugs desta sessão — perfil de corrente e
+`rho`/`rho_structural`). Achado central: quase toda restruturação é inofensiva; é a conversão de
+valor real, feita só pra encaixar um dado num formato que uma fórmula antiga já esperava, que é
+perigosa.
+
+### O que o ANFLEX real faz internamente (comparação, não suposição)
+
+Lendo `beamSD.cpp:813`/`:1215` (`trunk/src`): o próprio solver real calcula o peso próprio como
+`material_weight = m_density / m_gravity` — ou seja, o ANFLEX real também guarda **peso específico**
+(`density`, kN/m³, não densidade de massa) e deriva massa/peso a partir dele, exatamente o padrão
+que `rho_structural` do risersim replica. Isso muda a moldura de uma hipótese anterior desta
+sessão: guardar um "rho" e derivar peso dele **não é** um hack só do risersim — é fiel ao ANFLEX
+real. O que diverge do ANFLEX real é como o risersim trata o **empuxo**: o solver real mantém peso
+estrutural bruto e empuxo como dois termos sempre separados (`density`/`g` de um lado,
+`external_fluid_density`×área do outro — o próprio caminho sintético do risersim já faz isso,
+`static_integrator.cpp:21-22`); só o caminho de dado real (`xml_h5_reader.py`) pré-subtrai o empuxo
+em Python (`weight_wet_kNm = weight_dry_kNm - ext_fluid_kNm3*hidro_area`) e fabrica um "rho
+equivalente" só pra caber de volta na fórmula `rho*A*g`, exigindo o caso especial
+`static_analysis.water_density = parsed_from_json ? 0.0 : ...` (`simulation.cpp:30`) pra não
+subtrair o empuxo em dobro.
+
+### Achados de conversão de valor real (não mera restruturação)
+
+1. **`rho_structural`: round-trip desnecessário, resultado idêntico.** Hoje:
+   `density_kNm3` (XML) → `weight_dry_kNm = density_kNm3 * area` → `rho_structural =
+   weight_dry_kNm*1000/9.81/area`. A área aparece e desaparece — algebricamente é só
+   `density_kNm3 * 1000/9.81`, uma conversão de unidade pura (kN/m³ → kg/m³ "equivalente"), sem
+   precisar passar por peso nem por área. Achado ao auditar o próprio código escrito nesta sessão.
+   Simplificação de baixo risco: nenhuma mudança de valor, só remove uma dependência
+   desnecessária de `area` e duas linhas de conta.
+
+2. **`rho` (peso-equivalente): fabricado só pra caber numa fórmula pensada pra densidade real.**
+   Diferente de `rho_structural` (que reflete fielmente o `density` real do ANFLEX), este campo
+   não existe no ANFLEX real com esse significado — é uma invenção do risersim pra evitar mudar a
+   fórmula de peso quando o dado de origem já vem líquido de empuxo. Ver comparação acima: se
+   `xml_h5_reader.py` emitisse `rho_structural` direto do `density` real (item 1) e o
+   `environmental.water_density` real (`external_fluid_density`, já convertido e presente no
+   JSON hoje) em vez de zerá-lo, a fórmula genérica já existente
+   (`w_dry = rho*A*g; w_buoyancy = water_density*outer_area*g`) reproduziria o mesmo peso líquido
+   sem precisar de um `rho` com significado duplo (densidade real pro caminho sintético, densidade
+   fabricada pro caminho real) nem do caso especial que zera `water_density` pra JSON real. Essa é
+   uma simplificação mais estrutural — mexe no caminho de peso estático que só ficou correto nesta
+   sessão, então precisaria reverificar a convergência dos 11 passos do Exemplo_01a antes de
+   adotar, não é tão de graça quanto o item 1.
+
+3. **Perfil de corrente: bug já corrigido, mas o nome do campo ainda esconde a inversão de
+   convenção.** `depths_m` no JSON e no XML soam como o mesmo campo, mas carregam convenções
+   opostas (XML: 0=leito, crescente até a superfície; JSON/`CurrentProfile::depths_m`: 0=superfície,
+   crescente até o leito — ver `current_profile.hpp:56-58`). O nome idêntico foi exatamente o que
+   permitiu o bug ficar escondido por tanto tempo. Candidato a rename explícito (ex.
+   `depth_below_surface_m`) quando o schema for revisado, não urgente agora que o bug está
+   corrigido e documentado.
+
+4. **Rayleigh damping: achado novo, ainda não é sobre nomenclatura — é dado real disponível e
+   nunca lido.** O ANFLEX real tem uma cadeia de três camadas: AML (entrada do usuário)
+   `%MATERIAL.RAYLEIGH.PERIOD.FIRST/SECOND` + `%MATERIAL.RAYLEIGH.DAMPING.FIRST/SECOND` (2 períodos
+   naturais + 2 razões de amortecimento modal ξ, o jeito de engenharia de especificar Rayleigh) →
+   XML/H5 já traz os coeficientes **por material**, já calculados: `stiffness_damping`/
+   `mass_damping` + `consider_damping` (confirmado em
+   `Exemplo_01a_A1.xml:754-756`, e reaproveitado tal e qual no C++ real,
+   `m_stiff_damping`/`m_mass_damping`, `beamSD.cpp:1157-1165`). `xml_h5_reader.py` não lê nenhum
+   dos dois — hardcoda `{"alpha": 0.05, "beta": 0.005}` pra todo XML, sempre. Testado: **todos os 7
+   XMLs de exemplo com essa tag no repositório têm `consider_damping=no` e os dois coeficientes
+   zerados** — ou seja, o dado real diz "sem amortecimento de Rayleigh" e o risersim hoje injeta um
+   valor fabricado em toda rodada dinâmica, incluindo o Exemplo_01a que already está sob
+   investigação (Eixo 1b, 15/20 passos convergindo). Achado direto, ainda não estava documentado no
+   roadmap (que só mencionava "hardcoded no construtor" — na verdade já é lido do JSON pelo C++,
+   ver `simulation.cpp:100-101`; o gap real é `xml_h5_reader.py` nunca extrair o valor real do
+   XML). Consertar isso muda o comportamento da dinâmica pro Exemplo_01a (amortecimento real = 0),
+   então precisa reverificar o resultado 15/20 depois.
+
+### Proposta de nomenclatura unificada (documentação — não aplicada)
+
+| Grandeza | AML (`%TAG`) | XML | JSON simulação hoje | C++ hoje | Alinhado? |
+|---|---|---|---|---|---|
+| Peso seco/molhado por metro | `%MATERIAL.WEIGHT.DRY/WET` | *(não existe — só `density`+`area`)* | `weight_wet_kNm` (`section_properties`) | não consumido diretamente | AML e JSON já usam o mesmo nome; XML diverge (deriva de `density`) |
+| Peso específico estrutural | *(derivado de WEIGHT.DRY/área)* | `density` (kN/m³) | `rho`/`rho_structural` (kg/m³, já em SI) | `BeamMaterialProps::rho_structural` | nome diverge (`density`→`rho_structural`), unidade também (kN/m³→kg/m³) — ambos justificáveis (SI, e `rho` já tinha esse nome antes de `rho_structural` existir), mas vale documentar a ponte explicitamente |
+| Densidade "peso-equivalente" (empuxo já líquido) | não existe | não existe | `rho` | `BeamMaterialProps::rho` | campo sem contrapartida real — ver achado 2 |
+| Profundidade do perfil de corrente | `%CURRENT.DEPTH` | `Currents/.../profile/values` (col. 1), 0=leito | `environmental.current.depths_m`, 0=superfície | `CurrentProfile::depths_m`, 0=superfície | mesmo nome, convenção oposta — ver achado 3 |
+| Amortecimento de Rayleigh | `%MATERIAL.RAYLEIGH.PERIOD/DAMPING.FIRST/SECOND` (2 pontos ξ) | `stiffness_damping`/`mass_damping` por material + `consider_damping` | `analysis_options.dynamic.rayleigh_damping.{alpha,beta}` (global, não por material) | `DynamicAnalysis::alpha_rayleigh`/`beta_rayleigh` | nomes convergem razoavelmente (`mass_damping`≈`alpha`, `stiffness_damping`≈`beta`), mas granularidade diverge (por material no ANFLEX real, global único no risersim) e o valor nunca é lido do XML — ver achado 4 |
+| Atrito solo axial/lateral | `%SOIL...` (ver `mapa_classes_anflex_interface.md`) | `Soils/Solo/axial_friction`/`lateral_friction` | `environmental.seabed.axial_friction`/`lateral_friction` | `EnvironmentalConfig::seabed_axial_friction`/`seabed_lateral_friction` | já bem alinhado (corrigido nesta sessão) |
+
+Uso pretendido desta tabela: referência pra quando o "JSON de interface" (seção acima) for
+desenhado de fato — não é uma decisão de renomear o JSON de simulação atual (isso quebraria
+compatibilidade com JSONs já gerados sem necessidade), é uma checagem de que o **vocabulário**
+usado no formulário/JSON de interface (mais próximo do usuário, do AML) tenha uma ponte documentada
+e sem ambiguidade até o JSON de simulação (mais próximo do XML) — para não repetir o padrão que
+gerou os achados 3 e 4 (nomes iguais/parecidos escondendo convenções ou completude diferentes).
+
 ## Ver também
 
 - [`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md) — mapa das classes reais

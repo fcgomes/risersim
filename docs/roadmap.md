@@ -9,40 +9,61 @@
 
 ## Eixo 1 — Confiabilidade do motor (bloqueante para qualquer resultado em que se possa confiar)
 
-### 1a. Fechar o bug estático solo+corrente
+### 1a. Fechar o bug estático solo+corrente — ✅ RESOLVIDO
 
-Já exaustivamente investigado em [`mapa_classes_anflex_estatica.md`](mapa_classes_anflex_estatica.md).
-Causa isolada com precisão (chattering de contato+atrito sob carga lateral, "parede" repentina por
-volta da iteração 20-30, várias correções de fidelidade já aplicadas empurram o limiar mas não
-fecham o gap). Três técnicas identificadas e **ainda não implementadas**:
+Depois de exaustivamente investigado (rotação total-vs-local, decaimento da rigidez artificial,
+atrito elástico-plástico, atrito axial/lateral real, rampa de carga real, critério de convergência
+combinado, `%ASSEMBLY.USING` real) sem fechar o gap, e depois de uma tentativa de estabilização
+numérica (limitar o passo por norma física) que ajudava casos isolados mas piorava o modelo
+completo, a causa raiz acabou sendo um **bug de dados**, não numérico: o perfil de corrente por
+profundidade nunca era de fato interpolado — dois bugs encadeados (`xml_h5_reader.py` guardando a
+profundidade na convenção errada + `CurrentProfile` assumindo superfície em `z=0` quando o modelo
+real tem o leito em `z≈0`) faziam toda consulta cair no valor de **superfície**, aplicando até
+~27x mais carga lateral que a real na zona de touchdown. Corrigido — ver
+[`mapa_classes_anflex_estatica.md`](mapa_classes_anflex_estatica.md), seção "Bug real encontrado e
+corrigido: perfil de corrente sempre avaliado na superfície". **Os 11 passos de carga do
+Exemplo_01a completo convergem agora**, sem precisar do step limiting.
 
-1. Line search direcional (tipo Armijo, usando derivada direcional em vez de só a norma do
-   resíduo) — ataca a causa mais diretamente, mas é a mais complexa de implementar corretamente.
-2. Limitar o passo por nó/GDL em vez de um fator escalar global — mais simples que Armijo, pode
-   conter oscilações localizadas sem afetar nós bem-comportados.
-3. Suavizar a transição liga/desliga do contato vertical (hoje só a *penetração* é suavizada, o
-   cruzamento `pen>0`/`pen<=0` continua uma chave dura) — ataca a descontinuidade na raiz, mas
-   muda o comportamento físico do contato, exige validação cuidadosa.
+Lição para o resto do roadmap: depois de esgotar hipóteses numéricas/algorítmicas razoáveis, uma
+auditoria direta de dados (comparar o valor real no XML contra o que de fato chega no C++, campo a
+campo) foi o que resolveu — vale aplicar essa mesma disciplina antes de partir para técnicas mais
+sofisticadas em qualquer outra frente (ex. 1b abaixo).
 
-**Recomendação**: testar a técnica escolhida primeiro no caso isolado de 33 elementos
-(`risersim_diag_isolated_segment`, o caso mais pequeno e determinístico já isolado) antes do
-Exemplo_01a completo — ciclo de iteração muito mais rápido.
+**Pendências resolvidas** (ver `mapa_classes_anflex_estatica.md`, seção "Pendências resolvidas"):
+step limiting confirmado desnecessário (resultado atual não o usa); `CurrentProfile` confirmado
+usado também pela dinâmica, já corrigido automaticamente por herança de valor
+(`DynamicAnalysis(const Analysis&)`), sem bug análogo na força de onda (não é dependente de
+profundidade neste código). Achado colateral: o sistema convergido está bem perto de uma
+bifurcação numérica — a trajetória passo-a-passo (não o resultado físico final) é sensível a
+detalhes incidentais, então comparações futuras devem olhar o resultado final, não iterações
+por passo.
 
-### 1b. Investigar a análise dinâmica
+### 1b. Investigar a análise dinâmica — 🟡 EM PROGRESSO (achado real, ainda não fechado)
 
-Nunca recebeu o mesmo nível de investigação que a estática. O que já se sabe: não converge em
-vários passos mesmo no modelo sintético simples (sem solo/corrente reais) — confirmado como
-problema pré-existente, não uma regressão introduzida por nenhuma mudança já feita. Fidelidade
-conhecidamente mais baixa que a estática num ponto específico: o movimento prescrito do topo em
-`DynamicAnalysis` (onda harmônica) ainda usa a técnica direta antiga (`top_node->disp = ...` fora
-do sistema, nó excluído do loop de Newton) — a técnica de penalidade (`PrescribedMotion`) só foi
-migrada para a estática (Passo 7 do roadmap de modernização, já concluído).
+Começada nesta rodada, seguindo a mesma disciplina que resolveu 1a (auditoria de dados antes de
+técnica numérica). Rodando o Exemplo_01a completo com dinâmica pela primeira vez desde que a
+estática passou a convergir: **todos os 20 passos de tempo falhavam**. Auditoria encontrou um bug
+real e concreto: `total_linear_mass()` (massa/inércia dinâmica) reaproveitava `rho` -- que na
+verdade é um valor "equivalente de peso submerso" (líquido de empuxo), correto só para a fórmula
+de peso estático -- como se fosse densidade estrutural real. Empuxo reduz peso líquido mas nunca
+reduz massa inercial; pro Exemplo_01a isso subestimava a massa dinâmica em **~2,4x**. Corrigido
+(novo campo `rho_structural`, derivado do peso seco real do XML, já calculado mas antes
+descartado) — ver `mapa_classes_anflex_estatica.md`, seção "Pendências resolvidas".
 
-**Recomendação**: aplicar a mesma metodologia que funcionou para a estática — isolar um caso mínimo
-(malha sintética pequena, sem solo/corrente), comparar diretamente contra `cDynamicAnalysis`/
-`cDynamicIntegrator` do ANFLEX real (`trunk/src`), buscando lacunas de fidelidade da mesma forma
-que se achou a rotação total-vs-local na estática. Não depende de 1a estar fechado (o modelo
-sintético já converge na estática) — pode rodar em paralelo.
+**Resultado**: a dinâmica passa a convergir em **15 dos 20 passos** (antes: 0). Real e
+substancial, mas não resolvido -- passos 1 e 5-8 ainda falham (resíduo crescendo, não platô);
+testado orçamento maior de iterações, não ajudou (mesma assinatura de "janela de escape desliza
+pra pior" já vista na estática). Fidelidade conhecidamente mais baixa que a estática em pelo menos
+dois pontos ainda não auditados: amortecimento de Rayleigh (`alpha_rayleigh`/`beta_rayleigh`
+hardcoded no construtor de `DynamicAnalysis`, nunca lidos do JSON) e o movimento prescrito do topo
+(ainda usa a técnica direta antiga, `top_node->disp = ...` fora do sistema — a técnica de
+penalidade `PrescribedMotion` só foi migrada pra estática, Passo 7 do roadmap de modernização).
+
+**Recomendação pro próximo passo**: continuar auditando dados antes de tentar técnica numérica --
+Rayleigh damping é o candidato mais óbvio ainda não verificado (não lido do JSON real de jeito
+nenhum hoje). Se isso não resolver, isolar um caso mínimo (malha sintética pequena) e comparar
+diretamente contra `cDynamicAnalysis`/`cDynamicIntegrator` do ANFLEX real (`trunk/src`), mesma
+metodologia que achou a rotação total-vs-local na estática.
 
 ## Eixo 2 — Pipeline de dados (desbloqueia mais casos de teste reais, baixo risco)
 
@@ -114,17 +135,17 @@ faz sentido implementar especulativamente.
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 
-1. **1a** (bug estático) — é o item de maior incerteza e mais tempo já investido; fechar destrava
-   confiança em qualquer resultado real do motor.
-2. **2a** (religar `aml_reader.py`) — barato, baixo risco, roda em paralelo a 1a, e abre mais um
-   caso de teste real (`DNV_Check`) que pode ajudar a validar 1a quando fechado.
-3. **1b** (dinâmica) — pode começar em paralelo a 1a/2a (não depende de nenhum dos dois no caso
-   sintético), mas convergir a estática primeiro dá uma base mais sólida pra rodar dinâmica em
-   cima de modelos reais depois.
+1. ~~**1a** (bug estático)~~ — ✅ resolvido (era um bug de dados no perfil de corrente, não
+   numérico). Confiança no motor pra Exemplo_01a estático agora estabelecida.
+2. **2a** (religar `aml_reader.py`) — barato, baixo risco, abre mais um caso de teste real
+   (`DNV_Check`) que pode ajudar a confirmar 1a de forma independente.
+3. 🟡 **1b** (dinâmica) — em progresso: achado e corrigido um bug real de massa (`rho_structural`),
+   dinâmica foi de 0/20 pra 15/20 passos de tempo convergindo no Exemplo_01a. Continuar com a
+   mesma disciplina (Rayleigh damping é o próximo dado ainda não auditado).
 4. **3a** (entrada de dados) — pode começar o desenho/construção em paralelo a tudo acima, já que é
    front-end puro e não depende do motor mudar; só precisa ficar escopado ao que o motor já resolve.
 5. **3b** (controle de simulação) — a peça que mais se beneficia de vir depois, já que introduz
-   infraestrutura nova; faz mais sentido desenhar quando já houver mais clareza sobre 1a/1b (o que
+   infraestrutura nova; faz mais sentido desenhar quando já houver mais clareza sobre 1b (o que
    "acompanhar uma simulação" precisa mostrar depende de quão bem-comportado o solver já está).
 6. **3c** (pós-processamento) — reboca 3b.
 7. **Backlog de recursos faltantes** — sob demanda, conforme cada item vire necessário pra um caso

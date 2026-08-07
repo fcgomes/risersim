@@ -71,6 +71,17 @@ BeamMaterialProps parse_beam_section_properties(const json& sp, std::map<std::st
     if (!sp.contains("rho")) note_missing("rho");
     elem_props.rho = sp.value("rho", rho_derived);
 
+    // rho_structural: densidade real de massa estrutural (kg/m^3), para inércia/matriz de massa
+    // -- distinta de `rho` acima (equivalente-de-peso-submerso, só para a fórmula de peso
+    // estático). Bug real encontrado e corrigido (ver mapa_classes_anflex_estatica.md):
+    // total_linear_mass() reaproveitava `rho` (peso submerso já líquido de empuxo) como se fosse
+    // massa estrutural, subestimando a massa dinâmica real em ~2,4x pro Exemplo_01a (empuxo
+    // reduz peso líquido de verdade, mas nunca reduz massa inercial). Sem esse campo no JSON
+    // (formato antigo, antes desta correção), cai de volta em `elem_props.rho` -- preserva o
+    // comportamento anterior (com o mesmo bug) em vez de piorar, até o JSON ser regenerado.
+    if (!sp.contains("rho_structural")) note_missing("rho_structural");
+    elem_props.rho_structural = sp.value("rho_structural", elem_props.rho);
+
     // rho_fluid: peso próprio do fluido interno (bore) -- termo real,
     // distinto do empuxo externo (que já vem líquido embutido em `rho`/
     // `weight_wet_kNm`, ver water_density no chamador). Antes ficava sempre
@@ -325,6 +336,9 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                 ao.static_enable_unbalanced_criteria = st.value("enable_unbalanced_criteria", ao.static_enable_unbalanced_criteria);
                 ao.static_unbalanced_force_tol = st.value("unbalanced_force_tol", ao.static_unbalanced_force_tol);
                 ao.static_unbalanced_moment_tol = st.value("unbalanced_moment_tol", ao.static_unbalanced_moment_tol);
+                ao.static_enable_step_limiting = st.value("enable_step_limiting", ao.static_enable_step_limiting);
+                ao.static_max_translation_step_m = st.value("max_translation_step_m", ao.static_max_translation_step_m);
+                ao.static_max_rotation_step_rad = st.value("max_rotation_step_rad", ao.static_max_rotation_step_rad);
 
                 if (st.contains("vessel_offset")) {
                     auto off = st["vessel_offset"];

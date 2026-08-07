@@ -77,6 +77,12 @@ using AssembleFn = std::function<void(int, Eigen::SparseMatrix<double>&, Eigen::
  * @param norm_R_before Residual norm before this step, used as the backtracking baseline.
  * @param iter Current iteration index, forwarded to `assemble_fn` (e.g. for artificial-stiffness decay).
  * @param excluded_node Node to leave untouched (e.g. a node under prescribed motion), or nullptr.
+ * @param max_translation_step Cap (m) on any node's |Δu| for the starting `alpha`, before the
+ *                              backtracking loop below runs; `<= 0.0` means no cap (the loop
+ *                              starts at `alpha=1` as before). See
+ *                              `StaticAnalysis::enable_step_limiting`.
+ * @param max_rotation_step Cap (rad) on any node's |Δrot| for the starting `alpha`; `<= 0.0`
+ *                           means no cap.
  * @return The accepted (possibly scaled-down) displacement increment.
  */
 Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn,
@@ -85,7 +91,9 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
                                                     const Eigen::VectorXd& step_dU,
                                                     double norm_R_before,
                                                     int iter,
-                                                    Node3D* excluded_node) {
+                                                    Node3D* excluded_node,
+                                                    double max_translation_step = -1.0,
+                                                    double max_rotation_step = -1.0) {
     std::vector<NodeStateSnapshot> snapshot(model->nodes.size());
     for (size_t k = 0; k < model->nodes.size(); ++k) {
         snapshot[k] = {model->nodes[k]->disp, model->nodes[k]->rot, model->nodes[k]->friction_force};
@@ -116,8 +124,34 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
         }
     };
 
+    // Physical step cap (StaticAnalysis::enable_step_limiting): computes the largest starting
+    // `alpha` that keeps every node's translation/rotation increment within its configured cap,
+    // instead of always starting the backtracking loop below at the full step. A near-singular
+    // local tangent (contact/friction saturating together) can make `step_dU` itself enormous
+    // even when the residual is modest -- this catches that at the source, before the
+    // residual-based backtracking below (a 100x-loose safety net) even gets a chance to react.
+    double alpha_cap = 1.0;
+    if (max_translation_step > 0.0 || max_rotation_step > 0.0) {
+        for (const auto& node_ptr : model->nodes) {
+            Node3D* node = node_ptr.get();
+            if (node == excluded_node) continue;
+            for (int i = 0; i < 3; ++i) {
+                int eq = node->eq_numbers[i];
+                if (eq >= 0 && max_translation_step > 0.0) {
+                    double du = std::abs(step_dU[eq]);
+                    if (du > 1.0e-12) alpha_cap = std::min(alpha_cap, max_translation_step / du);
+                }
+                int eq_rot = node->eq_numbers[i + 3];
+                if (eq_rot >= 0 && max_rotation_step > 0.0) {
+                    double drot = std::abs(step_dU[eq_rot]);
+                    if (drot > 1.0e-12) alpha_cap = std::min(alpha_cap, max_rotation_step / drot);
+                }
+            }
+        }
+    }
+
     const int max_backtracks = 5;
-    double alpha = 1.0;
+    double alpha = alpha_cap;
     Eigen::VectorXd accepted_dU;
     for (int bt = 0; bt <= max_backtracks; ++bt) {
         restore();
@@ -401,7 +435,9 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 integrator.assemble_stiffness_and_internal_forces(it, K, F);
             };
             Eigen::VectorXd accepted_dU = apply_newton_step_with_line_search(
-                assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr);
+                assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr,
+                enable_step_limiting ? max_translation_step_m : -1.0,
+                enable_step_limiting ? max_rotation_step_rad : -1.0);
 
             // Real ANFLEX's multi-criterion convergence test (see convergence_test.hpp/.cpp): by
             // default only translation/rotation are active, so this iteration's correction must
@@ -552,7 +588,9 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 Eigen::VectorXd F_ext_unused;
                 this->assemble_system(K, F_ext_unused, F);
             };
-            apply_newton_step_with_line_search(assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr);
+            apply_newton_step_with_line_search(assemble_fn, model, F_ext, step_dU, norm_R, iter, nullptr,
+                enable_step_limiting ? max_translation_step_m : -1.0,
+                enable_step_limiting ? max_rotation_step_rad : -1.0);
         }
 
         if (solver_failed) {

@@ -115,7 +115,10 @@ Minimal usage example:
         .def_readwrite("J",          &BeamMaterialProps::J,
                        "Torsional constant (m4).")
         .def_readwrite("rho",        &BeamMaterialProps::rho,
-                       "Structural mass density (kg/m3).")
+                       "Weight-equivalent density for the static self-weight formula (kg/m3) -- "
+                       "NOT physical structural mass, see rho_structural.")
+        .def_readwrite("rho_structural", &BeamMaterialProps::rho_structural,
+                       "True structural mass density, for inertia/mass-matrix purposes (kg/m3).")
         .def_readwrite("D_outer",    &BeamMaterialProps::D_outer,
                        "Outer diameter (m).")
         .def_readwrite("D_inner",    &BeamMaterialProps::D_inner,

@@ -320,12 +320,26 @@ class ANFLEXXmlH5Reader:
             # Fallback só quando o XML não tem nenhum perfil de corrente
             return [0.0, 265.0], [90.0, 90.0], [1.02, 0.27]
 
-        # "Depth" no XML é medido a partir do leito marinho (0=fundo, crescente
-        # até a superfície) — mesma convenção dos nós do modelo. Simulation::run()
-        # (risersim/src/simulation.cpp) só consome o índice [0] como valor de superfície,
-        # então inverte-se a ordem para que o ponto mais raso (perto da superfície) fique primeiro.
+        # "Depth" no XML é medido a partir do leito marinho (0=fundo, crescente até a
+        # superfície) -- mas CurrentProfile::depths_m (current_profile.hpp) espera a convenção
+        # OPOSTA: profundidade a partir da SUPERFÍCIE (0=superfície), ascendente (exigido por
+        # interp1(), que não suporta tabela descendente -- ver o bug descrito abaixo). Transforma
+        # cada ponto para essa convenção antes de guardar, em vez de só reordenar os índices como
+        # a versão anterior fazia.
+        #
+        # Bug real encontrado e corrigido (ver mapa_classes_anflex_estatica.md): a versão anterior
+        # só invertia a ORDEM dos índices (mais raso primeiro), mas mantinha os VALORES de
+        # profundidade como "altura acima do leito" (0=fundo) -- ficando descendente
+        # (ex.: [265, 225, ..., 0] em vez de ascendente. `interp1()` (current_profile.hpp) exige
+        # x_table ascendente e sua primeira checagem (`x <= x_table.front()`) vira um curto-
+        # circuito para QUALQUER profundidade de consulta quando a tabela é descendente -- sempre
+        # devolvia o ponto de superfície (a maior velocidade real do perfil), inclusive para nós
+        # encostados no leito marinho. Como a força de arrasto escala com v², isso aplicava até
+        # ~27x mais carga lateral que a real bem na zona de touchdown (Exemplo_01a: 1,78 m/s vs.
+        # 0,34 m/s reais ali) -- a mesma região onde solo+atrito já são mais delicados.
+        total_water_depth = max(depths)  # o topo do perfil tabulado corresponde à superfície
         order = sorted(range(len(depths)), key=lambda i: depths[i], reverse=True)
-        depths = [depths[i] for i in order]
+        depths = [total_water_depth - depths[i] for i in order]
         angles = [angles[i] for i in order]
         vels = [vels[i] for i in order]
 
@@ -405,7 +419,15 @@ class ANFLEXXmlH5Reader:
         
         # Associa as propriedades do material aos elementos
         weight_wet_kNm = material["weight_wet_kNm"]
+        weight_dry_kNm = material["weight_dry_kNm"]
+        # "rho" (peso submerso/líquido de empuxo, só para a fórmula de peso estático) vs.
+        # "rho_structural" (massa estrutural real, para inércia/matriz de massa dinâmica) --
+        # bug real encontrado e corrigido (ver mapa_classes_anflex_estatica.md): antes só
+        # existia "rho", e o C++ reaproveitava esse valor (líquido de empuxo) como se fosse
+        # massa estrutural, subestimando a massa dinâmica real (empuxo reduz peso líquido, mas
+        # nunca reduz massa inercial).
         rho_equivalent = (weight_wet_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
+        rho_structural = (weight_dry_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
         for elem in elements:
             elem["section_properties"] = {
                 "E": material["E_Pa"],
@@ -417,6 +439,7 @@ class ANFLEXXmlH5Reader:
                 "EI": material["EI_Nm2"],
                 "weight_wet_kNm": weight_wet_kNm,
                 "rho": rho_equivalent,
+                "rho_structural": rho_structural,
                 "D_outer": material["outer_diameter_m"],
                 "D_inner": material["inner_diameter_m"],
                 "rho_fluid": material.get("internal_fluid_density_kgm3", 1025.0),
