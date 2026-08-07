@@ -35,7 +35,9 @@ struct EnvironmentalConfig {
     SoilModel soil_model = SoilModel::Uncoupled;
 
     bool current_enabled = false;
-    std::vector<double> current_depths_m;
+    /// 0 = superfície, positivo pra baixo -- convenção OPOSTA à do XML/AML de origem (0 = leito).
+    /// Nome deliberadamente explícito, não "current_depths_m" -- ver CurrentProfile::depth_below_surface_m.
+    std::vector<double> current_depth_below_surface_m;
     std::vector<double> current_velocities_ms;
     std::vector<double> current_angles_deg;
 

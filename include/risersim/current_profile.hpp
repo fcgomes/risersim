@@ -53,11 +53,20 @@ public:
     double water_surface_z = 0.0;
 
     /**
-     * @brief Real tabulated profile, sorted ascending by depth_from_surface (0 = surface, positive
-     * downward -- same convention as the input JSON's environmental.current arrays). Empty by
-     * default; populated via set_profile() when the source data has it.
+     * @brief Real tabulated profile, sorted ascending by depth below the surface (0 = surface,
+     * positive downward -- same convention as the input JSON's environmental.current arrays).
+     * Empty by default; populated via set_profile() when the source data has it.
+     *
+     * Named `depth_below_surface_m`, not `depths_m`, on purpose: the source data (ANFLEX
+     * XML/AML) measures depth the OPPOSITE way (0 = seabed, increasing toward the surface) --
+     * a same-name-different-convention collision between the JSON field and the XML field is
+     * exactly what let a real bug (the whole current profile silently collapsing to the surface
+     * value for every depth) go unnoticed for a long time, see
+     * docs/mapa_classes_anflex_estatica.md and docs/mapa_aml_exemplos_e_web_interface.md
+     * ("Auditoria de conversões de valor", achado 3). Keep the convention in the name when this
+     * field is touched again.
      */
-    std::vector<double> depths_m;
+    std::vector<double> depth_below_surface_m;
     std::vector<double> velocities_ms;
     std::vector<double> angles_deg;
 
@@ -66,7 +75,7 @@ public:
 
     /** @brief Installs the real tabulated profile (arbitrary point count, sorted ascending by depth). */
     void set_profile(std::vector<double> depths, std::vector<double> vels, std::vector<double> angles) {
-        depths_m = std::move(depths);
+        depth_below_surface_m = std::move(depths);
         velocities_ms = std::move(vels);
         angles_deg = std::move(angles);
     }
@@ -82,8 +91,8 @@ public:
      */
     double get_velocity(double z) const {
         double depth_from_surface = std::max(0.0, water_surface_z - z);
-        if (depths_m.size() >= 2) {
-            return interp1(depths_m, velocities_ms, depth_from_surface);
+        if (depth_below_surface_m.size() >= 2) {
+            return interp1(depth_below_surface_m, velocities_ms, depth_from_surface);
         }
 
         if (z >= water_surface_z) return v_surface;
@@ -106,8 +115,8 @@ public:
      */
     double get_heading(double z) const {
         double depth_from_surface = std::max(0.0, water_surface_z - z);
-        if (angles_deg.size() >= 2 && angles_deg.size() == depths_m.size()) {
-            return interp1(depths_m, angles_deg, depth_from_surface);
+        if (angles_deg.size() >= 2 && angles_deg.size() == depth_below_surface_m.size()) {
+            return interp1(depth_below_surface_m, angles_deg, depth_from_surface);
         }
         return heading_deg;
     }

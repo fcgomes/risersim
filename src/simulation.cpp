@@ -27,7 +27,11 @@ void Simulation::run() {
     // model->analysis_options (populated by ModelBuilder from the real JSON, or left at their
     // struct defaults for the synthetic fallback path), not from local variables.
     static_analysis.model = model;
-    static_analysis.water_density = parsed_from_json ? 0.0 : model->environmental.water_density;
+    // Empuxo agora sempre subtraído uma única vez pela fórmula genérica de peso (junto com
+    // section_properties.rho, sempre a densidade estrutural seca real desde a correção do
+    // achado 2 em mapa_aml_exemplos_e_web_interface.md) -- antes este campo era zerado pra
+    // modelos reais (JSON parseado) porque o empuxo já vinha pré-subtraído em "rho".
+    static_analysis.water_density = model->environmental.water_density;
     static_analysis.water_density_for_mass = 1025.0;  // Always the real value, for added mass
     static_analysis.seabed = SeabedInteraction(
         model->environmental.seabed_depth_z, model->environmental.seabed_stiffness, model->environmental.seabed_friction);
@@ -68,7 +72,7 @@ void Simulation::run() {
         // Perfil tabulado real: com 2+ pontos, CurrentProfile interpola de verdade em vez de usar
         // a lei de potência (que fica só como fallback pro caso raro de 1 ponto só).
         static_analysis.current.set_profile(
-            model->environmental.current_depths_m, model->environmental.current_velocities_ms, model->environmental.current_angles_deg);
+            model->environmental.current_depth_below_surface_m, model->environmental.current_velocities_ms, model->environmental.current_angles_deg);
     }
 
     std::cout << "\n--- Running Static Analysis ---" << std::endl;

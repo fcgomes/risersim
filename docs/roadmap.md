@@ -38,6 +38,18 @@ bifurcação numérica — a trajetória passo-a-passo (não o resultado físico
 detalhes incidentais, então comparações futuras devem olhar o resultado final, não iterações
 por passo.
 
+**Confirmação adicional** (auditoria de nomenclatura/conversão, ver
+`mapa_aml_exemplos_e_web_interface.md`, achado 2): eliminar o `rho` fabricado (densidade
+"peso-equivalente") em favor da densidade seca real + `water_density` real reforçou o achado
+acima -- mesmo uma diferença de ~0,0006% no peso líquido por metro foi suficiente pra fase de
+assembly (pré-solve) falhar em convergir dentro do orçamento padrão de 40 iterações nalguns runs,
+exigindo mais iterações (150 testado) pra chegar num ponto de partida bom o bastante pra fase
+final. O resultado físico final continua correto e estável (T_eff≈217,3-217,4 kN) -- só o
+orçamento de iteração da assembly pode precisar de folga maior em modelos reais como este. Vale
+considerar, quando o Eixo 1a for revisitado, aumentar o default de `static.max_iterations` da
+assembly (ou torná-lo independente do valor do XML) em vez de manter os 40 vindos de
+`AnalysisData/Static/num_max_iter`.
+
 ### 1b. Investigar a análise dinâmica — 🟡 EM PROGRESSO (achado real, ainda não fechado)
 
 Começada nesta rodada, seguindo a mesma disciplina que resolveu 1a (auditoria de dados antes de
@@ -54,16 +66,29 @@ descartado) — ver `mapa_classes_anflex_estatica.md`, seção "Pendências reso
 substancial, mas não resolvido -- passos 1 e 5-8 ainda falham (resíduo crescendo, não platô);
 testado orçamento maior de iterações, não ajudou (mesma assinatura de "janela de escape desliza
 pra pior" já vista na estática). Fidelidade conhecidamente mais baixa que a estática em pelo menos
-dois pontos ainda não auditados: amortecimento de Rayleigh (`alpha_rayleigh`/`beta_rayleigh`
-hardcoded no construtor de `DynamicAnalysis`, nunca lidos do JSON) e o movimento prescrito do topo
-(ainda usa a técnica direta antiga, `top_node->disp = ...` fora do sistema — a técnica de
-penalidade `PrescribedMotion` só foi migrada pra estática, Passo 7 do roadmap de modernização).
+um ponto ainda não auditado: o movimento prescrito do topo (ainda usa a técnica direta antiga,
+`top_node->disp = ...` fora do sistema — a técnica de penalidade `PrescribedMotion` só foi migrada
+pra estática, Passo 7 do roadmap de modernização).
 
-**Recomendação pro próximo passo**: continuar auditando dados antes de tentar técnica numérica --
-Rayleigh damping é o candidato mais óbvio ainda não verificado (não lido do JSON real de jeito
-nenhum hoje). Se isso não resolver, isolar um caso mínimo (malha sintética pequena) e comparar
-diretamente contra `cDynamicAnalysis`/`cDynamicIntegrator` do ANFLEX real (`trunk/src`), mesma
-metodologia que achou a rotação total-vs-local na estática.
+**Atualização** (ver `mapa_aml_exemplos_e_web_interface.md`, seção "Auditoria de conversões de
+valor", achado 4): o amortecimento de Rayleigh JÁ era lido corretamente do JSON pelo C++
+(`simulation.cpp:100-101` — a suspeita anterior de "hardcoded no construtor" estava desatualizada);
+o gap real era `xml_h5_reader.py` nunca extrair o valor verdadeiro do XML (`mass_damping`/
+`stiffness_damping` por material, já calculados pelo ANFLEX real), hardcodando `alpha=0.05,
+beta=0.005` sempre. Corrigido -- os 7 XMLs de exemplo disponíveis têm `consider_damping="no"`
+(amortecimento real = 0), então o Exemplo_01a hoje roda com o dado fiel. Verificado: não muda o
+resultado estático, e o padrão de convergência dinâmico ficou essencialmente igual (resíduos um
+pouco maiores sem o amortecimento fabricado que antes ajudava marginalmente) -- ou seja, esse não
+era o fator limitante da dinâmica. A contagem exata de passos convergidos variou entre verificações
+consecutivas mesmo sem nenhuma mudança de dado de entrada (4/20 nesta rodada vs. 15/20 documentado
+antes) -- confirma que é a mesma sensibilidade de "beira de bifurcação" já registrada em 1a, não
+uma regressão.
+
+**Recomendação pro próximo passo**: com o Rayleigh damping já corrigido e descartado como causa,
+isolar um caso mínimo (malha sintética pequena) e comparar diretamente contra
+`cDynamicAnalysis`/`cDynamicIntegrator` do ANFLEX real (`trunk/src`), mesma metodologia que achou a
+rotação total-vs-local na estática -- ou investigar a migração do movimento prescrito do topo pra
+`PrescribedMotion` (o outro ponto de fidelidade ainda não auditado).
 
 ## Eixo 2 — Pipeline de dados (desbloqueia mais casos de teste reais, baixo risco)
 

@@ -259,6 +259,14 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                     "environmental.seabed ausente -- usando configuração padrão (habilitado, profundidade=100m, rigidez=1e5 N/m, atrito=0.5)."});
             }
 
+            // Densidade real da água externa, usada por StaticAnalysis::water_density pra
+            // subtrair o empuxo da fórmula genérica de peso (junto com section_properties.rho,
+            // agora sempre a densidade estrutural seca real -- ver
+            // docs/mapa_aml_exemplos_e_web_interface.md, achado 2). Antes este campo nem existia
+            // no JSON e o empuxo já vinha pré-subtraído em "rho" pelos conversores Python, exigindo
+            // que Simulation::run() zerasse water_density como caso especial pra modelos reais.
+            ec.water_density = value_warn(env, "water_density", ec.water_density, "environmental.water_density", warnings);
+
             double max_z = -1e9;
             for (const auto& node : model.nodes) {
                 if (node->coords.z() > max_z) max_z = node->coords.z();
@@ -291,7 +299,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                     ec.current_enabled = true;
                     // Perfil tabulado completo (não só o primeiro ponto) -- CurrentProfile
                     // interpola de verdade quando há 2+ pontos, ver current_profile.hpp.
-                    ec.current_depths_m = curr.value("depths_m", std::vector<double>{});
+                    ec.current_depth_below_surface_m = curr.value("depth_below_surface_m", std::vector<double>{});
                     ec.current_velocities_ms = vels;
                     if (!curr.contains("angles_deg")) {
                         warnings.push_back({"warning", "environmental.current.angles_deg ausente -- assumindo heading de 90 graus."});

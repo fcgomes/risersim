@@ -410,7 +410,7 @@ class PreprocessorApp {
         `;
 
         const curr = this.input.current;
-        const depths = curr.depths_m || [], vels = curr.velocities_ms || [], angles = curr.angles_deg || [];
+        const depths = curr.depth_below_surface_m || [], vels = curr.velocities_ms || [], angles = curr.angles_deg || [];
         const n = Math.max(depths.length, vels.length, angles.length);
         if (currEl) {
             currEl.innerHTML = '';

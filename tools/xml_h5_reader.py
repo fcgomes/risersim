@@ -201,6 +201,18 @@ class ANFLEXXmlH5Reader:
             cd = mf("drag_normal_coef", 1.0)
             cd_long = mf("drag_longitudinal_coef", 0.0)
 
+            # Amortecimento de Rayleigh real, por material (mass_damping/stiffness_damping já
+            # calculados pelo ANFLEX real a partir de %MATERIAL.RAYLEIGH.PERIOD/DAMPING.FIRST/
+            # SECOND do AML -- nomes que batem com os do próprio C++ real, m_mass_damping/
+            # m_stiff_damping, ver beamSD.cpp). consider_damping="no" (visto em todos os exemplos
+            # disponíveis) significa que o elemento não aplica amortecimento nenhum, mesmo que os
+            # coeficientes não estejam zerados.
+            consider_damping_el = mat.find("consider_damping")
+            consider_damping = (consider_damping_el is not None and consider_damping_el.text
+                                 and consider_damping_el.text.strip().lower() == "yes")
+            mass_damping = mf("mass_damping", 0.0)
+            stiffness_damping = mf("stiffness_damping", 0.0)
+
             # Conversão para SI: ANFLEX usa kN / kN/m2 / kN/m3 internamente
             E = elasticity_kNm2 * 1000.0                # Pa
             G = E / (2.0 * (1.0 + poisson))              # Pa
@@ -232,6 +244,11 @@ class ANFLEXXmlH5Reader:
                 "Cm": cm,
                 "Cd_longitudinal": cd_long,
                 "internal_fluid_density_kgm3": int_fluid_kNm3 * 1000.0 / 9.81,
+                "external_fluid_density_kgm3": ext_fluid_kNm3 * 1000.0 / 9.81,
+                "density_kNm3": density_kNm3,
+                "consider_damping": consider_damping,
+                "mass_damping": mass_damping,
+                "stiffness_damping": stiffness_damping,
             }
 
         if not material_data:
@@ -321,8 +338,8 @@ class ANFLEXXmlH5Reader:
             return [0.0, 265.0], [90.0, 90.0], [1.02, 0.27]
 
         # "Depth" no XML é medido a partir do leito marinho (0=fundo, crescente até a
-        # superfície) -- mas CurrentProfile::depths_m (current_profile.hpp) espera a convenção
-        # OPOSTA: profundidade a partir da SUPERFÍCIE (0=superfície), ascendente (exigido por
+        # superfície) -- mas CurrentProfile::depth_below_surface_m (current_profile.hpp) espera a
+        # convenção OPOSTA: profundidade a partir da SUPERFÍCIE (0=superfície), ascendente (exigido por
         # interp1(), que não suporta tabela descendente -- ver o bug descrito abaixo). Transforma
         # cada ponto para essa convenção antes de guardar, em vez de só reordenar os índices como
         # a versão anterior fazia.
@@ -420,14 +437,41 @@ class ANFLEXXmlH5Reader:
         # Associa as propriedades do material aos elementos
         weight_wet_kNm = material["weight_wet_kNm"]
         weight_dry_kNm = material["weight_dry_kNm"]
-        # "rho" (peso submerso/líquido de empuxo, só para a fórmula de peso estático) vs.
-        # "rho_structural" (massa estrutural real, para inércia/matriz de massa dinâmica) --
-        # bug real encontrado e corrigido (ver mapa_classes_anflex_estatica.md): antes só
-        # existia "rho", e o C++ reaproveitava esse valor (líquido de empuxo) como se fosse
-        # massa estrutural, subestimando a massa dinâmica real (empuxo reduz peso líquido, mas
-        # nunca reduz massa inercial).
-        rho_equivalent = (weight_wet_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
-        rho_structural = (weight_dry_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
+        # rho_structural é o peso específico estrutural real (`density`, kN/m3) convertido pra
+        # kg/m3 -- conversão de unidade direta, sem passar por peso/área (que se cancelariam
+        # algebricamente de qualquer forma: density*area/area). Quando o XML não tem material
+        # (fallback sintético, sem "density_kNm3"), cai de volta no valor antigo derivado do peso.
+        if "density_kNm3" in material:
+            rho_structural = material["density_kNm3"] * 1000.0 / 9.81
+        else:
+            rho_structural = (weight_dry_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
+        # "rho" (usado pela fórmula de peso estático `w_dry = rho*A*g`) agora é a MESMA densidade
+        # real de rho_structural, não mais uma "densidade equivalente" fabricada a partir do peso
+        # já líquido de empuxo. Antes, `rho` embutia o empuxo (via weight_wet_kNm) e
+        # `environmental.water_density` era zerado no C++ (`simulation.cpp`) pra não subtrair
+        # empuxo em dobro -- bug de arquitetura corrigido nesta sessão (ver
+        # mapa_aml_exemplos_e_web_interface.md, achado 2): agora o empuxo é sempre subtraído uma
+        # única vez pela fórmula genérica já existente (`w_dry - water_density*outer_area*g`),
+        # igual ao caminho sintético, com o `water_density` real (abaixo) em vez de zerado.
+        rho_dry = rho_structural
+        water_density_real = material.get("external_fluid_density_kgm3", 1025.0)
+
+        # Amortecimento de Rayleigh: usa o real do material (mass_damping/stiffness_damping,
+        # já calculados pelo ANFLEX real -- ver extract_material_properties()) quando o XML tem
+        # consider_damping="yes"; caso contrário (visto em todos os exemplos disponíveis:
+        # consider_damping="no"), o modelo real não aplica amortecimento nenhum -- zero é o valor
+        # fiel, não um fallback "de mentirinha". Sem material (fallback sintético, sem a chave
+        # "consider_damping"), mantém os valores antigos hardcoded.
+        if "consider_damping" in material:
+            if material["consider_damping"]:
+                alpha_rayleigh = material["mass_damping"]
+                beta_rayleigh = material["stiffness_damping"]
+            else:
+                alpha_rayleigh = 0.0
+                beta_rayleigh = 0.0
+        else:
+            alpha_rayleigh = 0.05
+            beta_rayleigh = 0.005
         for elem in elements:
             elem["section_properties"] = {
                 "E": material["E_Pa"],
@@ -438,7 +482,7 @@ class ANFLEXXmlH5Reader:
                 "J": material.get("J_m4", material["GJ_Nm2"] / material["G_Pa"] if material["G_Pa"] > 0 else 1e-4),
                 "EI": material["EI_Nm2"],
                 "weight_wet_kNm": weight_wet_kNm,
-                "rho": rho_equivalent,
+                "rho": rho_dry,
                 "rho_structural": rho_structural,
                 "D_outer": material["outer_diameter_m"],
                 "D_inner": material["inner_diameter_m"],
@@ -542,8 +586,14 @@ class ANFLEXXmlH5Reader:
             },
             "environmental": {
                 "seabed": seabed_dict,
+                # Densidade real da água externa (`external_fluid_density` do material, kg/m3) --
+                # consumida por StaticAnalysis::water_density pra subtrair o empuxo uma única vez
+                # da fórmula genérica de peso (ver "rho"/"rho_structural" acima); antes esse campo
+                # nem existia no JSON, e o C++ zerava water_density pra JSON real como caso
+                # especial (achado 2 de mapa_aml_exemplos_e_web_interface.md).
+                "water_density": water_density_real,
                 "current": {
-                    "depths_m": curr_depths,
+                    "depth_below_surface_m": curr_depths,
                     "velocities_ms": curr_vels,
                     "angles_deg": curr_angles,
                     "ramp_x": curr_ramp_x,
@@ -575,8 +625,8 @@ class ANFLEXXmlH5Reader:
                     "max_iterations": dyn_max_iter,
                     "tolerance": dyn_tol,
                     "rayleigh_damping": {
-                        "alpha": 0.05,
-                        "beta": 0.005
+                        "alpha": alpha_rayleigh,
+                        "beta": beta_rayleigh
                     }
                 }
             }
