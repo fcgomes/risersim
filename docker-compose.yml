@@ -1,0 +1,8 @@
+services:
+  web:
+    build:
+      context: .
+      target: runtime
+    ports:
+      - "8000:8000"
+    command: ["python3", "tools/dev_server.py", "8000", "."]
