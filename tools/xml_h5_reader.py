@@ -102,6 +102,19 @@ class ANFLEXXmlH5Reader:
         except ValueError:
             return default
 
+    def get_optional_float(self, xpath):
+        """Como get_float, mas retorna None (em vez de um default) quando o XML não tem o
+        elemento -- usado para campos que só devem entrar no JSON quando realmente presentes
+        na fonte real, para não mascarar a ausência com um valor "de mentirinha" (ver uso em
+        extract_data() para o atrito axial/lateral do solo)."""
+        elem = self.root.find(xpath)
+        if elem is None or not elem.text:
+            return None
+        try:
+            return float(elem.text.strip())
+        except ValueError:
+            return None
+
     def extract_nodes(self):
         """Lê os nós diretamente do dataset HDF5 especificado no XML."""
         nodes = []
@@ -431,9 +444,41 @@ class ANFLEXXmlH5Reader:
         # não aninhados sob "spring"/"friction" como no XPath antigo)
         soil_stiff_kNm = self.get_float(".//Soils/Solo/vertical_stiffness", 800.0)
         friction_lat = self.get_float(".//Soils/Solo/lateral_friction", 0.95)
+        # Atrito axial/lateral real e limites elásticos distintos (Soils/Solo/axial_friction
+        # etc., confirmado em Exemplo_01a_A1.xml:784-800 -- axial e lateral divergem bastante
+        # entre si, ex. axial_friction=0.92/axial_elastic_deflection_limit=0.03m vs.
+        # lateral_friction=0.95/lateral_elastic_deflection_limit=0.278m). Só escritos no JSON
+        # se o XML realmente os tiver -- quando ausentes, ModelBuilder já cai de volta no
+        # friction_coeff isotrópico (sentinela -1.0 em EnvironmentalConfig, ver model.hpp),
+        # exatamente o comportamento de antes desta mudança. Ver
+        # docs/mapa_classes_anflex_interface.md.
+        soil_axial_friction = self.get_optional_float(".//Soils/Solo/axial_friction")
+        soil_lateral_friction = self.get_optional_float(".//Soils/Solo/lateral_friction")
+        soil_axial_elastic_limit = self.get_optional_float(".//Soils/Solo/axial_elastic_deflection_limit")
+        soil_lateral_elastic_limit = self.get_optional_float(".//Soils/Solo/lateral_elastic_deflection_limit")
+        # <coupled>yes|no</coupled> -- tag real confirmada no XML (não "soil_model"), mapeada
+        # para os valores que ModelBuilder já espera em environmental.seabed.soil_model.
+        soil_coupled_text = self.get_text(".//Soils/Solo/coupled", "").strip().lower()
+        soil_model = {"yes": "coupled", "no": "uncoupled"}.get(soil_coupled_text)
         # GlobalData/seabed é um escalar de referência (não um branch com "depth");
         # a lâmina d'água real é GlobalData/seawater_level
         seabed_depth = self.get_float(".//GlobalData/seawater_level", 265.0)
+
+        seabed_dict = {
+            "depth_m": -abs(seabed_depth),
+            "stiffness_Nm": soil_stiff_kNm * 1000.0,
+            "friction_coeff": friction_lat,
+        }
+        if soil_axial_friction is not None:
+            seabed_dict["axial_friction"] = soil_axial_friction
+        if soil_lateral_friction is not None:
+            seabed_dict["lateral_friction"] = soil_lateral_friction
+        if soil_axial_elastic_limit is not None:
+            seabed_dict["axial_elastic_deflection_limit"] = soil_axial_elastic_limit
+        if soil_lateral_elastic_limit is not None:
+            seabed_dict["lateral_elastic_deflection_limit"] = soil_lateral_elastic_limit
+        if soil_model is not None:
+            seabed_dict["soil_model"] = soil_model
 
         # 4. Caso de Análise Estática / Dinâmica
         # (num_max_iter, não max_num_iteration; x_tol é a tolerância relativa de
@@ -473,11 +518,7 @@ class ANFLEXXmlH5Reader:
                 "restrained_dofs": restrained_nodes
             },
             "environmental": {
-                "seabed": {
-                    "depth_m": -abs(seabed_depth),
-                    "stiffness_Nm": soil_stiff_kNm * 1000.0,
-                    "friction_coeff": friction_lat
-                },
+                "seabed": seabed_dict,
                 "current": {
                     "depths_m": curr_depths,
                     "velocities_ms": curr_vels,

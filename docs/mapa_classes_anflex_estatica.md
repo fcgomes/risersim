@@ -491,6 +491,21 @@ aplicado no branch certo em `analysis.cpp:105-118`. Também descoberto e corrigi
 as duas direções, mesmo quando os valores reais divergem bastante entre si (ex. Exemplo_02a:
 axial=1,2/0,03m vs. lateral=1,2/0,56m). Agora lido do JSON quando presente.
 
+> **Nota de cautela (achada numa leitura posterior, ver
+> [`mapa_aml_exemplos_e_web_interface.md`](mapa_aml_exemplos_e_web_interface.md)):** a inferência
+> "Exemplo_02a → acoplado" acima se apoiava só na presença da tag `%OPTION.SOIL.COUPLED` no
+> `.aml`. Uma leitura mais recente de `interfaces/src/aml.cpp` encontrou que essa tag legada está
+> num caminho de migração **morto** no código-fonte atual: a variável que a aplicaria de volta aos
+> solos (`s_temp_soil_coupled`, `aml.cpp:65`) nunca é atribuída em lugar nenhum, e a própria tag
+> `%OPTION.*` está fora do mapa de leitura (`fmap`) — o bloco inteiro é ignorado silenciosamente por
+> `cAml::readAML()`. Com esse código-fonte, todo solo carregaria como `uncoupled` por padrão,
+> independente da tag legada. Isso não invalida necessariamente o resultado acima (é possível que a
+> versão do `interfaces/src` que gerou o XML real do Exemplo_02a fosse diferente da que temos hoje,
+> ou que o solo acoplado tenha sido setado por outro caminho não identificado), mas a premissa
+> "Exemplo_02a é acoplado" não deveria mais ser tratada como confirmada só pela tag do `.aml` —
+> precisaria reverificar contra o comportamento real do `Exemplo_02a_A1.xml` já exportado antes de
+> confiar nela de novo.
+
 **Resultado combinado (rampa + rigidez plena + atrito acoplado + valores axiais/laterais reais)
 no Exemplo_02a completo**: a Fase 1 (rigidez artificial) chega muito perto de convergir — resíduo
 estável e baixo (~800-1800 N) até a iteração ~20, depois explode subitamente entre as iterações
@@ -680,6 +695,73 @@ o passo por nó/GDL, suavizar a transição liga/desliga do contato).
 (300 sem solo/corrente, 30 touchdown solo-only, 500 corrente-only) -- resultados idênticos aos de
 antes (essa ferramenta não passa por `enable_unbalanced_criteria`).
 
+## Atrito axial/lateral real do solo nunca chegava ao pipeline principal: corrigido, melhora real mas parcial
+
+Lendo a interface gráfica real (`trunk/interfaces/src`, ver
+[`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md)) para mapear como o modelo é
+construído e o AML/PML/XML/DAT são gerados, achamos uma lacuna concreta que tinha passado
+despercebida por toda esta investigação: **`tools/xml_h5_reader.py` nunca extraía os parâmetros de
+atrito anisotrópico do solo do XML real** (`axial_friction`, `lateral_friction`,
+`axial_elastic_deflection_limit`, `lateral_elastic_deflection_limit`, flag `coupled`) — só um
+`lateral_friction` isotrópico ia para o JSON.
+
+Consequência concreta, confirmada lendo `risersim/src/simulation.cpp:32-38`: como as chaves
+`axial_friction`/`axial_elastic_deflection_limit`/etc. nunca existiam no JSON,
+`EnvironmentalConfig` ficava nos sentinelas -1.0 (`model.hpp:31-34`), e `SeabedInteraction` nunca
+era sobrescrita — ficava no que o **construtor** já preenche por padrão
+(`seabed.hpp:50-53`): `axial_friction = lateral_friction = friction_coeff` (0,95, o único valor
+real que já vinha do XML) e `axial_elastic_deflection_limit = lateral_elastic_deflection_limit =
+0,05 m` (default isotrópico do construtor, não o valor real do modelo). Ou seja: **toda rodada do
+pipeline completo (`run_from_aml.py` → `risersim_test_main`) contra o Exemplo_01a real ao longo
+desta investigação inteira usou atrito isotrópico (0,95/0,05 m nas duas direções)**, nunca os
+valores reais e bem diferentes entre si que o `Exemplo_01a_A1.xml` de fato tem (`axial_friction=
+0,92`/`axial_elastic_deflection_limit=0,03 m` vs. `lateral_friction=0,95`/
+`lateral_elastic_deflection_limit=0,2779 m`, confirmado lendo `Exemplo_01a_A1.xml:784-800`). A
+ferramenta de diagnóstico isolado (`diag_isolated_segment.cpp`) já usava os valores reais, mas
+**hardcoded manualmente** no próprio arquivo de teste — nunca vindos do JSON gerado pelo pipeline
+principal.
+
+**Corrigido**: `xml_h5_reader.py` agora lê `Soils/Solo/axial_friction`,
+`.../lateral_friction`, `.../axial_elastic_deflection_limit`, `.../lateral_elastic_deflection_limit`
+e `.../coupled` (mapeado para `"coupled"`/`"uncoupled"`) diretamente do XML, escrevendo-os em
+`environmental.seabed` só quando de fato presentes na fonte (sem forçar um valor "de mentirinha"
+quando ausentes — nesse caso o comportamento isotrópico de fallback de antes continua intacto).
+Bateria de regressão completa (343 asserts Catch2) sem mudança, como esperado (mudança puramente
+aditiva).
+
+**Resultado no Exemplo_01a real** (mesmo `enable_unbalanced_criteria=true`/`max_unbalanced=1.0`
+lido do AML real, mesmos 40 iterações/passo — única variável isolada é o atrito passar a ser o
+real e anisotrópico em vez do isotrópico 0,95/0,05 m):
+
+| Passo (Current Factor) | Antes (atrito isotrópico 0,95/0,05 m, seção "Ligando a válvula de escape real") | Depois (atrito real: axial 0,92/0,03 m, lateral 0,95/0,2779 m) |
+|---|---|---|
+| 1 (0%) | Converge em 38 iterações (via válvula de escape) | Converge em **25** iterações |
+| 2 (10%) | Converge em 13 iterações | Converge em **9** iterações |
+| 3 (20%) | ❌ Falha — resíduo cresce a ~1,2-1,5×10⁴ e oscila nesse patamar | ✅ **Converge em 19 iterações** (com um pico intermediário a 7,1×10⁴ na iteração 10, recuperando depois) |
+| 4 (30%) | (nunca chegou a rodar) | ❌ Falha — resíduo cresce a 1,69×10⁵ (iter 10) → 1,50×10⁴ (iter 20) → 1,20×10⁴ (iter 30), mesma assinatura de patamar alto sem explodir |
+
+É uma melhora real e mensurável — o modelo avança um passo de carga inteiro a mais (do passo 3 para
+o passo 4) antes de esbarrar na mesma assinatura de divergência já documentada (resíduo que cresce
+e estagna num patamar alto, ~10⁴, sem explodir sem limite) — **mas não resolve**: o passo 4 falha
+com um padrão qualitativamente idêntico ao que já travava o passo 3 antes desta correção. Isso é
+consistente com o padrão já visto ao longo de toda esta investigação (rotação → decaimento →
+atrito → rampa de carga → critério de convergência): cada correção de fidelidade real empurra o
+limiar um pouco mais longe, nenhuma sozinha fecha o gap completo contra as ~8 iterações/passo do
+ANFLEX real. A causa raiz continua sendo a mesma já identificada e não implementada: falta uma
+técnica de estabilização direcional (line search tipo Armijo, limitar o passo por nó/GDL, ou
+suavizar a transição liga/desliga do contato vertical).
+
+**Achado colateral, fora de escopo desta correção**: a mesma leitura da interface encontrou que
+`cAssembly` (fase de assembly real) tem seu próprio orçamento de convergência
+(`MAX_ITERATION=20` default, tolerância/critério próprios), independente do `cAnalysis` estático
+(`MAX_ITERATION=40`) — mas `StaticAnalysis::solve()` hoje reusa o orçamento da fase estática para
+as duas fases quando `use_assembly_phase=true`, e `xml_h5_reader.py` não extrai
+`AnalysisData/Assembly/...` do XML nenhum. Não afeta o Exemplo_01a (`%ASSEMBLY.USING.FALSE`), mas
+é um candidato real para investigar em qualquer exemplo que tenha o assembly ligado — ver
+[`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md).
+
 ## Ver também
 
+- [`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md) — mapa da interface
+  gráfica real (`trunk/interfaces/src`): construção de modelo, leitura AML/PML, exportação DAT/XML.
 - `risersim/docs/opcoes_bibliotecas_opensource.md` — levantamento de bibliotecas open-source (Project Chrono, MAP++, MoorDyn-C, MoorPy) e o resultado da tentativa de warm-start com MoorPy (que motivou este documento).
