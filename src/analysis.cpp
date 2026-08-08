@@ -21,9 +21,22 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     // used below to decompose seabed friction into the line's LOCAL axial/lateral
     // directions -- mirroring real ANFLEX (soil.cpp:calc_transf_matrix) -- instead
     // of global X/Y.
+    // BUG REAL ACHADO VIA VALGRIND (memcheck, --track-origins=yes): `unordered_map::operator[]`
+    // default-constrói o valor na primeira inserção, e o construtor padrão de `Eigen::Vector3d`
+    // (tipo de tamanho fixo) NÃO zera os coeficientes -- ao contrário de `std::array`/`double`, é
+    // lixo de memória mesmo (comportamento documentado do próprio Eigen, por performance). O
+    // `+= ex` abaixo, na primeira vez que cada nó aparece, então soma `ex` a um vetor de lixo em
+    // vez de partir de zero. `try_emplace` garante Zero() antes de qualquer `+=`. Esse lixo se
+    // propagava pra `axial_dir`/`lateral_dir` (decomposição de atrito do solo, abaixo) sempre que
+    // um nó tem `k_seabed>0`, dali pra dentro da matriz de rigidez e da fatoração de Cholesky --
+    // explica boa parte da sensibilidade "beira de bifurcação" documentada nesta sessão (mudanças
+    // sem relação nenhuma com a física, tipo o tamanho de alocações de heap anteriores, mudavam o
+    // lixo lido aqui e por consequência a convergência).
     std::unordered_map<Node3D*, Eigen::Vector3d> node_tangent_sum;
     for (const auto& elem : model->elements) {
         Eigen::Vector3d ex = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
+        node_tangent_sum.try_emplace(elem->node1, Eigen::Vector3d::Zero());
+        node_tangent_sum.try_emplace(elem->node2, Eigen::Vector3d::Zero());
         node_tangent_sum[elem->node1] += ex;
         node_tangent_sum[elem->node2] += ex;
     }
