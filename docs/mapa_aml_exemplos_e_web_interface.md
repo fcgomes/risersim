@@ -539,6 +539,48 @@ fidelidade da física aumentou, mas o Eixo 1b continua em aberto, agora com uma 
    agressivo pro passo de tempo usado. Não force conclusão de "resolvido": documentado como avanço
    real, não como fechamento do Eixo 1b -- ver recomendação atualizada em roadmap.md.
 
+6. **Segundo bug real encontrado -- memória não-inicializada** (usuário desconfiou: "estou achando
+   muito sensível essa estática, será que temos alguma invasão de memória, algum lixo no
+   caminho?"). ASan/UBSan não pegava isso (não é o tipo de bug que eles cobrem por padrão); rodei
+   **Valgrind memcheck** (`--track-origins=yes`) contra o caso determinístico de falha estática
+   (`vessel_motion.enabled=false`) num build Debug (`-g -O0`, sem sanitizer) e ele achou de cara:
+   `analysis.cpp:24-28` fazia `node_tangent_sum[elem->node1] += ex` num
+   `std::unordered_map<Node3D*, Eigen::Vector3d>` -- na primeira vez que um nó aparece,
+   `operator[]` default-constrói o valor, e o construtor padrão de `Eigen::Vector3d` (tipo de
+   tamanho fixo) **não zera os coeficientes** (documentado no próprio Eigen, por performance) --
+   ao contrário de `std::array`/`double`. Ou seja, `+= ex` somava `ex` a lixo de memória em vez de
+   partir de zero, na primeira ocorrência de cada nó. Esse vetor (`node_tangent_sum`) alimenta a
+   decomposição de atrito do solo em eixos axial/lateral (linhas 90-99), que por sua vez entra nos
+   termos de rigidez `k_xx`/`k_yy`/`k_xy` da matriz global -- confirmado pelo próprio rastro do
+   Valgrind, que seguiu a taint de memória não-inicializada até dentro da fatoração de Cholesky
+   (`SimplicialLDLT::factorize_preordered`). Só importa pra nós com `k_seabed>0` (na zona de toque
+   do fundo) -- o Exemplo_01a tem isso. **Corrigido**: `try_emplace(node, Eigen::Vector3d::Zero())`
+   antes de cada `+=`, garantindo que a entrada exista e esteja zerada antes de qualquer acúmulo.
+   Suíte sem regressão (361 asserts). **Resultado**: o caso que sempre falhava
+   deterministicamente (`vessel_motion.enabled=false`) agora **converge limpo** sob build Release
+   normal, estática E dinâmica completas nos 20 passos -- confirma que boa parte da sensibilidade
+   "beira de bifurcação" documentada ao longo desta sessão inteira não era sensibilidade numérica
+   genuína, era literalmente lixo de memória cujo valor variava com alocações de heap anteriores e
+   totalmente não-relacionadas (como o tamanho da tabela RAO do `vessel_motion`). Rodando o
+   Exemplo_01a real com os 30m de heave (combinando esta correção com a do achado 5): melhora
+   adicional real -- passos 1-14 convergem todos limpos agora (antes: só até o passo 12), a
+   divergência começa só no passo 15. Ainda não converge os 20 passos completos, mas o avanço
+   acumulado dos dois bugs reais encontrados hoje é substancial. Não achei nenhum outro padrão
+   `unordered_map<_, Eigen::Vector/Matrix>` no código (`grep` em `src/`/`include/` -- só essa
+   ocorrência).
+
+## Nota (2026-08-08): `to_risersim_json()` ganhou `schema_version`
+
+Complemento pequeno, do lado do "gerenciador de rodadas" (`docs/roadmap.md` Eixo 3b, Fase 2 —
+proveniência de versões): `xml_h5_reader.py::to_risersim_json()` (o compilador real documentado
+acima, o único caminho que de fato conecta com `ModelBuilder`) agora grava um campo
+`"schema_version"` (inteiro, constante `SCHEMA_VERSION` no topo do módulo) no JSON compilado que
+produz. Não muda nenhum dos achados/schema mapeados neste documento — é só um número de versão do
+formato em si, pra `risersim_projects.py` conseguir rastrear "com qual schema essa rodada foi
+gerada" por rodada (`run.json`), separado da versão do solver C++ (fingerprint do binário) e da
+versão da interface web. Bumpar à mão só quando o formato do JSON compilado mudar de um jeito que
+o `ModelBuilder` precise diferenciar — não aconteceu ainda (`SCHEMA_VERSION = 1` desde a criação).
+
 ## Ver também
 
 - [`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md) — mapa das classes reais
@@ -546,3 +588,5 @@ fidelidade da física aumentou, mas o Eixo 1b continua em aberto, agora com uma 
 - [`mapa_classes_anflex_estatica.md`](mapa_classes_anflex_estatica.md) — investigação do solver e
   do bug de convergência solo+corrente ainda em aberto (contém a nota de cautela sobre Exemplo_02a
   motivada por este documento).
+- [`roadmap.md`](roadmap.md) — Eixo 3b (Fase 2) documenta o resto do trabalho de proveniência de
+  versões/hash de modelo/acesso a pré-pós/import por upload que usa o `schema_version` acima.

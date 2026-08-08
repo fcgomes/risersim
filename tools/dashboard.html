@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>riserSim - Gerenciador de Rodadas</title>
+    <link rel="stylesheet" href="css/shared.css">
+    <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body class="dark-mode">
+    <div id="header">
+        <h1>🌊 riserSim - Gerenciador de Rodadas</h1>
+        <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
+    </div>
+
+    <div class="page">
+        <div class="page-header-row">
+            <div>
+                <h2>Painel</h2>
+                <div class="subtitle">Projetos e rodadas de simulação riserSim</div>
+            </div>
+            <div class="actions">
+                <button class="btn" id="new-project-btn">➕ Novo Projeto</button>
+            </div>
+        </div>
+
+        <div class="stat-row">
+            <div class="stat-card">
+                <div class="stat-title">Projetos</div>
+                <div class="stat-value" id="stat-projects">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Rodadas</div>
+                <div class="stat-value" id="stat-runs">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Convergidas</div>
+                <div class="stat-value" id="stat-converged">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Em Execução</div>
+                <div class="stat-value" id="stat-running">0</div>
+            </div>
+        </div>
+
+        <h3 class="section-title">📁 Projetos</h3>
+        <div class="card-grid" id="projects-grid">
+            <div class="empty-state">Carregando…</div>
+        </div>
+
+        <h3 class="section-title">🕒 Rodadas Recentes</h3>
+        <div class="card-grid" id="runs-grid">
+            <div class="empty-state">Carregando…</div>
+        </div>
+    </div>
+
+    <!-- Modal: criar novo projeto -->
+    <div class="modal-backdrop" id="new-project-backdrop">
+        <div class="modal">
+            <h3>➕ Novo Projeto</h3>
+
+            <div class="tab-row">
+                <button class="btn-tab active" id="source-tab-example-btn" type="button">📋 A partir de exemplo</button>
+                <button class="btn-tab" id="source-tab-upload-btn" type="button">📤 Importar arquivo</button>
+            </div>
+
+            <div id="source-tab-example">
+                <label for="example-select">Exemplo (XML+H5 exportado do ANFLEX)</label>
+                <select id="example-select"></select>
+            </div>
+
+            <div id="source-tab-upload" style="display:none;">
+                <label for="upload-xml-input">Arquivo XML (obrigatório)</label>
+                <input type="file" id="upload-xml-input" accept=".xml">
+                <label for="upload-h5-input">Arquivo H5 (obrigatório)</label>
+                <input type="file" id="upload-h5-input" accept=".h5">
+                <label for="upload-aml-input">Arquivo AML/PML (opcional)</label>
+                <input type="file" id="upload-aml-input" accept=".aml,.pml">
+            </div>
+
+            <label for="project-name-input">Nome do Projeto</label>
+            <input type="text" id="project-name-input" placeholder="Nome do projeto">
+
+            <div class="error-text" id="new-project-error"></div>
+
+            <div class="modal-actions">
+                <button class="btn secondary" id="new-project-cancel-btn">Cancelar</button>
+                <button class="btn" id="new-project-confirm-btn">Criar Projeto</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/dashboard.js"></script>
+</body>
+</html>

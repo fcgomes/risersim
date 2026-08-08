@@ -36,7 +36,37 @@ class RiserSimApp {
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
-        await this.loadSimulationData('../catenary_results.json');
+        const { url, fallbackUrl } = this.resolveResultsUrl();
+        await this.loadSimulationData(url, fallbackUrl);
+    }
+
+    /**
+     * Resolves which results file to load on startup, in priority order:
+     *   1. `?file=<url>` -- explicit override, any URL/relative path.
+     *   2. `?project=<id>&run=<run-id>[&format=h5]` -- run-scoped results served by the run
+     *      manager's API (run_server.py), e.g. after triggering a run from project.html.
+     *   3. `../catenary_results.json` -- the historical hardcoded path, still populated by the
+     *      manual `run_from_aml.py` CLI workflow (it copies results next to tools/ on completion)
+     *      so opening posprocessor.html by hand keeps working unchanged.
+     * @returns {{url: string, fallbackUrl: string}}
+     */
+    resolveResultsUrl() {
+        const params = new URLSearchParams(window.location.search);
+
+        const explicitFile = params.get('file');
+        if (explicitFile) {
+            return { url: explicitFile, fallbackUrl: '../catenary_results.json' };
+        }
+
+        const project = params.get('project');
+        const run = params.get('run');
+        if (project && run) {
+            const base = `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/results/`;
+            const format = params.get('format') === 'h5' ? 'catenary_results.h5' : 'catenary_results.json';
+            return { url: base + format, fallbackUrl: base + 'catenary_results.json' };
+        }
+
+        return { url: '../catenary_results.json', fallbackUrl: '../catenary_results.json' };
     }
 
     /** Switches between the side data-panel tabs (Controls/Visualization/Table/Load). */
@@ -187,9 +217,9 @@ class RiserSimApp {
         this.render();
     }
 
-    async loadSimulationData(fileOrUrl) {
+    async loadSimulationData(fileOrUrl, fallbackUrl) {
         try {
-            this.simulation = await DataLoaderService.load(fileOrUrl);
+            this.simulation = await DataLoaderService.load(fileOrUrl, fallbackUrl);
 
             const modeSelect = document.getElementById('analysis-mode-select');
             if (modeSelect) {

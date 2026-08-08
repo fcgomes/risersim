@@ -11,9 +11,14 @@ export class DataLoaderService {
     /**
      * Format-autodetecting loader (HDF5 or JSON)
      * @param {string|File} fileOrUrl
+     * @param {string} [fallbackUrl] URL to fall back to (as JSON) when the HDF5 loader fails --
+     *   defaults to the historical hardcoded path (manual `run_from_aml.py` CLI workflow), but
+     *   callers loading run-scoped results (see app.js's `resolveResultsUrl()`) pass the matching
+     *   run-scoped JSON URL instead, so the fallback doesn't silently jump to a different run's
+     *   (or no) data.
      * @returns {Promise<FEASimulation>}
      */
-    static async load(fileOrUrl) {
+    static async load(fileOrUrl, fallbackUrl = '../catenary_results.json') {
         let isHDF5 = false;
         if (typeof fileOrUrl === 'string') {
             isHDF5 = fileOrUrl.endsWith('.h5') || fileOrUrl.endsWith('.hdf5');
@@ -26,7 +31,7 @@ export class DataLoaderService {
                 return await DataLoaderService.loadHDF5(fileOrUrl);
             } catch (err) {
                 console.warn("HDF5 loader falhou, tentando fallback para JSON: ", err);
-                return await DataLoaderService.loadJSON('../catenary_results.json');
+                return await DataLoaderService.loadJSON(fallbackUrl);
             }
         } else {
             return await DataLoaderService.loadJSON(fileOrUrl);

@@ -30,7 +30,38 @@ class PreprocessorApp {
 
         this.bindEvents();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
-        await this.loadInput('../input_simulation.json');
+        await this.loadInput(this.resolveInputUrl());
+    }
+
+    /**
+     * Resolves which input file to load on startup, in priority order (mirrors
+     * app.js::resolveResultsUrl()):
+     *   1. `?file=<url>` -- explicit override, any URL/relative path.
+     *   2. `?project=<id>&run=<run-id>` -- the exact input_simulation.json snapshot that run
+     *      used, served by the run manager's generic per-run results route (run_server.py
+     *      RESULT_FILENAMES now includes "input_simulation.json").
+     *   3. `?project=<id>` (no run) -- the project's CURRENT input_simulation.json ("what the
+     *      next run would use"), served by GET /api/projects/<id>/input.
+     *   4. `../input_simulation.json` -- the historical hardcoded path, unchanged (manual use
+     *      without the run manager keeps working).
+     * @returns {string}
+     */
+    resolveInputUrl() {
+        const params = new URLSearchParams(window.location.search);
+
+        const explicitFile = params.get('file');
+        if (explicitFile) return explicitFile;
+
+        const project = params.get('project');
+        const run = params.get('run');
+        if (project && run) {
+            return `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/results/input_simulation.json`;
+        }
+        if (project) {
+            return `/api/projects/${encodeURIComponent(project)}/input`;
+        }
+
+        return '../input_simulation.json';
     }
 
     bindEvents() {

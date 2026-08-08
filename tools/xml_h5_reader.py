@@ -6,6 +6,13 @@ import json
 import math
 import h5py
 
+# Versão do schema do JSON compilado (o que to_risersim_json() produz, consumido por
+# ModelBuilder::load_from_json em C++) -- bumpar à mão quando o formato mudar de um jeito que o
+# ModelBuilder precise diferenciar. Gravada no próprio JSON abaixo; risersim_projects.py lê esse
+# campo de volta do snapshot já copiado pra dentro do diretório da rodada e grava em run.json,
+# junto do model_hash e do web_version -- ver docs/roadmap.md Eixo 3b (proveniência de versões).
+SCHEMA_VERSION = 1
+
 
 def extract_assembly_flag(aml_path):
     """Lê o flag real `%ASSEMBLY.USING.TRUE`/`%ASSEMBLY.USING.FALSE` do texto `.aml`/`.pml`.
@@ -733,6 +740,7 @@ class ANFLEXXmlH5Reader:
         # Montagem do JSON estruturado
         data = {
             "title": title,
+            "schema_version": SCHEMA_VERSION,
             "model": {
                 "nodes": [{"id": n["id"], "coords": n["coords"]} for n in nodes],
                 "elements": elements

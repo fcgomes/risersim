@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>riserSim - Projeto</title>
+    <link rel="stylesheet" href="css/shared.css">
+    <link rel="stylesheet" href="css/dashboard.css">
+</head>
+<body class="dark-mode">
+    <div id="header">
+        <h1>🌊 riserSim - Gerenciador de Rodadas</h1>
+        <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
+    </div>
+
+    <div class="page">
+        <a class="back-link" href="dashboard.html">← Painel</a>
+
+        <div class="page-header-row">
+            <div>
+                <h2 id="project-name">Carregando…</h2>
+                <div class="subtitle" id="project-meta"></div>
+            </div>
+            <div class="actions">
+                <a class="btn secondary" id="view-input-link" href="#" target="_blank">🔍 Ver entrada</a>
+                <button class="btn" id="new-run-btn">▶ Nova Rodada</button>
+                <button class="btn secondary" id="refresh-btn">⟳ Atualizar</button>
+            </div>
+        </div>
+
+        <div class="control-group" id="project-source-group" style="max-width:600px;">
+            <div class="control-title">📦 ORIGEM DO MODELO</div>
+            <div id="project-source"></div>
+        </div>
+
+        <h3 class="section-title" style="margin-top:26px;">🕒 Rodadas</h3>
+        <div id="runs-container">
+            <div class="empty-state">Carregando…</div>
+        </div>
+    </div>
+
+    <script type="module" src="js/project.js"></script>
+</body>
+</html>

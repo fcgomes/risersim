@@ -1,8 +1,40 @@
 services:
+  # API REST + arquivos estáticos do gerenciador de rodadas (dashboard/project/posprocessor/
+  # preprocessor + js/css) -- substituto drop-in de `tools/dev_server.py` (mesma porta 8000),
+  # com as rotas /api/* a mais (ver tools/run_server.py). Não executa nenhuma rodada diretamente:
+  # só grava `status: pending` no volume compartilhado -- quem roda o binário C++ é o `worker`.
   web:
     build:
       context: .
       target: runtime
+    image: risersim-run-manager-web:latest
     ports:
       - "8000:8000"
-    command: ["python3", "tools/dev_server.py", "8000", "."]
+    volumes:
+      - risersim_projects:/app/risersim/projects
+      # trunk/exemplos/: fonte real dos 7 exemplos com pasta <nome>_analysis/ (XML+H5 exportado
+      # pelo ANFLEX) que o Phase 1 do gerenciador de rodadas sabe importar -- ver
+      # docs/mapa_aml_exemplos_e_web_interface.md. Só `web` precisa disso (para
+      # GET /api/examples e POST /api/projects); `worker` só executa rodadas já compiladas.
+      - ../exemplos:/app/exemplos:ro
+    command: ["python3", "tools/run_server.py", "8000"]
+
+  # Loop serial persistente: pega a rodada "pending" mais antiga entre todos os projetos e roda o
+  # binário risersim_test_main (subprocess, não container-per-run -- sem Docker-in-Docker, ver
+  # docs/roadmap.md Eixo 3b), uma de cada vez. Fala com `web` só através do volume compartilhado
+  # (run.json = status, stdout.log = progresso ao vivo), sem broker nenhum.
+  worker:
+    build:
+      context: .
+      target: runtime
+    image: risersim-run-manager-worker:latest
+    volumes:
+      - risersim_projects:/app/risersim/projects
+    command: ["python3", "tools/run_worker.py"]
+
+volumes:
+  # Layout: projects/<project-id>/{project.json,input_simulation.json,runs/<run-id>/{run.json,
+  # input_simulation.json,stdout.log,catenary_results.json,catenary_results.h5}}. Raiz nova,
+  # separada de risersim_results/ (usado pelo workflow manual `run_from_aml.py`, que continua
+  # funcionando fora do Docker Compose, sem volume nenhum).
+  risersim_projects:

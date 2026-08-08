@@ -42,38 +42,10 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from aml_reader import ANFLEXAMLReader
-
-
-def find_executable(custom_path: str = None) -> Path:
-    """Localiza o executável risersim_test_main."""
-    exe_name = 'risersim_test_main.exe' if platform.system() == 'Windows' else 'risersim_test_main'
-    
-    if custom_path:
-        p = Path(custom_path)
-        if p.is_file():
-            return p
-        
-    # Locais típicos de compilação CMake
-    root = _SCRIPT_DIR.parent
-    candidates = [
-        root / 'build' / 'bin' / exe_name,
-        root / 'build' / 'bin' / 'Release' / exe_name,
-        root / 'build' / 'bin' / 'Debug' / exe_name,
-        root / 'build' / exe_name,
-        root / 'build' / 'Release' / exe_name,
-        Path('.') / 'build' / 'bin' / exe_name,
-        Path('.') / 'build' / 'bin' / 'Release' / exe_name,
-    ]
-
-    for c in candidates:
-        if c.is_file():
-            return c
-
-    found = shutil.which(exe_name)
-    if found:
-        return Path(found)
-
-    return None
+# find_executable() e a compilação do config a partir de XML+H5 foram extraídos para
+# risersim_runner.py, reaproveitados também pelo novo gerenciador de rodadas
+# (run_server.py/run_worker.py, ver docs/roadmap.md Eixo 3b) -- não duplicar essa lógica aqui.
+from risersim_runner import find_executable, build_config_from_xml_h5
 
 
 def main():
@@ -115,42 +87,36 @@ def main():
         print(f"\n📦 Detectada pasta de análise XML+H5. Importando modelo robusto:")
         print(f"   XML: {xml_file}")
         print(f"   H5:  {h5_file}")
-        from xml_h5_reader import ANFLEXXmlH5Reader, extract_assembly_flag, extract_static_convergence_criterium
-        reader = ANFLEXXmlH5Reader(str(xml_file), str(h5_file))
-        config = reader.to_risersim_json()
-        reader.close()
 
-        # %ASSEMBLY.USING real só existe no texto .aml/.pml, não no XML/H5 -- controla se o
-        # ANFLEX real roda a fase de assembly (rigidez artificial em todo passo + fase static
-        # separada) ou só uma rampa única (ver mapa_classes_anflex_estatica.md).
-        assembly_flag = extract_assembly_flag(str(aml_path))
-        if assembly_flag is not None:
-            config['analysis_options']['static']['use_assembly_phase'] = assembly_flag
-            print(f"   %ASSEMBLY.USING real: {assembly_flag}")
+        # Sobrescreve parâmetros da linha de comando só quando o usuário realmente pediu
+        # (mesma semântica de antes: sem --duration/--dt explícitos, usa o valor real do XML).
+        duration_override = args.duration if '--duration' in sys.argv else None
+        dt_override = args.dt if '--dt' in sys.argv else None
 
-        # %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM/MAX_UNBALANCED reais -- se o ANFLEX real
-        # combina o critério de deslocamento com um teto de força/momento desbalanceado
-        # ('DISP_AND_FORCE'), liga a mesma válvula de escape que o risersim já tinha implementada
-        # mas nunca lida do AML real (ver mapa_classes_anflex_estatica.md).
-        enable_unbalanced, max_unbalanced = extract_static_convergence_criterium(str(aml_path))
-        if enable_unbalanced:
-            config['analysis_options']['static']['enable_unbalanced_criteria'] = True
-            if max_unbalanced is not None:
-                config['analysis_options']['static']['unbalanced_force_tol'] = max_unbalanced
-                config['analysis_options']['static']['unbalanced_moment_tol'] = max_unbalanced
-            print(f"   %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM real: DISP_AND_FORCE (max_unbalanced={max_unbalanced})")
+        config = build_config_from_xml_h5(
+            xml_file, h5_file, aml_path=aml_path,
+            duration=duration_override, dt=dt_override,
+            static_only=args.static_only,
+        )
+
+        static_opts = config['analysis_options']['static']
+        if 'use_assembly_phase' in static_opts:
+            # %ASSEMBLY.USING real só existe no texto .aml/.pml, não no XML/H5 -- controla se o
+            # ANFLEX real roda a fase de assembly (rigidez artificial em todo passo + fase static
+            # separada) ou só uma rampa única (ver mapa_classes_anflex_estatica.md).
+            print(f"   %ASSEMBLY.USING real: {static_opts['use_assembly_phase']}")
+        if static_opts.get('enable_unbalanced_criteria'):
+            # %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM/MAX_UNBALANCED reais -- se o ANFLEX real
+            # combina o critério de deslocamento com um teto de força/momento desbalanceado
+            # ('DISP_AND_FORCE'), liga a mesma válvula de escape que o risersim já tinha
+            # implementada mas nunca lida do AML real (ver mapa_classes_anflex_estatica.md).
+            print(f"   %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM real: DISP_AND_FORCE "
+                  f"(max_unbalanced={static_opts.get('unbalanced_force_tol')})")
 
         # Sobrescreve parâmetros da linha de comando se informados
         if args.num_elements:
             print("⚠️ Nota: O número de elementos é fixado pela malha XML+H5 e não será sobrescrito.")
 
-        if '--duration' in sys.argv:
-            config['analysis_options']['dynamic']['duration_s'] = args.duration
-        if '--dt' in sys.argv:
-            config['analysis_options']['dynamic']['dt_s'] = args.dt
-        if args.static_only:
-            config['analysis_options']['dynamic']['enabled'] = False
-            
     else:
         print(f"\n📖 Lendo arquivo AML: {aml_path}")
         reader = ANFLEXAMLReader(str(aml_path))

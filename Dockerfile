@@ -46,8 +46,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # h5py/moorpy: dependências reais dos scripts em tools/ (ver run_from_aml.py,
-# moorpy_warm_start.py) -- nada aqui precisa do toolchain C++.
-RUN pip3 install --no-cache-dir h5py moorpy
+# moorpy_warm_start.py) -- nada aqui precisa do toolchain C++. flask: API REST + serving estático
+# do gerenciador de rodadas (tools/run_server.py, ver docs/roadmap.md Eixo 3b) -- só o serviço
+# `web` do docker-compose.yml realmente importa flask; `worker` (tools/run_worker.py) roda na
+# mesma imagem mas nunca importa esse módulo, então tê-lo aqui também é barato e evita duplicar
+# esta stage só por causa de uma dependência pequena e padrão.
+RUN pip3 install --no-cache-dir h5py moorpy flask
 
 WORKDIR /app/risersim
 
