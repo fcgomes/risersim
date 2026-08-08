@@ -9,6 +9,7 @@
 #include "risersim/element_beam.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/vessel_offset.hpp"
+#include "risersim/vessel_motion.hpp"
 #include <vector>
 #include <string>
 #include <memory>
@@ -64,6 +65,12 @@ struct EnvironmentalConfig {
     double wave_gamma = 3.3;
 
     double water_density = 1025.0;
+
+    /// Movimento real de topo (RAO + JONSWAP "equivalent harmonic") -- só a tabela/parâmetros
+    /// crus (ver vessel_motion.hpp); default `enabled=false` preserva o fallback já existente
+    /// (onda regular só em Z) pra qualquer JSON sem essa seção -- sintéticos, `aml_reader.py`
+    /// (ainda desconectado, Eixo 2a), JSONs antigos.
+    VesselMotionConfig vessel_motion;
 };
 
 /**

@@ -6,6 +6,8 @@
 #define RISERSIM_DYNAMIC_ANALYSIS_HPP
 
 #include "risersim/analysis.hpp"
+#include "risersim/vessel_motion.hpp"
+#include <optional>
 
 namespace risersim {
 
@@ -38,6 +40,12 @@ public:
      * new information -- this lets a caller opt into stopping immediately instead.
      */
     bool stop_on_first_non_convergence = false;
+
+    /// Real RAO+JONSWAP top motion (see vessel_motion.hpp), set by Simulation::run() when the
+    /// input JSON has real data for it. Empty (`std::nullopt`) falls back to the old single-Z
+    /// regular-wave sinusoid already in solve_time_domain_dynamic() -- zero behavior change for
+    /// any model without this data (synthetic, older JSONs, `aml_reader.py`).
+    std::optional<VesselMotion> vessel_motion;
 
     DynamicAnalysis()
         : Analysis(),

@@ -327,6 +327,54 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                 ec.wave_gamma = value_warn(wave, "gamma", ec.wave_gamma, "environmental.wave.gamma", warnings);
                 ec.wave_type = value_warn(wave, "type", ec.wave_type, "environmental.wave.type", warnings);
             }
+            // Movimento real de topo (RAO + JONSWAP "equivalent harmonic") -- recurso novo e
+            // opcional (`.value()` simples, sem value_warn); ausente = fallback já existente
+            // (onda regular só em Z), ver dynamic_analysis.cpp.
+            if (env.contains("vessel_motion") && env["vessel_motion"].value("enabled", false)) {
+                auto vm = env["vessel_motion"];
+                auto& vmc = ec.vessel_motion;
+                vmc.enabled = true;
+
+                auto center = vm.value("movement_center", std::vector<double>{0.0, 0.0, 0.0});
+                auto offset = vm.value("offset", std::vector<double>{0.0, 0.0, 0.0});
+                for (int i = 0; i < 3 && i < static_cast<int>(center.size()); ++i) {
+                    vmc.cm_position_m[i] = center[i];
+                }
+                for (int i = 0; i < 3 && i < static_cast<int>(offset.size()); ++i) {
+                    vmc.offset_m[i] = offset[i];
+                }
+                vmc.refsys_angle_deg = vm.value("refsys_angle_deg", 0.0);
+
+                static const std::map<std::string, VesselDof> dof_map = {
+                    {"surge", VesselDof::Surge}, {"sway", VesselDof::Sway}, {"heave", VesselDof::Heave},
+                    {"roll", VesselDof::Roll}, {"pitch", VesselDof::Pitch}, {"yaw", VesselDof::Yaw},
+                };
+                std::string max_dof_str = vm.value("maximization_dof", std::string("heave"));
+                auto it = dof_map.find(max_dof_str);
+                vmc.maximization_dof = (it != dof_map.end()) ? it->second : VesselDof::Heave;
+
+                vmc.headings_deg = vm.value("headings_deg", std::vector<double>{});
+                vmc.frequencies_rad_s = vm.value("frequencies_rad_s", std::vector<double>{});
+
+                if (vm.contains("amplitude") && vm.contains("phase_deg")) {
+                    auto amp = vm["amplitude"];
+                    auto phase = vm["phase_deg"];
+                    for (const auto& [name, dof] : dof_map) {
+                        vmc.amplitude[static_cast<int>(dof)] = amp.value(name, std::vector<std::vector<double>>{});
+                        vmc.phase_deg[static_cast<int>(dof)] = phase.value(name, std::vector<std::vector<double>>{});
+                    }
+                }
+
+                if (vm.contains("jonswap")) {
+                    auto js = vm["jonswap"];
+                    vmc.jonswap_alpha = js.value("alpha", 0.0);
+                    vmc.jonswap_gamma = js.value("gamma", vmc.jonswap_gamma);
+                    vmc.jonswap_period_s = js.value("period_s", vmc.jonswap_period_s);
+                    vmc.jonswap_wini_rad_s = js.value("wini_rad_s", vmc.jonswap_wini_rad_s);
+                    vmc.jonswap_wfin_rad_s = js.value("wfin_rad_s", vmc.jonswap_wfin_rad_s);
+                    vmc.jonswap_nwave = js.value("nwave", vmc.jonswap_nwave);
+                }
+            }
         }
 
         // 5. Solver parameters (static / dynamic options) -> model.analysis_options

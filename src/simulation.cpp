@@ -101,6 +101,15 @@ void Simulation::run() {
         dynamic_analysis->wave_period = model->environmental.wave_period_s;
         dynamic_analysis->wave_angle_deg = model->environmental.wave_angle_deg;
         dynamic_analysis->wave_gamma = model->environmental.wave_gamma;
+        if (model->environmental.vessel_motion.enabled) {
+            // 10800.0 = duração de tormenta padrão de 3h da estatística de Rayleigh, mesmo
+            // literal hardcoded do próprio ANFLEX real (model_builder_dat.cpp) -- não é
+            // `dynamic_duration_s` (duração da simulação em si, ex. 1s no Exemplo_01a; usar
+            // esse valor aqui degeneraria a estatística de extremos). Ver vessel_motion.hpp.
+            dynamic_analysis->vessel_motion.emplace(
+                model->environmental.vessel_motion, model->environmental.wave_angle_deg, 10800.0,
+                model->nodes.front()->current_coords());
+        }
         dynamic_analysis->alpha_rayleigh = model->analysis_options.rayleigh_alpha;
         dynamic_analysis->beta_rayleigh = model->analysis_options.rayleigh_beta;
         dynamic_analysis->max_nr_iters = model->analysis_options.dynamic_max_iterations;

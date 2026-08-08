@@ -29,7 +29,32 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     std::cout << "  Duration: " << duration_s << " s | dt: " << dt_s << " s | Wave Amp: " << wave_amplitude << " m | Wave Period: " << wave_period << " s" << std::endl;
     std::cout << "=========================================================================\n" << std::endl;
 
+    if (vessel_motion.has_value()) {
+        std::cout << "  Vessel motion (RAO+JONSWAP equivalent harmonic): freq=" << vessel_motion->frequency_rad_s()
+                  << " rad/s (T=" << (2.0 * std::numbers::pi / vessel_motion->frequency_rad_s()) << " s)"
+                  << " | heave amp=" << vessel_motion->amplitude(VesselDof::Heave) << " m, phase="
+                  << vessel_motion->phase_rad(VesselDof::Heave) << " rad"
+                  << " | surge amp=" << vessel_motion->amplitude(VesselDof::Surge) << " m"
+                  << " | roll amp=" << vessel_motion->amplitude(VesselDof::Roll) << " rad" << std::endl;
+    }
+
     if (!model || model->nodes.empty()) return false;
+
+    Node3D* top_node = model->nodes.front().get();
+    // Movimento prescrito do topo via mola de penalidade (PrescribedMotion), não mais eliminação
+    // de GDL + atribuição direta de disp/rot fora do sistema linear -- mesma técnica que o ANFLEX
+    // real usa pra carga imposta (`cLoad`/"big number", `integrator.cpp::set_load_dofs`) e que
+    // `StaticAnalysis::solve_vessel_offset` já usa pro offset estático. Confirmado contra o fonte
+    // real (`domain.cpp:546-578`, `set_dof_indexes`): só GDL *restrained* (apoio fixo de verdade)
+    // perdem a equação; GDL *prescribed* mantêm equação normal e participam da montagem de
+    // M/C/K/U/V/A por inteiro -- é isso que garante que o acoplamento inercial do nó de topo com o
+    // primeiro nó livre (M_BA·a_topo, via massa consistente do elemento) não seja descartado. A
+    // versão anterior deste código eliminava o GDL do nó de topo (`eq_numbers=[-1]*6`) e escrevia
+    // `disp`/`rot` direto, o que jogava fora exatamente esse termo -- diagnosticado como a causa
+    // provável da divergência do Newton dinâmico mesmo com movimento de topo minúsculo (ver
+    // docs/mapa_aml_exemplos_e_web_interface.md).
+    std::vector<int> top_node_saved_eq_numbers = top_node->eq_numbers;
+    top_node->eq_numbers = {0, 1, 2, 3, 4, 5};
     assign_equation_numbers();
 
     history.clear();
@@ -51,23 +76,54 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         static_rots.push_back(node->rot);
     }
 
-    Node3D* top_node = model->nodes.front().get();
-
     // Dynamic State Vectors (System DOFs)
     Eigen::VectorXd U = Eigen::VectorXd::Zero(num_dofs);
     Eigen::VectorXd V = Eigen::VectorXd::Zero(num_dofs);
     Eigen::VectorXd A = Eigen::VectorXd::Zero(num_dofs);
+
+    prescribed_motions.clear();
+    prescribed_motions.emplace_back(top_node);
+    PrescribedMotion& top_motion = prescribed_motions.back();
+    // Todos os 6 GDL, sempre -- inclusive no fallback sem vessel_motion real, onde X/Y/rotação
+    // recebem um alvo CONSTANTE (a própria posição estática) em vez de ficarem livres sem
+    // nenhuma restrição: reproduz o comportamento antigo (Dirichlet fixo nesses GDL) só que agora
+    // via a mesma mola de penalidade, preservando o acoplamento de massa consistente.
+    top_motion.dof_active = {true, true, true, true, true, true};
 
     bool all_steps_converged = true;
 
     for (int step = 0; step <= total_steps; ++step) {
         double time = step * dt_s;
 
-        // Prescribe Top Vessel Harmonic Motion with 5s Smooth Ramp
-        double ramp_time = 5.0;
-        double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
-        double disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
-        top_node->disp = static_disps.front() + Eigen::Vector3d(0.0, 0.0, disp_z);
+        // Prescribe Top Vessel Motion: real RAO+JONSWAP "equivalent harmonic" (6 DOFs) when the
+        // input JSON has real data for it (vessel_motion.hpp), else the old single-Z regular-
+        // wave sinusoid with the same 5s smooth ramp -- now via top_motion's penalty-spring
+        // target (see setup above), not a direct disp/rot assignment.
+        double disp_z = 0.0; // só usado no log de progresso abaixo
+        if (vessel_motion.has_value()) {
+            Eigen::Vector3d vessel_disp, vessel_rot;
+            vessel_motion->get_motion(time, vessel_disp, vessel_rot);
+            top_motion.target_disp = static_disps.front() + vessel_disp;
+            // Componente a componente, NÃO compose_rotations() -- confirmado contra o mecanismo
+            // real de movimento prescrito (`integrator.cpp::set_load_dofs`, `presc_desl[i] +=
+            // movements[i]` pra i=0..5, sem distinção entre translação/rotação): o ANFLEX real
+            // soma o vetor de rotação do harmônico equivalente direto em cima da referência
+            // estática, sem compor via Rodrigues/quaternion. Faz sentido com o próprio método:
+            // "equivalent harmonic" já é linearizado do início ao fim (RAO é resposta linear em
+            // frequência), então uma composição não-linear aqui introduziria uma não-linearidade
+            // que o método de referência não tem. `compose_rotations` continua correto pro ESTADO
+            // realmente resolvido pelo Newton (linha ~155, abaixo, agora também pro nó de topo) --
+            // esse é outro mecanismo do ANFLEX real (`nMathUtils::pseudo_sum`,
+            // `integrator.cpp:697`), aplicado ao alvo vs. ao estado, não ao mesmo lugar.
+            top_motion.target_rot = static_rots.front() + vessel_rot;
+            disp_z = vessel_disp.z();
+        } else {
+            double ramp_time = 5.0;
+            double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
+            disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
+            top_motion.target_disp = static_disps.front() + Eigen::Vector3d(0.0, 0.0, disp_z);
+            top_motion.target_rot = static_rots.front(); // alvo constante -- rotação do topo nunca foi dinamicamente imposta sem vessel_motion real
+        }
 
         // Save Previous State Vectors for Newmark Integration
         Eigen::VectorXd U_prev = U;
@@ -83,10 +139,12 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         int nr_converged_iter = -1;
         double res_norm_prev = 1.0e30;
         for (int iter = 0; iter < max_nr_iters; ++iter) {
-            // Update Node Displacements (Static + Current Dynamic Perturbation)
+            // Update Node Displacements (Static + Current Dynamic Perturbation) -- top_node
+            // included now: it's a genuine free DOF held by the penalty spring (top_motion), not
+            // excluded by direct assignment, so it must receive Newton corrections like any other
+            // free node (this is what lets its mass properly couple to its neighbor via M_BA).
             for (size_t i = 0; i < model->nodes.size(); ++i) {
                 auto* node = model->nodes[i].get();
-                if (node == top_node) continue;
 
                 Eigen::Vector3d dyn_rot_perturbation = Eigen::Vector3d::Zero();
                 bool has_rot_dof = false;
@@ -260,6 +318,13 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                       << std::setprecision(2) << disp_z << " m" << std::endl;
         }
     }
+
+    // Restaura o nó de topo ao contrato de GDL original (mesmo padrão de limpeza de
+    // StaticAnalysis::solve_vessel_offset) -- por simetria/higiene, mesmo esta sendo a última fase
+    // da análise hoje.
+    top_node->eq_numbers = top_node_saved_eq_numbers;
+    prescribed_motions.clear();
+    assign_equation_numbers();
 
     if (!all_steps_converged) {
         std::cerr << "❌ 3D TIME-DOMAIN DYNAMIC SOLVER FINISHED WITH ONE OR MORE NON-CONVERGED STEPS!" << std::endl;

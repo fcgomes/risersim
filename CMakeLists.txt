@@ -44,6 +44,7 @@ add_library(risersim_core STATIC
     src/hydrodynamics.cpp
     src/model_builder.cpp
     src/simulation.cpp
+    src/vessel_motion.cpp
 )
 
 target_include_directories(risersim_core PUBLIC
@@ -152,6 +153,7 @@ add_executable(risersim_tests
     tests/test_element.cpp
     tests/test_convergence_test.cpp
     tests/test_prescribed_motion.cpp
+    tests/test_vessel_motion.cpp
 )
 target_link_libraries(risersim_tests PRIVATE risersim_core Catch2::Catch2WithMain)
 

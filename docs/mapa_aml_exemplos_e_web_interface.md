@@ -374,6 +374,171 @@ usado no formulário/JSON de interface (mais próximo do usuário, do AML) tenha
 e sem ambiguidade até o JSON de simulação (mais próximo do XML) — para não repetir o padrão que
 gerou os achados 3 e 4 (nomes iguais/parecidos escondendo convenções ou completude diferentes).
 
+## Movimento de topo real (RAO + JONSWAP "equivalent harmonic")
+
+Continuação do Eixo 1b (roadmap.md): auditando o que ainda falta na dinâmica depois de
+`rho_structural` e o amortecimento de Rayleigh (ambos já corrigidos, ver achados acima), o
+movimento do topo do riser em `dynamic_analysis.cpp` era só uma onda regular de um grau de
+liberdade só (`disp_z = ramp * wave_amplitude * sin(omega*t)`, amplitude=altura de onda/2, sem
+RAO nenhuma) — enquanto o XML real do Exemplo_01a tem `dynamic_movement_type=equivalent_harmonic`,
+uma tabela RAO completa (25 headings × 59 frequências × 6 GDL, `RAOs/FPSO.RAO` no H5) e um
+espectro JONSWAP real completo (`alpha`, `wini`/`wfin`/`nwave`, nunca lidos antes).
+
+**Implementado**: o algoritmo real de "harmônico equivalente" do ANFLEX (`trunk/libs/anf_movements`
+— `cEquivalentHarmonic`/`cHybridMovement`/`cJonswapSpectrum`/`cRAO_Table`), verificado linha a
+linha contra o C++ real: espectro JONSWAP → espectro induzido por GDL (RAO² × espectro) →
+momentos espectrais (m0/m2/m4, trapézio) → extremos mais prováveis de Rayleigh (banda estreita,
+tormenta de 3h) → frequência equivalente única (a partir do GDL de `maximization_dof`, aqui heave)
+→ amplitude/fase por GDL → transferência geométrica de corpo rígido (CM→ponto de fixação) →
+rotação pro referencial global. A pedido do usuário, a matemática ficou em **C++** (novo módulo
+`vessel_motion.hpp`/`.cpp`, com testes Catch2 próprios), não em Python — `xml_h5_reader.py` só
+extrai a tabela RAO/JONSWAP crua, mesmo padrão de `CurrentProfile` (Python extrai, C++ interpola).
+Pesquisei bibliotecas Python prontas antes de implementar (a pedido do usuário) — nenhuma cobre o
+fluxo completo sem trazer dependências desproporcionais (`pandas`/`scipy`/`pyarrow` etc.); decisão
+de implementar à mão, documentada em detalhe no plano desta rodada.
+
+**Duas rodadas de achados durante a implementação, em torno do campo `Rao/offset`** (o
+deslocamento CM→ponto de fixação usado na transferência geométrica de corpo rígido):
+
+1. A primeira versão usou a posição real do nó de topo (pós-estática) como ponto de transferência,
+   por analogia com um campo `static_offset` do parser DAT (formato interno diferente, não o
+   XML). Isso produzia um braço de alavanca de ~47m (a posição do nó ao longo da própria
+   catenária, sem relação com o casco do flutuante) e uma amplitude de heave de **30m** —
+   fisicamente absurdo pra um mar de Hs=6,3m. Corrigido: usar `Rao/offset` diretamente (poucos
+   metros, geometria do casco) derrubou a amplitude pra **10,3m**.
+2. O usuário questionou se 10m ainda não era muito. Reproduzindo o cálculo de forma independente
+   em Python: o heave puro (sem acoplamento) perto do pico do JONSWAP é pequeno (~0,2-0,27), mas
+   o **pitch** da tabela RAO real nessa faixa chega a ~0,34 rad/m — um valor alto pra um RAO real
+   de pitch — e a transferência geométrica (`heave_transferido = heave - x·pitch + y·roll`, braço
+   de ~13m) amplifica esse pitch em heave aparente no ponto de fixação, explicando a maior parte
+   dos 10,3m. A fórmula de transferência em si foi conferida linha a linha contra
+   `matrix_transform.cpp`/`rao_table.cpp` e está correta. O problema real é mais profundo: o nó
+   real do topo do riser fica em X=-47,73m (pós-estática) enquanto `movement_center` está em X=0 —
+   uma discrepância de ~47m que não é explicada só pelo braço de ~13m do `offset`, sugerindo que
+   `movement_center`/`offset` podem estar num referencial de coordenadas diferente do da malha do
+   riser. Sem um consumidor real do XML pra confirmar (o XML/H5 parece ser só de exportação — o
+   único código real que constrói `cEquivalentHarmonic` está em `model_builder_dat.cpp`, o parser
+   do formato `.dat`, um formato de entrada diferente), essa dúvida não pôde ser resolvida.
+   **Decisão do usuário**: desligar a transferência geométrica por enquanto (movimento aplicado
+   direto no CM, braço de alavanca zero) — mais conservador, evita amplificar um possível erro de
+   referencial, ao custo de perder o acoplamento roll/pitch→heave real (que existe fisicamente).
+   Isso derrubou a amplitude de heave pra **0,85m**, uma ordem de grandeza bem mais modesta e
+   condizente com o heave puro perto do pico. A fórmula de transferência fica implementada e
+   comentada em `vessel_motion.cpp` (não deletada), pronta pra reativar quando o referencial for
+   confirmado contra um dado de referência real.
+3. A dúvida de referencial da rodada 2 foi resolvida lendo o código-fonte real diretamente (não
+   mais inferindo por falta de um consumidor conhecido): `model_builder_dat.cpp:4373-4386` mostra
+   que `cm_position` (posição global do CM, passada pro `cEquivalentHarmonic`) é
+   `Rao/movement_center` **somado** a `Rao/static_offset` — e `save-dat.cpp` (o writer da
+   interface, que gera tanto o `.dat` quanto o XML de análise a partir do mesmo modelo em memória,
+   via `cSaveDatUtil::get_global_static_offset()`) confirma que esse `static_offset` do `.dat` é a
+   mesma grandeza que o `Rao/offset` do XML — ou seja, o `.dat` **não é um formato de entrada não
+   relacionado**, é a ponte real entre a interface e o solver, e `model_builder_dat.cpp` é de fato
+   o único lugar em todo `trunk/src` que constrói `cEquivalentHarmonic`. E o construtor-mãe
+   `cAnfMovements` (`anf_movements.cpp:66-84`) confirma que o braço de alavanca local vem de
+   `(posição real do nó pós-estática) - cm_position`, rotacionado pela inversa de `refsys_angle`
+   — exatamente a abordagem da **primeira** implementação (rodada 1), que tinha sido revertida por
+   parecer um bug de referencial. A diferença de ~47m entre o nó real (X=-47,73m) e o
+   `movement_center` (X=0) não era um erro: é a distância real entre o CM do FPSO e o ponto de
+   conexão do riser no casco, plausível num navio grande. **Reativada** a transferência geométrica
+   com a fórmula correta (`vessel_motion.hpp`/`.cpp`, `VesselMotion` agora recebe também a posição
+   global real do nó de topo pós-estática como parâmetro do construtor, igual ao `node_position`
+   real) — mais 2 asserts novos no Catch2 isolando a conta do braço de alavanca (RAO só em pitch,
+   ponto de fixação deslocado, checando que o heave "vazado" escala linearmente com a distância).
+   Rodando o Exemplo_01a real com a fórmula reativada: heave volta a **30,17m**, praticamente
+   idêntico à rodada 1 (confirma que aquele resultado antigo era, na verdade, física correta do
+   ANFLEX real, não um bug) — e a dinâmica volta a divergir catastroficamente (resíduos a 10²⁴,
+   mesma ordem da rodada 1). Ou seja: a fórmula agora bate 100% com o ANFLEX real, mas isso expõe
+   (sem mascarar) que o solver dinâmico do risersim não aguenta um movimento de topo dessa
+   magnitude nos parâmetros atuais (rampa de 5s dentro de uma janela de simulação de só 1s/20
+   passos, Newton sem line search) — um problema de robustez numérica genuíno, não um erro de
+   modelagem, e o próximo passo natural do Eixo 1b (ver roadmap.md).
+
+**Verificação**: 6 casos de teste Catch2 (JONSWAP num ponto conhecido, interpolação linear, a
+propriedade `frequência_equivalente=(m4/m0)^0.25` pra RAO unitário, e a conta do braço de alavanca
+da transferência geométrica) — suíte completa em 361 asserts, zero regressão. Estática do
+Exemplo_01a inalterada (T_eff=217,3 kN, X=-47,73m) nas três versões. Dinâmica com a transferência
+reativada: mesma divergência catastrófica da rodada 1 (10²⁴), esperada e não mascarada — a
+fidelidade da física aumentou, mas o Eixo 1b continua em aberto, agora com uma causa mais clara
+(robustez do solver dinâmico diante de um movimento de topo grande, não mais uma dúvida de dado).
+
+4. Revisão adicional pedida pelo usuário ("a ordem entre transladar e rotacionar às vezes faz
+   muita diferença"): conferi de novo, linha a linha, os quatro pontos onde ordem de
+   translação/rotação poderia importar (offset local CM→ponto: translada em eixos globais, DEPOIS
+   gira -- `rao_table.cpp:324-328`/`anf_movements.cpp:71-76`; a fórmula de `transfer_local` em si
+   -- `rao_table.cpp:289-295`; interpolação por heading via real/imaginário -- `rao.cpp:162-168`;
+   rotação final Z aplicada igual em translação e rotação -- `hybrid_movement.cpp:175-178`) -- os
+   quatro batem exatamente com `vessel_motion.cpp`, nenhuma discrepância de ordem encontrada aí.
+   Mas essa revisão achou um problema real em outro lugar: `dynamic_analysis.cpp` compunha a
+   rotação do nó de topo prescrito via `compose_rotations()` (produto de matrizes de Rodrigues,
+   não-linear), enquanto o mecanismo real que aplica movimento prescrito
+   (`integrator.cpp::set_load_dofs`, linhas 81-93) faz `presc_desl[i] += movements[i]` pra i=0..5
+   -- soma escalar componente a componente, tanto pra translação quanto pra rotação, sem nenhuma
+   composição não-linear. Faz sentido com o próprio método "harmônico equivalente", que já é
+   linearizado do início ao fim -- compor via Rodrigues introduzia uma não-linearidade que a
+   referência real não tem. **Corrigido**: `top_node->rot = static_rots.front() + vessel_rot`
+   (soma direta), mantendo `compose_rotations()` só pros DOFs livres resolvidos pelo Newton (esse
+   sim corresponde a outro mecanismo real, `nMathUtils::pseudo_sum`, `integrator.cpp:697`).
+   Suíte Catch2 sem regressão (361 asserts). **Resultado ao rodar de novo**: praticamente idêntico
+   ao de antes da correção -- heave 30,17m, roll 0,3734 rad, divergência na mesma ordem de
+   grandeza (10¹⁹-10²² no fim dos 20 passos). Não foi a causa da divergência: o resíduo já explode
+   a partir do passo 2 (t=0,1s), quando a rampa de 5s ainda deixa o movimento prescrito quase nulo
+   (fator de rampa ~0,001) -- ou seja, mesmo um deslocamento de topo minúsculo já quebra o Newton
+   rapidamente, o que aponta pra uma causa estrutural do solver dinâmico (massa/rigidez/Newmark),
+   não pra magnitude do movimento de topo em si. A correção da composição de rotação foi mantida
+   por ser uma correção de fidelidade real (confirmada contra o fonte), mesmo não resolvendo o
+   Eixo 1b.
+
+5. **Causa raiz encontrada** (a pedido do usuário, "vamos rodar com movimento do topo zerado, o
+   que acha"). Isolei experimentalmente que a divergência não depende da amplitude do movimento de
+   topo: rodando com `vessel_motion.enabled=false` E `wave.amplitude_m=0` (topo genuinamente
+   parado, mesmo braço de alavanca/dados reais), a dinâmica converge nos 20 passos completos
+   (confirmado sob dois builds: Release padrão e um build com AddressSanitizer+UndefinedBehavior­
+   Sanitizer, que também não acusou nenhum bug de memória/UB rodando o caso de 30m de heave até o
+   fim -- descartando hipótese de heap corrompido). Ou seja: qualquer movimento de topo variando no
+   tempo, por menor que seja, já quebra a dinâmica; um topo fixo nunca quebra. Isso apontou pra
+   `dynamic_analysis.cpp:187-205` (montagem da matriz de massa): o nó de topo tem `eq_numbers =
+   [-1]*6` (GDL eliminado), então qualquer termo de massa consistente do elemento que toque nele --
+   inclusive o acoplamento inercial `M_BA·a_topo` com o primeiro nó livre -- é descartado no laço de
+   montagem (`if (eq_map[r] < 0) continue`). Fisicamente, quando o topo acelera, ele empurra o nó
+   vizinho via massa consistente, não só via rigidez; a rigidez/força interna capta esse
+   acoplamento certinho (via geometria real, `F_int`), mas a inércia não -- um termo real ficando de
+   fora da equação de movimento do nó vizinho sempre que o topo se move.
+
+   Perguntei ao usuário "e o ANFLEX real faz de que forma?" antes de propor a correção. Resposta,
+   confirmada lendo `domain.cpp:546-578` (`cDomain::set_dof_indexes`): o ANFLEX real usa **método
+   de penalidade** ("big number") pro movimento prescrito, não eliminação de GDL -- só GDL
+   *restrained* (apoio fixo de verdade) perdem a equação (`m_restrained_dofs`); GDL *prescribed*
+   (`m_prescribed_dofs`, o mecanismo do movimento imposto) mantêm equação normal e participam da
+   montagem de M/C/K/U/V/A por inteiro (`integrator.cpp::set_load_dofs`, `(presc_desl-desl)*
+   big_number` como força extra no resíduo). Como o nó nunca é removido do sistema, o termo de
+   acoplamento inercial nunca desaparece lá.
+
+   **Corrigido**, reaproveitando infraestrutura já existente e testada: `PrescribedMotion`
+   (`prescribed_motion.hpp`) já implementa exatamente essa mola de penalidade e já é usada por
+   `StaticAnalysis::solve_vessel_offset` pro offset estático (mesmo padrão: `Analysis::
+   assemble_system()` já aplica `prescribed_motions` automaticamente, com `big_number = maior E dos
+   elementos`). Migrei `dynamic_analysis.cpp` do mesmo jeito: nó de topo ganha `eq_numbers` reais
+   antes de `assign_equation_numbers()`, um `PrescribedMotion` com os 6 GDL ativos (alvo variável
+   nos GDL que `vessel_motion`/onda regular realmente dirigem, alvo constante -- a própria posição
+   estática -- nos demais, preservando o comportamento antigo pros GDL não dirigidos), removido o
+   `if (node==top_node) continue` do laço de atualização do Newton (o nó de topo agora recebe
+   correção do Newton como qualquer nó livre, é isso que deixa `compose_rotations()` correto pro
+   ESTADO resolvido, complementando a soma direta do ALVO do achado 4), e restaura `eq_numbers`
+   originais ao final (simetria com `solve_vessel_offset`). Suíte Catch2 sem regressão (361
+   asserts).
+
+   **Resultado real ao rodar o Exemplo_01a com os 30m de heave**: melhora real, mas parcial. Os
+   resíduos ficam limitados (milhares/dezenas de milhares) até o passo 12 -- antes, a explosão
+   numérica começava já no passo 4 (10⁷ em diante). A partir do passo 13 o resíduo volta a explodir
+   (10²²  no passo 20) e a dinâmica continua não convergindo nos 20 passos completos. Estática
+   inalterada (T_eff=217,3 kN, X=-47,73m). Ou seja: a causa raiz identificada era real e a correção
+   ajudou de verdade (adiou e limitou a divergência por bem mais tempo), mas não é a única coisa
+   envolvida -- 30m de heave e 7,6m de surge impostos numa janela de só 1s/20 passos (contra um
+   período de onda de ~11s, nem um ciclo completo) continua sendo um movimento de topo muito
+   agressivo pro passo de tempo usado. Não force conclusão de "resolvido": documentado como avanço
+   real, não como fechamento do Eixo 1b -- ver recomendação atualizada em roadmap.md.
+
 ## Ver também
 
 - [`mapa_classes_anflex_interface.md`](mapa_classes_anflex_interface.md) — mapa das classes reais

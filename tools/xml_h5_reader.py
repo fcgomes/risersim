@@ -425,6 +425,157 @@ class ANFLEXXmlH5Reader:
         ramp_x = [x / x_max for x in xs]
         return ramp_x, ys
 
+    def extract_vessel_motion_raw(self):
+        """Lê os dados reais (crus, sem nenhuma conta de física) do movimento de topo real:
+        tipo de movimento dinâmico do caso de carga, geometria RAO->nó, tabela RAO completa
+        (H5) e parâmetros JONSWAP.
+
+        Fiel ao mesmo padrão de `extract_current_profile()`: Python só extrai/reestrutura o
+        dado real, sem interpolar ou calcular nada -- quem faz a física (JONSWAP, interpolação
+        da tabela RAO, momentos espectrais, extremos de Rayleigh, transferência geométrica
+        CM->ponto) é o C++ (`VesselMotion`, `vessel_motion.hpp`/`.cpp`), no mesmo espírito de
+        `CurrentProfile::get_velocity()` interpolar o perfil de corrente já lá, não aqui.
+
+        Só suporta `dynamic_movement_type == "equivalent_harmonic"` (o modo real usado no
+        Exemplo_01a e o único com um algoritmo replicado no risersim hoje -- síntese espectral
+        irregular completa, outro modo real do ANFLEX, fica fora de escopo; ver
+        docs/mapa_aml_exemplos_e_web_interface.md). Retorna `None` quando o XML não usa esse
+        modo, não tem a seção `Dynamic`/`Loads`, ou não tem uma tabela RAO real associada --
+        nesses casos o caller cai no fallback já existente (onda regular só em Z).
+        """
+        loading_cases = self.root.find(".//LoadingCases")
+        if loading_cases is None or len(loading_cases) == 0:
+            return None
+        case = loading_cases[0]  # mesmo caso único usado por _find_chosen_current()
+
+        dyn = case.find("Dynamic")
+        if dyn is None:
+            return None
+        movement_type = (dyn.findtext("dynamic_movement_type") or "").strip().lower()
+        if movement_type != "equivalent_harmonic":
+            return None
+        maximization_dof = (dyn.findtext("maximization_dof") or "heave").strip().lower()
+
+        loads = dyn.find("Loads")
+        if loads is None or len(loads) == 0:
+            return None
+        load_node = loads[0]  # primeiro (e único, nos exemplos disponíveis) nó de carga dinâmica
+
+        rao_node = load_node.find("Rao")
+        if rao_node is None:
+            return None
+
+        def read_xyz(parent_tag, elem):
+            branch = elem.find(parent_tag)
+            if branch is None:
+                return [0.0, 0.0, 0.0]
+            return [
+                float(branch.findtext("X") or 0.0),
+                float(branch.findtext("Y") or 0.0),
+                float(branch.findtext("Z") or 0.0),
+            ]
+
+        movement_center = read_xyz("movement_center", rao_node)
+        offset = read_xyz("offset", rao_node)
+        refsys_angle_deg = float(load_node.findtext("refsys_angle") or 0.0)
+        consider_low_frequency = (load_node.findtext("consider_low_frequency") or "no").strip().lower() == "yes"
+
+        rao_id_text = rao_node.findtext("id")
+        if not rao_id_text:
+            return None
+        try:
+            rao_id = int(float(rao_id_text))
+        except ValueError:
+            return None
+
+        # Acha a tabela RAO real (RAOs/<Nome>) cujo <id> bate com Rao/id do nó de carga --
+        # mesmo padrão de resolução por ID já usado pra corrente (_find_chosen_current) e
+        # função de rampa (extract_current_ramp).
+        raos_root = self.root.find("RAOs")
+        if raos_root is None or len(raos_root) == 0:
+            return None
+        rao_group = None
+        for child in raos_root:
+            id_el = child.find("id")
+            if id_el is not None and id_el.text:
+                try:
+                    if int(float(id_el.text)) == rao_id:
+                        rao_group = child
+                        break
+                except ValueError:
+                    continue
+        if rao_group is None:
+            return None
+
+        dof_names = ["Surge", "Sway", "Heave", "Roll", "Pitch", "Yaw"]
+        headings_deg = []
+        frequencies_rad_s = None
+        amplitude = {name.lower(): [] for name in dof_names}
+        phase_deg = {name.lower(): [] for name in dof_names}
+
+        # Ordena por heading numérico (o nome do filho, "Heading_015.00", já carrega o valor;
+        # a ordem de documento do XML não é garantidamente crescente).
+        heading_children = []
+        for child in rao_group:
+            if not child.tag.startswith("Heading_"):
+                continue
+            try:
+                heading_val = float(child.tag.replace("Heading_", ""))
+            except ValueError:
+                continue
+            heading_children.append((heading_val, child))
+        heading_children.sort(key=lambda t: t[0])
+
+        for heading_val, child in heading_children:
+            h5_path = f"RAOs/{rao_group.tag}/{child.tag}/amps_phases"
+            if h5_path not in self.h5:
+                continue
+            ds = self.h5[h5_path]
+            if frequencies_rad_s is None:
+                frequencies_rad_s = [float(v) for v in ds["Wave_Freq"]]
+            headings_deg.append(heading_val)
+            for name in dof_names:
+                amplitude[name.lower()].append([float(v) for v in ds[f"{name}_Amp"]])
+                # Fase real do H5 vem em GRAUS (verificado lendo o arquivo direto) -- mantida
+                # em graus aqui de propósito, mesma filosofia do achado 3
+                # (depth_below_surface_m): conversão de unidade pura fica no C++ no ponto de
+                # uso, não em Python.
+                phase_deg[name.lower()].append([float(v) for v in ds[f"{name}_Phase"]])
+
+        if not headings_deg or frequencies_rad_s is None:
+            return None
+
+        # Parâmetros JONSWAP reais completos -- period/gamma também já são lidos em
+        # to_risersim_json() pro bloco "wave" (metadado), mas o VesselMotion (C++) precisa do
+        # espectro JONSWAP completo pra fazer a própria conta, então ficam duplicados aqui de
+        # propósito (mesma fonte real, dois consumidores).
+        alpha = self.get_float(".//Waves/ON/alpha", 0.0)
+        gamma = self.get_float(".//Waves/ON/gamma", 2.07)
+        period_s = self.get_float(".//Waves/ON/period", 10.0)
+        wini = self.get_float(".//Waves/ON/wini", 0.2)
+        wfin = self.get_float(".//Waves/ON/wfin", 3.0)
+        nwave = self.get_int(".//Waves/ON/nwave", 100)
+
+        return {
+            "movement_center": movement_center,
+            "offset": offset,
+            "refsys_angle_deg": refsys_angle_deg,
+            "maximization_dof": maximization_dof,
+            "consider_low_frequency": consider_low_frequency,
+            "headings_deg": headings_deg,
+            "frequencies_rad_s": frequencies_rad_s,
+            "amplitude": amplitude,
+            "phase_deg": phase_deg,
+            "jonswap": {
+                "alpha": alpha,
+                "gamma": gamma,
+                "period_s": period_s,
+                "wini_rad_s": wini,
+                "wfin_rad_s": wfin,
+                "nwave": nwave,
+            },
+        }
+
     def to_risersim_json(self):
         """Converte a modelagem XML+H5 para o novo formato JSON estruturado."""
         title = self.get_text("ModelName", "ANFLEX XML Simulation")
@@ -573,6 +724,12 @@ class ANFLEXXmlH5Reader:
         curr_depths, curr_angles, curr_vels = self.extract_current_profile()
         curr_ramp_x, curr_ramp_y = self.extract_current_ramp()
 
+        # 7. Movimento de topo real (RAO + JONSWAP "equivalent harmonic") -- None quando o XML
+        # não usa esse modo ou não tem tabela RAO real associada; nesse caso "vessel_motion"
+        # simplesmente não entra no JSON, e o C++ cai no fallback já existente (onda regular
+        # só em Z). Ver docs/mapa_aml_exemplos_e_web_interface.md.
+        vessel_motion_raw = self.extract_vessel_motion_raw()
+
         # Montagem do JSON estruturado
         data = {
             "title": title,
@@ -607,7 +764,7 @@ class ANFLEXXmlH5Reader:
                     "gamma": wave_gamma,
                     "angle_deg": wave_angle
                 }
-            },
+            } | ({"vessel_motion": {"enabled": True, **vessel_motion_raw}} if vessel_motion_raw is not None else {}),
             "analysis_options": {
                 "static": {
                     "steps": static_steps,
