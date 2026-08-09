@@ -7,6 +7,10 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="css/shared.css">
+    <!-- Only needed when opened with ?project=<id> (embedded in project.html's Pre-processing
+         tab): the Simulações tab's run list/status pills reuse dashboard.css's .runs-list/
+         table.run-table/.status-pill/.badge-* -- see preprocessor_app.js::applyProjectMode. -->
+    <link rel="stylesheet" href="css/dashboard.css">
     <style>
         /* Only what's specific to the preprocessor -- everything else (theme, 3-region layout,
            control-group/stat-card, buttons, icon-toolbar/tooltip/zoom-rect, btn-tab, spreadsheet-
@@ -106,10 +110,15 @@
                 <button class="btn-tab" id="tab-geometry-btn">📐 Geometria</button>
                 <button class="btn-tab" id="tab-environmental-btn">🌊 Condições Ambientais</button>
                 <button class="btn-tab" id="tab-analysis-btn">⚙️ Análise</button>
+                <!-- Only shown with ?project=<id> -- see preprocessor_app.js::applyProjectMode. -->
+                <button class="btn-tab" id="tab-runs-btn" style="display:none;">🕒 Simulações</button>
             </div>
 
             <div class="bottom-tab-panel active" id="tab-load">
-                <div class="control-group">
+                <!-- Manual upload/URL controls -- only meaningful for standalone use (no
+                     ?project=). Hidden (and replaced by #origin-panel below) when opened from a
+                     project -- see preprocessor_app.js::applyProjectMode. -->
+                <div class="control-group" id="load-manual-controls">
                     <div class="control-title">📁 CARREGAR JSON DE ENTRADA</div>
                     <input type="file" id="json-input" accept=".json">
                     <div class="url-load-row">
@@ -118,10 +127,32 @@
                     </div>
                 </div>
 
+                <!-- Where the model came from (example/upload + download links) -- populated
+                     from GET /api/projects/<id>, only shown with ?project=<id>. Same content as
+                     project.html's "ORIGEM DO MODELO" panel (see modelSourceHtml() in
+                     runManagerFormat.js). -->
+                <div class="control-group" id="origin-panel" style="display:none;">
+                    <div class="control-title">📦 ORIGEM DO MODELO</div>
+                    <div id="origin-source"></div>
+                    <div class="row" id="origin-downloads"></div>
+                </div>
+
                 <div class="control-group">
                     <div class="control-title">⚠️ AVISOS DE QUALIDADE DE DADOS</div>
                     <div id="warnings-panel"></div>
                 </div>
+            </div>
+
+            <!-- Compact run list + "New Run" -- only populated/shown with ?project=<id>. Full
+                 management (abort/delete/rename/downloads) stays in project.html's Gerenciador
+                 tab, one click away -- see preprocessor_app.js::renderRunsTab/switchParentView. -->
+            <div class="bottom-tab-panel" id="tab-runs">
+                <div class="panel-heading-row">
+                    <h3>🕒 Simulações deste projeto</h3>
+                    <button class="btn small" id="runs-tab-new-run-btn">▶ Nova Simulação</button>
+                </div>
+                <div id="runs-tab-list"><div class="empty-state">Carregando…</div></div>
+                <div class="mt-8"><a class="link-btn" id="runs-tab-manager-link" href="#">Abrir no Gerenciador →</a></div>
             </div>
 
             <div class="bottom-tab-panel" id="tab-geometry">

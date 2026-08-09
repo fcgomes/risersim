@@ -1,6 +1,6 @@
 import { initThemeToggle } from './ui/ThemeToggle.js';
 import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
-import { statusPill, formatDate, escapeHtml, fetchJSON } from './utils/runManagerFormat.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun as apiCreateRun, DuplicateRunError } from './utils/runManagerFormat.js';
 
 /**
  * project.js
@@ -69,11 +69,13 @@ class ProjectPage {
 
     /** Reads `?view=&run=` from the current URL and switches tabs accordingly (without pushing
      * another history entry -- used on initial load and on the browser's Back/Forward button,
-     * see popstate above). Without `?view=`, falls back to the Manager -- compatible with every
-     * old link/bookmark that points only to `project.html?project=<id>`. */
+     * see popstate above). Without `?view=`, falls back to Pre-processing -- opening a project
+     * jumps straight to the 3D model (what you actually came here to look at), not a bare run
+     * list; links that want the Manager explicitly (e.g. the dashboard's "Recent runs" table)
+     * already pass `&view=manager`. */
     applyViewFromUrl() {
         const params = new URLSearchParams(window.location.search);
-        const view = params.get('view') || 'manager';
+        const view = params.get('view') || 'pre';
         const run = params.get('run') || undefined;
         this.switchView(view, { run, pushHistory: false });
     }
@@ -183,24 +185,10 @@ class ProjectPage {
         // trunk/exemplos/ stops being mounted. On screen, only shows the file's NAME (not the
         // internal "source/..." path -- irrelevant to the user) -- one case = one input file, so
         // the name alone already identifies where it came from; the real downloads are in the
-        // links below.
-        const src = this.project.source || {};
-        const lines = [];
-        if (src.example_id) lines.push(`<div class="kv-line"><span class="k">Exemplo:</span>${escapeHtml(src.example_id)}</div>`);
-        else if (src.kind === 'upload') lines.push(`<div class="kv-line"><span class="k">Origem:</span>📤 Upload manual</div>`);
-        if (src.xml_path) lines.push(`<div class="kv-line"><span class="k">Arquivo:</span>${escapeHtml(src.xml_path.split('/').pop())}</div>`);
-        document.getElementById('project-source').innerHTML = lines.join('') || '<div class="kv-line">—</div>';
-
-        const downloads = [];
-        for (const key of ['xml_path', 'h5_path', 'aml_path']) {
-            const path = src[key];
-            if (!path) continue;
-            const filename = path.split('/').pop();
-            const url = `/api/projects/${encodeURIComponent(this.projectId)}/source/${encodeURIComponent(filename)}?download=1`;
-            downloads.push(`<a class="link-btn" href="${url}">⬇ ${escapeHtml(filename)}</a>`);
-        }
-        downloads.push(`<a class="link-btn" href="/api/projects/${encodeURIComponent(this.projectId)}/input?download=1">⬇ JSON compilado</a>`);
-        document.getElementById('project-downloads').innerHTML = downloads.join('');
+        // links below. Shared with preprocessor_app.js's "Origem" tab -- see modelSourceHtml().
+        const { linesHtml, downloadsHtml } = modelSourceHtml(this.projectId, this.project.source);
+        document.getElementById('project-source').innerHTML = linesHtml;
+        document.getElementById('project-downloads').innerHTML = downloadsHtml;
     }
 
     renderRuns() {
@@ -208,7 +196,7 @@ class ProjectPage {
         const runs = this.project.runs || [];
         if (runs.length === 0) {
             this.lastRunsKey = null;
-            container.innerHTML = '<div class="empty-state">Nenhuma rodada ainda. Clique em "Nova Rodada" para disparar a primeira.</div>';
+            container.innerHTML = '<div class="empty-state">Nenhuma simulação ainda. Clique em "Nova Simulação" para disparar a primeira.</div>';
             return;
         }
 
@@ -245,7 +233,7 @@ class ProjectPage {
                 <table class="run-table">
                     <thead>
                         <tr>
-                            <th>Rodada</th>
+                            <th>Simulação</th>
                             <th>Status</th>
                             <th>Criada</th>
                             <th>Início</th>
@@ -352,7 +340,7 @@ class ProjectPage {
 
         const dupOf = run.model_hash ? firstRunForHash.get(run.model_hash) : null;
         const dupBadge = (dupOf && dupOf !== run.id)
-            ? ` <span class="badge-dup" title="mesmo model_hash da rodada ${escapeHtml(dupOf)}">= ${escapeHtml(dupOf)}</span>`
+            ? ` <span class="badge-dup" title="mesmo model_hash da simulação ${escapeHtml(dupOf)}">= ${escapeHtml(dupOf)}</span>`
             : '';
 
         return `
@@ -411,7 +399,7 @@ class ProjectPage {
                     this.openLogs.delete(runId);
                 }
             } catch (err) {
-                console.error(`Falha ao ler log da rodada ${runId}:`, err);
+                console.error(`Falha ao ler log da simulação ${runId}:`, err);
                 if (this.openLogs.has(runId)) state.timer = setTimeout(poll, 2000);
             }
         };
@@ -438,43 +426,28 @@ class ProjectPage {
         btn.disabled = true;
         btn.innerText = 'Criando…';
         try {
-            const res = await fetch(`/api/projects/${encodeURIComponent(this.projectId)}/runs`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ force }),
-            });
-            if (res.status === 409) {
+            await apiCreateRun(this.projectId, { force });
+            await this.load();
+        } catch (err) {
+            if (err instanceof DuplicateRunError) {
                 // Duplicate run (same model_hash as an already-finished run) -- asks before
                 // needlessly spending the serial queue running it again (see
                 // run_server.py::api_create_run).
-                const body = await res.json().catch(() => ({}));
-                const msg = `Já existe uma rodada terminada (${body.run_id || '?'}, status: ${body.status || '?'}) ` +
-                            `com o mesmo modelo. Rodar mesmo assim?`;
-                const ok = await confirmDialog({ title: 'Rodada duplicada', message: msg, confirmLabel: 'Rodar mesmo assim', danger: false });
-                if (ok) {
-                    await this.createRun(true);
-                    return;
-                }
+                const ok = await confirmDialog({ title: 'Simulação duplicada', message: `${err.message} Rodar mesmo assim?`, confirmLabel: 'Rodar mesmo assim', danger: false });
+                if (ok) await this.createRun(true);
                 return;
             }
-            if (!res.ok) {
-                let detail = '';
-                try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
-                throw new Error(detail || `HTTP ${res.status}`);
-            }
-            await this.load();
-        } catch (err) {
-            await alertDialog({ title: 'Falha ao criar rodada', message: err.message });
+            await alertDialog({ title: 'Falha ao criar simulação', message: err.message });
         } finally {
             btn.disabled = false;
-            btn.innerText = '▶ Nova Rodada';
+            btn.innerText = '▶ Nova Simulação';
         }
     }
 
     async abortRun(runId) {
         const ok = await confirmDialog({
-            title: 'Abortar rodada',
-            message: `Abortar a rodada ${runId}? O solver será interrompido no meio da execução -- não há como retomar de onde parou.`,
+            title: 'Abortar simulação',
+            message: `Abortar a simulação ${runId}? O solver será interrompido no meio da execução -- não há como retomar de onde parou.`,
             confirmLabel: 'Abortar',
         });
         if (!ok) return;
@@ -491,14 +464,14 @@ class ProjectPage {
             // shortly after.
             await this.load();
         } catch (err) {
-            await alertDialog({ title: 'Falha ao abortar rodada', message: err.message });
+            await alertDialog({ title: 'Falha ao abortar simulação', message: err.message });
         }
     }
 
     async deleteRun(runId) {
         const ok = await confirmDialog({
-            title: 'Apagar rodada',
-            message: `Apagar a rodada ${runId}? Isso remove o log e os resultados dela permanentemente.`,
+            title: 'Apagar simulação',
+            message: `Apagar a simulação ${runId}? Isso remove o log e os resultados dela permanentemente.`,
             confirmLabel: 'Apagar',
         });
         if (!ok) return;
@@ -512,7 +485,7 @@ class ProjectPage {
             this.stopLogPolling(runId);
             await this.load();
         } catch (err) {
-            await alertDialog({ title: 'Falha ao apagar rodada', message: err.message });
+            await alertDialog({ title: 'Falha ao apagar simulação', message: err.message });
         }
     }
 
@@ -557,7 +530,7 @@ class ProjectPage {
     async deleteProject() {
         const ok = await confirmDialog({
             title: 'Apagar projeto',
-            message: `Apagar o projeto "${this.project.name}" e TODAS as suas rodadas? Essa ação não pode ser desfeita.`,
+            message: `Apagar o projeto "${this.project.name}" e TODAS as suas simulações? Essa ação não pode ser desfeita.`,
             confirmLabel: 'Apagar tudo',
         });
         if (!ok) return;

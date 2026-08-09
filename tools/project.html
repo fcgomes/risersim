@@ -8,18 +8,18 @@
 </head>
 <body class="dark-mode">
     <div id="header">
-        <h1>🌊 RiserSim - Gerenciador de Rodadas</h1>
+        <h1>🌊 RiserSim - Gerenciador de Simulações</h1>
         <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
     </div>
 
     <div class="workspace-tabs">
         <a class="back-link" href="dashboard.html">← Painel</a>
-        <button class="btn-tab active" id="tab-manager-btn" data-view="manager" type="button">🗂 Gerenciador</button>
-        <button class="btn-tab" id="tab-pre-btn" data-view="pre" type="button">🔍 Pré-processamento</button>
+        <button class="btn-tab" id="tab-manager-btn" data-view="manager" type="button">🗂 Gerenciador</button>
+        <button class="btn-tab active" id="tab-pre-btn" data-view="pre" type="button">🔍 Pré-processamento</button>
         <button class="btn-tab" id="tab-post-btn" data-view="post" type="button">📊 Pós-processamento</button>
     </div>
 
-    <div id="view-manager" class="workspace-view">
+    <div id="view-manager" class="workspace-view" style="display:none;">
         <div class="page">
             <div class="page-header-row">
                 <div>
@@ -36,7 +36,7 @@
                 </div>
                 <div class="actions">
                     <a class="btn secondary" id="view-input-link" href="#">🔍 Ver entrada</a>
-                    <button class="btn" id="new-run-btn">▶ Nova Rodada</button>
+                    <button class="btn" id="new-run-btn">▶ Nova Simulação</button>
                     <button class="btn secondary" id="refresh-btn">⟳ Atualizar</button>
                     <button class="btn danger" id="delete-project-btn">🗑 Apagar Projeto</button>
                 </div>
@@ -48,20 +48,20 @@
                 <div class="row" id="project-downloads"></div>
             </div>
 
-            <h3 class="section-title runs-section-title">🕒 Rodadas</h3>
+            <h3 class="section-title runs-section-title">🕒 Simulações</h3>
             <div id="runs-container">
                 <div class="empty-state">Carregando…</div>
             </div>
         </div>
     </div>
 
-    <div id="view-pre" class="workspace-view" style="display:none;">
+    <div id="view-pre" class="workspace-view">
         <iframe id="pre-frame" class="workspace-iframe" title="Pré-processamento"></iframe>
     </div>
 
     <div id="view-post" class="workspace-view" style="display:none;">
         <iframe id="post-frame" class="workspace-iframe" title="Pós-processamento"></iframe>
-        <div class="empty-state" id="post-empty" style="display:none;">Nenhuma rodada convergida ainda -- rode o projeto primeiro pra ver resultados aqui.</div>
+        <div class="empty-state" id="post-empty" style="display:none;">Nenhuma simulação convergida ainda -- rode o projeto primeiro pra ver resultados aqui.</div>
     </div>
 
     <script type="module" src="js/project.js"></script>

@@ -7,6 +7,8 @@ import { ZoomWindowController } from './ui/ZoomWindowController.js';
 import { bindCameraToolbar } from './ui/CameraToolbar.js';
 import { switchTab } from './ui/TabPanel.js';
 import { initThemeToggle } from './ui/ThemeToggle.js';
+import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun, DuplicateRunError } from './utils/runManagerFormat.js';
 
 /**
  * preprocessor_app.js
@@ -19,6 +21,8 @@ class PreprocessorApp {
         this.input = null; // result of InputLoaderService.parse()
         this.currentTheme = 'dark';
         this.tableViewMode = 'grouped'; // 'grouped' | 'byElement'
+        this.projectId = null; // set by applyProjectMode() when opened with ?project=<id>
+        this.runsPollTimer = null;
         this.initUI();
     }
 
@@ -38,8 +42,32 @@ class PreprocessorApp {
         }
 
         this.bindEvents();
+        this.applyProjectMode();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
         await this.loadInput(this.resolveInputUrl());
+    }
+
+    /** When opened with `?project=<id>` (embedded in project.html's Pre-processing tab, or
+     * standalone with the same query string): hides the manual upload/URL controls (meaningless
+     * once a project already supplies the model) in favor of an "Origem" panel showing where the
+     * data came from, and reveals the "Simulações" tab. Without `?project=`, the page is
+     * untouched -- same manual-load behavior as always, no Simulações tab. */
+    applyProjectMode() {
+        this.projectId = new URLSearchParams(window.location.search).get('project');
+        if (!this.projectId) return;
+
+        document.getElementById('load-manual-controls').style.display = 'none';
+        document.getElementById('origin-panel').style.display = '';
+        document.getElementById('tab-load-btn').innerText = '📦 Origem';
+        document.getElementById('tab-runs-btn').style.display = '';
+
+        document.getElementById('runs-tab-new-run-btn').addEventListener('click', () => this.createRunFromTab());
+        document.getElementById('runs-tab-manager-link').addEventListener('click', (e) => {
+            e.preventDefault();
+            this.switchParentView('manager');
+        });
+
+        this.loadProjectMeta();
     }
 
     /**
@@ -94,6 +122,7 @@ class PreprocessorApp {
         document.getElementById('tab-geometry-btn').addEventListener('click', () => this.setBottomTab('geometry'));
         document.getElementById('tab-environmental-btn').addEventListener('click', () => this.setBottomTab('environmental'));
         document.getElementById('tab-analysis-btn').addEventListener('click', () => this.setBottomTab('analysis'));
+        document.getElementById('tab-runs-btn').addEventListener('click', () => this.setBottomTab('runs'));
 
         initThemeToggle(this);
     }
@@ -183,9 +212,10 @@ class PreprocessorApp {
         this.renderAnalysisOptions();
     }
 
-    /** Switches between the 4 data-panel tabs: Load / Geometry / Environmental Conditions / Analysis. */
+    /** Switches between the data-panel tabs: Load(/Origem) / Geometry / Environmental Conditions /
+     * Analysis / Runs (the last one only shown with ?project=<id>, see applyProjectMode()). */
     setBottomTab(tab) {
-        switchTab({ load: 'tab-load', geometry: 'tab-geometry', environmental: 'tab-environmental', analysis: 'tab-analysis' }, tab);
+        switchTab({ load: 'tab-load', geometry: 'tab-geometry', environmental: 'tab-environmental', analysis: 'tab-analysis', runs: 'tab-runs' }, tab);
         if (tab === 'environmental' && typeof Plotly !== 'undefined') {
             // Plotly doesn't draw correctly in a container that had display:none -- force a
             // resize as soon as the tab becomes visible.
@@ -509,6 +539,112 @@ class PreprocessorApp {
                 (<code>analysis_options.static.steps</code> acima) é.
             </div>
         `;
+    }
+
+    /** Single fetch feeding both the "Origem" panel and the "Simulações" tab -- the same
+     * `GET /api/projects/<id>` project.js already uses, so opening a project doesn't cost two
+     * separate requests for what's really one payload. Reschedules itself every ~3s while any run
+     * is pending/running, same idea as project.js::scheduleAutoRefresh, but independent of which
+     * of THIS page's own bottom-tabs happens to be visible right now (simpler than starting/
+     * stopping polling on tab switch, and the Simulações tab button's own "(N)" count needs it
+     * kept current even while a different tab -- e.g. Geometria -- is the one on screen). */
+    async loadProjectMeta() {
+        if (this.runsPollTimer) clearTimeout(this.runsPollTimer);
+        let project;
+        try {
+            project = await fetchJSON(`/api/projects/${encodeURIComponent(this.projectId)}`);
+        } catch (err) {
+            document.getElementById('runs-tab-list').innerHTML = `<div class="empty-state">Falha ao carregar simulações: ${escapeHtml(err.message)}</div>`;
+            return;
+        }
+
+        const { linesHtml, downloadsHtml } = modelSourceHtml(this.projectId, project.source);
+        document.getElementById('origin-source').innerHTML = linesHtml;
+        document.getElementById('origin-downloads').innerHTML = downloadsHtml;
+
+        const runs = project.runs || [];
+        document.getElementById('tab-runs-btn').innerText = `🕒 Simulações (${runs.length})`;
+        document.getElementById('runs-tab-manager-link').href = `project.html?project=${encodeURIComponent(this.projectId)}&view=manager`;
+        this.renderRunsTab(runs);
+
+        const hasPending = runs.some(r => r.status === 'pending' || r.status === 'running');
+        if (hasPending) this.runsPollTimer = setTimeout(() => this.loadProjectMeta(), 3000);
+    }
+
+    /** Compact, read-only run list (id/status/created + "Ver resultados" when converged) -- full
+     * management (abort/delete/rename/downloads/log) stays in project.html's Gerenciador tab, one
+     * click away via "Abrir no Gerenciador →", instead of duplicating that whole UI here. */
+    renderRunsTab(runs) {
+        const container = document.getElementById('runs-tab-list');
+        if (runs.length === 0) {
+            container.innerHTML = '<div class="empty-state">Nenhuma simulação ainda.</div>';
+            return;
+        }
+        const rows = runs.map(r => `
+            <tr>
+                <td class="run-id-cell mono">${escapeHtml(r.id)}</td>
+                <td>${statusPill(r.status)}</td>
+                <td class="mono">${formatDate(r.created_at)}</td>
+                <td>${r.status === 'converged' ? `<a class="link-btn" href="#" data-view-results="${escapeHtml(r.id)}">Ver resultados →</a>` : ''}</td>
+            </tr>
+        `).join('');
+        container.innerHTML = `
+            <div class="runs-list">
+                <table class="run-table">
+                    <thead><tr><th>Simulação</th><th>Status</th><th>Criada</th><th></th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+        container.querySelectorAll('[data-view-results]').forEach(a => {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.switchParentView('post', a.getAttribute('data-view-results'));
+            });
+        });
+    }
+
+    /** Switches the OUTER project.html page's tab (Manager/Pre/Post) from in here. This page is
+     * normally embedded in project.html's <iframe> (same origin), so `window.parent.projectPage`
+     * is reachable directly -- no postMessage needed, and it reuses the parent's own
+     * switchView()/history handling instead of a second implementation. If opened standalone
+     * (pasted URL, no parent project.html), falls back to a real navigation. */
+    switchParentView(view, run) {
+        if (window.parent !== window && window.parent.projectPage) {
+            window.parent.projectPage.switchView(view, { run });
+            return;
+        }
+        if (view === 'post' && run) {
+            window.location.href = `posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run)}`;
+        } else {
+            window.location.href = `project.html?project=${encodeURIComponent(this.projectId)}&view=${encodeURIComponent(view)}`;
+        }
+    }
+
+    /** "▶ Nova Simulação" in the Simulações tab -- same dedup-aware creation flow as
+     * project.js::createRun (see createRun()/DuplicateRunError in runManagerFormat.js), just
+     * triggered from inside the pre-processor instead of the Gerenciador tab. On success, also
+     * nudges the parent's Manager view to reload (if embedded) so it doesn't stay stale about a
+     * run it doesn't know was created. */
+    async createRunFromTab(force = false) {
+        const btn = document.getElementById('runs-tab-new-run-btn');
+        btn.disabled = true;
+        btn.innerText = 'Criando…';
+        try {
+            await createRun(this.projectId, { force });
+            await this.loadProjectMeta();
+            if (window.parent !== window && window.parent.projectPage) window.parent.projectPage.load();
+        } catch (err) {
+            if (err instanceof DuplicateRunError) {
+                const ok = await confirmDialog({ title: 'Simulação duplicada', message: `${err.message} Rodar mesmo assim?`, confirmLabel: 'Rodar mesmo assim', danger: false });
+                if (ok) await this.createRunFromTab(true);
+                return;
+            }
+            await alertDialog({ title: 'Falha ao criar simulação', message: err.message });
+        } finally {
+            btn.disabled = false;
+            btn.innerText = '▶ Nova Simulação';
+        }
     }
 }
 

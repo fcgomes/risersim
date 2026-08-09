@@ -121,7 +121,7 @@ def process_one_run(store: ProjectStore, exe_path: Path, solver_fingerprint: str
     if aborted:
         abort_flag.unlink(missing_ok=True)
         with open(stdout_log, "a", encoding="utf-8") as err_f:
-            err_f.write("\n[run_worker] rodada abortada pelo usuário.\n")
+            err_f.write("\n[run_worker] simulação abortada pelo usuário.\n")
         store.update_run(project_id, run_id, status="aborted", finished_at=_now_iso(), exit_code=proc.returncode)
         print(f"[run_worker] rodada {project_id}/{run_id} abortada pelo usuário", flush=True)
         return

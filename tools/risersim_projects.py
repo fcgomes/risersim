@@ -346,9 +346,9 @@ class ProjectStore:
         terminal state (nothing to abort)."""
         run = self.get_run(project_id, run_id)
         if run is None:
-            raise FileNotFoundError(f"rodada '{run_id}' do projeto '{project_id}' não encontrada")
+            raise FileNotFoundError(f"simulação '{run_id}' do projeto '{project_id}' não encontrada")
         if run.get("status") not in ("pending", "running"):
-            raise ValueError(f"rodada '{run_id}' já está '{run.get('status')}' -- nada a abortar")
+            raise ValueError(f"simulação '{run_id}' já está '{run.get('status')}' -- nada a abortar")
         (self.run_dir(project_id, run_id) / "abort_requested").touch()
 
     def delete_run(self, project_id, run_id):
@@ -362,9 +362,9 @@ class ProjectStore:
         (doesn't delete) in that case, `FileNotFoundError` if the run doesn't exist."""
         run = self.get_run(project_id, run_id)
         if run is None:
-            raise FileNotFoundError(f"rodada '{run_id}' do projeto '{project_id}' não encontrada")
+            raise FileNotFoundError(f"simulação '{run_id}' do projeto '{project_id}' não encontrada")
         if run.get("status") in ("pending", "running"):
-            raise ValueError(f"rodada '{run_id}' está '{run.get('status')}' -- espere terminar antes de apagar")
+            raise ValueError(f"simulação '{run_id}' está '{run.get('status')}' -- espere terminar antes de apagar")
         shutil.rmtree(self.run_dir(project_id, run_id))
 
     def delete_project(self, project_id):
@@ -377,7 +377,7 @@ class ProjectStore:
             raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
         active = [r for r in self.list_runs(project_id) if r.get("status") in ("pending", "running")]
         if active:
-            raise ValueError(f"projeto '{project_id}' tem {len(active)} rodada(s) em andamento -- espere terminar antes de apagar")
+            raise ValueError(f"projeto '{project_id}' tem {len(active)} simulaç{'ão' if len(active) == 1 else 'ões'} em andamento -- espere terminar antes de apagar")
         shutil.rmtree(pdir)
 
     def recover_orphaned_running_runs(self):
@@ -408,7 +408,7 @@ class ProjectStore:
                 log_path = self.run_dir(project["id"], run["id"]) / "stdout.log"
                 try:
                     with open(log_path, "a", encoding="utf-8") as f:
-                        f.write("\n[run_worker] rodada interrompida por reinício do worker (ex.: "
+                        f.write("\n[run_worker] simulação interrompida por reinício do worker (ex.: "
                                 "redeploy) antes de terminar -- marcada como 'aborted', sem "
                                 "resultado confiável.\n")
                 except OSError:
@@ -432,7 +432,7 @@ class ProjectStore:
     def update_run(self, project_id, run_id, **fields):
         run = self.get_run(project_id, run_id)
         if run is None:
-            raise FileNotFoundError(f"rodada '{run_id}' do projeto '{project_id}' não encontrada")
+            raise FileNotFoundError(f"simulação '{run_id}' do projeto '{project_id}' não encontrada")
         run.update(fields)
         self._write_run(project_id, run_id, run)
         return run

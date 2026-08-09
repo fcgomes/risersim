@@ -145,7 +145,7 @@ class Dashboard {
                             <div class="name"><a href="project.html?project=${encodeURIComponent(p.id)}">${escapeHtml(p.name)}</a></div>
                             <div class="source mono">${escapeHtml(this.projectSourceLabel(p))}</div>
                         </div>
-                        <div class="run-count-badge">${p.run_count || 0} rodada${p.run_count === 1 ? '' : 's'}</div>
+                        <div class="run-count-badge">${p.run_count || 0} simulaç${p.run_count === 1 ? 'ão' : 'ões'}</div>
                     </div>
                     ${chips ? `<div class="status-dots">${chips}</div>` : ''}
                     <div class="meta">
@@ -155,8 +155,8 @@ class Dashboard {
                     <div class="card-actions">
                         <a class="link-btn" href="project.html?project=${encodeURIComponent(p.id)}">Ver projeto →</a>
                         <div class="card-actions-right">
-                            <button class="btn small info" data-duplicate-project="${escapeHtml(p.id)}" data-tip="Duplicar projeto: cria uma cópia com os mesmos arquivos de origem e configuração atual, sem repetir o histórico de rodadas">⧉</button>
-                            <button class="btn small danger" data-delete-project="${escapeHtml(p.id)}" data-tip="Apagar projeto: remove o projeto e TODAS as suas rodadas permanentemente">🗑</button>
+                            <button class="btn small info" data-duplicate-project="${escapeHtml(p.id)}" data-tip="Duplicar projeto: cria uma cópia com os mesmos arquivos de origem e configuração atual, sem repetir o histórico de simulações">⧉</button>
+                            <button class="btn small danger" data-delete-project="${escapeHtml(p.id)}" data-tip="Apagar projeto: remove o projeto e TODAS as suas simulações permanentemente">🗑</button>
                         </div>
                     </div>
                 </div>
@@ -187,7 +187,7 @@ class Dashboard {
                 const projectId = e.target.getAttribute('data-delete-project');
                 const ok = await confirmDialog({
                     title: 'Apagar projeto',
-                    message: 'Apagar esse projeto e TODAS as suas rodadas? Essa ação não pode ser desfeita.',
+                    message: 'Apagar esse projeto e TODAS as suas simulações? Essa ação não pode ser desfeita.',
                     confirmLabel: 'Apagar tudo',
                 });
                 if (!ok) return;
@@ -237,7 +237,7 @@ class Dashboard {
     renderRecentRuns() {
         const container = document.getElementById('runs-list-container');
         if (this.recentRuns.length === 0) {
-            container.innerHTML = '<div class="empty-state">Nenhuma rodada ainda.</div>';
+            container.innerHTML = '<div class="empty-state">Nenhuma simulação ainda.</div>';
             return;
         }
         const rows = this.recentRuns.map(r => `
@@ -252,7 +252,7 @@ class Dashboard {
             <div class="runs-list">
                 <table class="run-table">
                     <thead>
-                        <tr><th>Rodada</th><th>Projeto</th><th>Status</th><th>Criada</th></tr>
+                        <tr><th>Simulação</th><th>Projeto</th><th>Status</th><th>Criada</th></tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table>

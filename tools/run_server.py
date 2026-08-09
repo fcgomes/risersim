@@ -275,7 +275,7 @@ def api_project_source_file(project_id, filename):
 
 
 # ---------------------------------------------------------------------------
-# API: rodadas
+# API: simulações
 # ---------------------------------------------------------------------------
 
 @app.route('/api/projects/<project_id>/runs', methods=['POST'])
@@ -299,7 +299,7 @@ def api_create_run(project_id):
             dup = store.find_run_by_model_hash(project_id, model_hash)
             if dup is not None:
                 return jsonify({
-                    "error": "já existe uma rodada terminada com o mesmo model_hash",
+                    "error": "já existe uma simulação terminada com o mesmo model_hash",
                     "run_id": dup["id"],
                     "status": dup["status"],
                 }), 409

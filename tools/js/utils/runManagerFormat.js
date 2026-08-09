@@ -112,3 +112,76 @@ export async function fetchJSON(url, options) {
     }
     return res.json();
 }
+
+/**
+ * Renders the "where this model came from" panel: source lines (pre-discovered example path, or
+ * "manual upload") + download links for the real source files and the compiled JSON -- the exact
+ * content of project.js's "ORIGEM DO MODELO" panel, extracted here so preprocessor_app.js's
+ * "Origem" tab (shown in place of the manual-upload controls when a project is loaded, see
+ * preprocessor_app.js::applyProjectMode) can render the same information without duplicating it.
+ * @param {string} projectId
+ * @param {object} source `project.source` as returned by the API (xml_path/h5_path/aml_path,
+ * relative to the project dir, plus example_id or kind:"upload").
+ * @returns {{linesHtml: string, downloadsHtml: string}}
+ */
+export function modelSourceHtml(projectId, source) {
+    const src = source || {};
+    const lines = [];
+    if (src.example_id) lines.push(`<div class="kv-line"><span class="k">Exemplo:</span>${escapeHtml(src.example_id)}</div>`);
+    else if (src.kind === 'upload') lines.push(`<div class="kv-line"><span class="k">Origem:</span>📤 Upload manual</div>`);
+    if (src.xml_path) lines.push(`<div class="kv-line"><span class="k">Arquivo:</span>${escapeHtml(src.xml_path.split('/').pop())}</div>`);
+    const linesHtml = lines.join('') || '<div class="kv-line">—</div>';
+
+    const downloads = [];
+    for (const key of ['xml_path', 'h5_path', 'aml_path']) {
+        const path = src[key];
+        if (!path) continue;
+        const filename = path.split('/').pop();
+        const url = `/api/projects/${encodeURIComponent(projectId)}/source/${encodeURIComponent(filename)}?download=1`;
+        downloads.push(`<a class="link-btn" href="${url}">⬇ ${escapeHtml(filename)}</a>`);
+    }
+    downloads.push(`<a class="link-btn" href="/api/projects/${encodeURIComponent(projectId)}/input?download=1">⬇ JSON compilado</a>`);
+    return { linesHtml, downloadsHtml: downloads.join('') };
+}
+
+/** Thrown by {@link createRun} on a 409 (a terminal run with the same model_hash already exists)
+ * -- carries the existing run's id/status so the caller can offer "run anyway" (retry with
+ * `force: true`) instead of just failing. */
+export class DuplicateRunError extends Error {
+    constructor(runId, status) {
+        super(`Já existe uma simulação terminada (${runId || '?'}, status: ${status || '?'}) com o mesmo modelo.`);
+        this.name = 'DuplicateRunError';
+        this.runId = runId;
+        this.status = status;
+    }
+}
+
+/**
+ * `POST /api/projects/<id>/runs` -- extracted from project.js::createRun so
+ * preprocessor_app.js's "Nova Simulação" button (in its Simulações tab) can trigger the same dedup-aware
+ * creation flow without duplicating the 409 handling. Doesn't touch any button/dialog state --
+ * callers own their own confirm-and-retry UI (see project.js::createRun for the pattern: catch
+ * `DuplicateRunError`, confirm with the user, call again with `force: true`).
+ * @param {string} projectId
+ * @param {{force?: boolean}} [opts]
+ * @returns {Promise<object>} The created run.
+ * @throws {DuplicateRunError} On a 409 (duplicate model_hash).
+ * @throws {Error} On any other non-2xx response.
+ */
+export async function createRun(projectId, { force = false } = {}) {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force }),
+    });
+    if (res.status === 409) {
+        const body = await res.json().catch(() => ({}));
+        throw new DuplicateRunError(body.run_id, body.status);
+    }
+    if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
+        throw new Error(detail || `HTTP ${res.status}`);
+    }
+    return res.json();
+}

@@ -9,6 +9,10 @@
  * usable for a card-grid dashboard), the project/run card grid, and status badges (queued/
  * running/converged/failed/aborted), following the same pattern as posprocessor.html's
  * .status-seabed/.status-water badges.
+ *
+ * Also linked from preprocessor.html (in addition to shared.css) when opened with ?project=<id>:
+ * its "Simulações" tab (see preprocessor_app.js::renderRunsTab) reuses .runs-list/table.run-table/
+ * .status-pill/.badge-* straight from here instead of a third copy of the same run-list styling.
  */
 
 body { overflow: auto; min-height: 100vh; }
