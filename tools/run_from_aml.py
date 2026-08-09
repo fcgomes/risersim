@@ -191,7 +191,7 @@ def main():
 
     # 4. Copy the results to the viewer and open it if requested
     if not args.no_viewer:
-        viewer_path = _SCRIPT_DIR / 'posprocessor.html'
+        viewer_path = _SCRIPT_DIR / 'web' / 'posprocessor.html'
         if viewer_path.exists():
             root_dir = _SCRIPT_DIR.parent
             for res_file in ['catenary_results.json', 'catenary_results.h5']:

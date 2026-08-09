@@ -2,9 +2,7 @@
 run_server.py
 ==============
 Flask app for the run manager (see docs/roadmap.md, Axis 3b): REST API (projects/runs) + serves
-the same static files `dev_server.py` used to serve (posprocessor.html/preprocessor.html, js/,
-css/) -- in other words, this is a drop-in replacement for `dev_server.py` with extra API routes,
-not a separate service that needs another process to serve the frontend.
+the frontend (dashboard/project/posprocessor/preprocessor.html + js/ + css/, all under `web/`).
 
 Doesn't execute any run directly: `POST /api/projects/<id>/runs` just writes `status: pending` to
 disk (via `risersim_projects.ProjectStore`) and returns immediately -- the separate `run_worker.py`
@@ -12,7 +10,7 @@ process (the `worker` service in docker-compose.yml) is what actually runs the C
 consuming the same queue on the same shared volume. `web` and `worker` only talk to each other
 through the filesystem, with no broker.
 
-Usage: `python3 run_server.py [port]` (default 8000, the same port `dev_server.py` used).
+Usage: `python3 run_server.py [port]` (default 8000).
 """
 
 import hashlib
@@ -27,6 +25,10 @@ from werkzeug.utils import secure_filename
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
+
+# Frontend lives in tools/web/ (dashboard/project/posprocessor/preprocessor.html + js/ + css/),
+# separate from the backend modules importable via _SCRIPT_DIR above.
+_WEB_DIR = _SCRIPT_DIR / "web"
 
 from risersim_projects import ProjectStore
 from risersim_runner import build_config_from_xml_h5, discover_xml_h5_examples
@@ -54,8 +56,8 @@ store = ProjectStore()
 
 @app.after_request
 def add_no_cache_headers(resp):
-    # Same motivation as dev_server.py: without this the browser aggressively caches the ES
-    # modules (js/*.js) and HTML, making edits look "not applied" without a hard refresh.
+    # Without this the browser aggressively caches the ES modules (js/*.js) and HTML, making
+    # edits look "not applied" without a hard refresh.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
@@ -401,27 +403,27 @@ def api_run_results(project_id, run_id, filename):
 
 
 # ---------------------------------------------------------------------------
-# Static frontend: all of tools/ (dashboard/project/posprocessor/preprocessor + js/ + css/), just
-# like dev_server.py already served from the same directory -- `web` is a drop-in replacement
-# for it, just with extra API routes.
+# Static frontend: everything under tools/web/ (dashboard/project/posprocessor/preprocessor.html
+# + js/ + css/), served at the URL root -- e.g. tools/web/js/dashboard.js is served as
+# /js/dashboard.js.
 # ---------------------------------------------------------------------------
 
 @app.route('/')
 def index():
-    return send_from_directory(str(_SCRIPT_DIR), 'dashboard.html')
+    return send_from_directory(str(_WEB_DIR), 'dashboard.html')
 
 
 @app.route('/<path:filename>')
 def static_files(filename):
-    full_path = (_SCRIPT_DIR / filename).resolve()
-    # Simple confinement to the tools/ directory -- prevents a filename like "../../etc/passwd"
+    full_path = (_WEB_DIR / filename).resolve()
+    # Simple confinement to the web/ directory -- prevents a filename like "../../etc/passwd"
     # from escaping past send_from_directory (which already guards against this, but failing
     # early with a 404 here makes the intent explicit).
-    if _SCRIPT_DIR not in full_path.parents and full_path != _SCRIPT_DIR:
+    if _WEB_DIR not in full_path.parents and full_path != _WEB_DIR:
         abort(404)
     if not full_path.is_file():
         abort(404)
-    return send_from_directory(str(_SCRIPT_DIR), filename)
+    return send_from_directory(str(_WEB_DIR), filename)
 
 
 if __name__ == '__main__':
