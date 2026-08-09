@@ -51,9 +51,15 @@ export class ProfileChartsController {
         const vonMises = step.elements.map(e => e.vonMisesMpa !== undefined ? e.vonMisesMpa : (e.von_mises_MPa || 0));
         const mbrSF = step.elements.map(e => e.mbrSafetyFactor !== undefined ? e.mbrSafetyFactor : (e.mbr_safety_factor || 1.0));
 
-        const bgColor = currentTheme === 'dark' ? '#11111b' : '#ffffff';
-        const textColor = currentTheme === 'dark' ? '#cdd6f4' : '#0f172a';
-        const gridColor = currentTheme === 'dark' ? '#313244' : '#e2e8f0';
+        // Chart chrome (background/text/gridlines) follows the page theme -- kept in sync by hand
+        // here because Plotly reads plain color strings, not CSS custom properties (see
+        // css/shared.css's --bg/--text/--border tokens, same values). The data-series colors
+        // below (tension/moment/curvature/von Mises/MBR line colors) are deliberately NOT tied to
+        // the theme -- they're physics quantities, not UI chrome, same reasoning as the results
+        // colorbar gradient.
+        const bgColor = currentTheme === 'dark' ? '#100f18' : '#f7f6fb';
+        const textColor = currentTheme === 'dark' ? '#f1f0f6' : '#17151f';
+        const gridColor = currentTheme === 'dark' ? '#2a2a38' : '#e4e1f1';
 
         const layoutBase = {
             autosize: true,

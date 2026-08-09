@@ -1,16 +1,17 @@
 """
 risersim_version.py
 =====================
-Constante única de versão da "web app" do gerenciador de rodadas (ver docs/roadmap.md Eixo 3b):
-cobre interface + pré-processador + pós-processador porque hoje são o mesmo deploy (`web`,
-tools/run_server.py servindo dashboard/project/preprocessor/posprocessor.html + js/*.js) -- não
-faz sentido versionar os três separadamente enquanto isso continuar verdade.
+Single version constant for the run manager's "web app" (see docs/roadmap.md, Axis 3b): covers
+interface + pre-processor + post-processor together, since today they're the same deployment
+(the `web` service: `tools/run_server.py` serving dashboard/project/preprocessor/
+posprocessor.html + js/*.js) -- versioning the three separately wouldn't mean anything while
+that stays true.
 
-Bumpar à mão quando uma mudança relevante entrar no frontend/API que valha a pena rastrear por
-rodada (ex.: mudança no que preprocessor.html/posprocessor.html esperam do JSON). NÃO é a versão
-do solver C++ (fingerprint automático, ver run_worker.py::compute_solver_fingerprint) nem do
-schema do input_simulation.json (ver xml_h5_reader.py::SCHEMA_VERSION) -- os três evoluem de
-forma independente, por isso três campos separados gravados em project.json/run.json (ver
+Bump by hand when a frontend/API change lands that's worth tracking per run (e.g. a change to
+what preprocessor.html/posprocessor.html expect from the JSON). NOT the C++ solver's version
+(automatic fingerprint, see run_worker.py::compute_solver_fingerprint()) nor the
+input_simulation.json schema version (see xml_h5_reader.py::SCHEMA_VERSION) -- the three evolve
+independently, which is why they're three separate fields recorded in project.json/run.json (see
 risersim_projects.py).
 """
 

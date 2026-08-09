@@ -1,28 +1,28 @@
 """
 run_from_aml.py
 ===============
-Pipeline ANFLEX AML → JSON Input → Executável riserSim (C++) → Visualizador 3D
+Pipeline: ANFLEX AML -> JSON Input -> riserSim Executable (C++) -> 3D Viewer
 
-Fluxo:
-1. Converte o arquivo .aml do ANFLEX para um arquivo JSON padronizado (input_simulation.json) usando Python (aml_reader.py).
-2. Executa o binário compilado risersim_test_main apontando para o JSON de entrada.
-3. Abre automaticamente o visualizador 3D no navegador.
+Flow:
+1. Converts ANFLEX's .aml file into a standardized JSON file (input_simulation.json) using Python (aml_reader.py).
+2. Runs the compiled risersim_test_main binary pointing at the input JSON.
+3. Automatically opens the 3D viewer in the browser.
 
-Uso:
-    python run_from_aml.py <arquivo.aml> [opções]
+Usage:
+    python run_from_aml.py <file.aml> [options]
 
-Opções:
-    --line-index N      Índice da linha no AML a simular (default: 0)
-    --num-elements N    Sobrescreve o número de elementos (default: do AML)
-    --static-only       Executa apenas a análise estática
-    --offset-near       Simula offset Near (default: Far)
-    --duration T        Duração da análise dinâmica em segundos (default: 20.0)
-    --dt DT             Passo de tempo dinâmico (default: 0.05)
-    --no-viewer         Não abre o visualizador Web no final
-    --out-dir DIR       Diretório de saída dos resultados (default: ./risersim_results)
-    --exe-path PATH     Caminho customizado para o executável risersim_test_main
+Options:
+    --line-index N      Index of the line in the AML to simulate (default: 0)
+    --num-elements N    Overrides the number of elements (default: from the AML)
+    --static-only       Runs only the static analysis
+    --offset-near       Simulates the Near offset (default: Far)
+    --duration T        Dynamic analysis duration in seconds (default: 20.0)
+    --dt DT             Dynamic timestep (default: 0.05)
+    --no-viewer         Doesn't open the Web viewer at the end
+    --out-dir DIR       Output directory for the results (default: ./risersim_results)
+    --exe-path PATH     Custom path to the risersim_test_main executable
 
-Exemplos:
+Examples:
     python risersim/tools/run_from_aml.py exemplos/Curso/Exemplo_01/Exemplo_01a/Exemplo_01a.aml
     python risersim/tools/run_from_aml.py meu_riser.aml --num-elements 80 --duration 40
 """
@@ -37,14 +37,14 @@ import webbrowser
 import platform
 from pathlib import Path
 
-# Adiciona o diretório do script ao sys.path para importar aml_reader
+# Adds the script's directory to sys.path to import aml_reader
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from aml_reader import ANFLEXAMLReader
-# find_executable() e a compilação do config a partir de XML+H5 foram extraídos para
-# risersim_runner.py, reaproveitados também pelo novo gerenciador de rodadas
-# (run_server.py/run_worker.py, ver docs/roadmap.md Eixo 3b) -- não duplicar essa lógica aqui.
+# find_executable() and compiling the config from XML+H5 were extracted into
+# risersim_runner.py, also reused by the new run manager (run_server.py/run_worker.py, see
+# docs/roadmap.md, Axis 3b) -- don't duplicate this logic here.
 from risersim_runner import find_executable, build_config_from_xml_h5
 
 
@@ -72,8 +72,8 @@ def main():
         print(f"❌ Arquivo AML não encontrado: {aml_path}")
         sys.exit(1)
 
-    # 1. Converter AML ou XML+H5 para estrutura de dados
-    # Procura se há uma pasta _analysis contendo XML + H5 associada
+    # 1. Convert the AML or XML+H5 into a data structure
+    # Checks whether there's an associated _analysis folder containing XML + H5
     parent_dir = aml_path.parent
     base_name = aml_path.stem
     analysis_dir = parent_dir / f"{base_name}_analysis"
@@ -88,8 +88,8 @@ def main():
         print(f"   XML: {xml_file}")
         print(f"   H5:  {h5_file}")
 
-        # Sobrescreve parâmetros da linha de comando só quando o usuário realmente pediu
-        # (mesma semântica de antes: sem --duration/--dt explícitos, usa o valor real do XML).
+        # Overrides command-line parameters only when the user actually asked for it
+        # (same semantics as before: without explicit --duration/--dt, uses the XML's real value).
         duration_override = args.duration if '--duration' in sys.argv else None
         dt_override = args.dt if '--dt' in sys.argv else None
 
@@ -101,19 +101,20 @@ def main():
 
         static_opts = config['analysis_options']['static']
         if 'use_assembly_phase' in static_opts:
-            # %ASSEMBLY.USING real só existe no texto .aml/.pml, não no XML/H5 -- controla se o
-            # ANFLEX real roda a fase de assembly (rigidez artificial em todo passo + fase static
-            # separada) ou só uma rampa única (ver mapa_classes_anflex_estatica.md).
+            # The real %ASSEMBLY.USING only exists in the .aml/.pml text, not in the XML/H5 -- it
+            # controls whether the real ANFLEX runs the assembly phase (artificial stiffness at
+            # every step + a separate static phase) or just a single ramp (see
+            # mapa_classes_anflex_estatica.md).
             print(f"   %ASSEMBLY.USING real: {static_opts['use_assembly_phase']}")
         if static_opts.get('enable_unbalanced_criteria'):
-            # %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM/MAX_UNBALANCED reais -- se o ANFLEX real
-            # combina o critério de deslocamento com um teto de força/momento desbalanceado
-            # ('DISP_AND_FORCE'), liga a mesma válvula de escape que o risersim já tinha
-            # implementada mas nunca lida do AML real (ver mapa_classes_anflex_estatica.md).
+            # The real %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM/MAX_UNBALANCED -- if the real
+            # ANFLEX combines the displacement criterion with a maximum unbalanced force/moment
+            # cap ('DISP_AND_FORCE'), turns on the same escape valve risersim already had
+            # implemented but had never read from the real AML (see mapa_classes_anflex_estatica.md).
             print(f"   %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM real: DISP_AND_FORCE "
                   f"(max_unbalanced={static_opts.get('unbalanced_force_tol')})")
 
-        # Sobrescreve parâmetros da linha de comando se informados
+        # Overrides command-line parameters if given
         if args.num_elements:
             print("⚠️ Nota: O número de elementos é fixado pela malha XML+H5 e não será sobrescrito.")
 
@@ -127,23 +128,23 @@ def main():
         if args.num_elements:
             config['geometry']['num_elements'] = args.num_elements
 
-        # Offsets permanecem nominalmente como 0.0 no equilíbrio.
+        # Offsets stay nominally at 0.0 at equilibrium.
         config['offsets'] = {
             'near_m': 0.0,
             'far_m':  0.0
         }
 
-        # Adiciona amortecimento Rayleigh de segurança se for 0 no AML para evitar divergência
+        # Adds a safety Rayleigh damping if it's 0 in the AML, to avoid divergence
         ray = config.get('rayleigh', {})
         config['rayleigh'] = {
             'alpha': max(ray.get('alpha', 0.0), 0.05),
             'beta': max(ray.get('beta', 0.0), 0.005)
         }
 
-        # 2. Mesclar opções de simulação (prioridade: argumentos de linha de comando > AML > default)
+        # 2. Merge simulation options (priority: command-line arguments > AML > default)
         sim_opts = config.get('simulation_options', {})
-        
-        # Se o usuário não alterou --duration na linha de comando, usa o valor do AML (se existir) ou fallback 20.0
+
+        # If the user didn't change --duration on the command line, uses the AML's value (if any) or falls back to 20.0
         duration = args.duration if '--duration' in sys.argv else sim_opts.get('duration_s', 20.0)
         dt = args.dt if '--dt' in sys.argv else sim_opts.get('dt_s', 0.05)
 
@@ -158,7 +159,7 @@ def main():
             'dynamic_tolerance': sim_opts.get('dynamic_tolerance', 1.0e-3),
         }
 
-    # 2. Criar diretório de saída e salvar o JSON de entrada
+    # 2. Create the output directory and save the input JSON
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,7 +168,7 @@ def main():
         json.dump(config, f, indent=2, ensure_ascii=False)
     print(f"✅ Arquivo de entrada JSON gerado com sucesso: {input_json_path}")
 
-    # 3. Localizar e executar o binário C++
+    # 3. Locate and run the C++ binary
     exe = find_executable(args.exe_path)
     if not exe:
         print("\n⚠️ Binário 'risersim_test_main' não encontrado.")
@@ -188,7 +189,7 @@ def main():
         print(f"\n❌ Falha ao executar o processo: {e}")
         sys.exit(1)
 
-    # 4. Copiar os resultados para o visualizador e abrir se solicitado
+    # 4. Copy the results to the viewer and open it if requested
     if not args.no_viewer:
         viewer_path = _SCRIPT_DIR / 'posprocessor.html'
         if viewer_path.exists():

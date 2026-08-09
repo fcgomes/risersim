@@ -28,6 +28,15 @@ class PreprocessorApp {
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
         this.zoomWindow = new ZoomWindowController(this.cameraController, this.renderer3D);
 
+        // `?theme=light|dark` -- see app.js::initUI (same mechanism, same reason: this page
+        // opens inside an <iframe> on project.html's "Pre-processing" tab).
+        if (new URLSearchParams(window.location.search).get('theme') === 'light') {
+            this.currentTheme = 'light';
+            document.body.className = 'light-mode';
+            document.getElementById('theme-toggle-btn').innerText = '🌙 Modo Escuro';
+            this.renderer3D.scene.background.setHex(0xf7f6fb);
+        }
+
         this.bindEvents();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
         await this.loadInput(this.resolveInputUrl());
@@ -456,14 +465,14 @@ class PreprocessorApp {
             const trace = {
                 x: vels, y: depths.map(d => -Math.abs(d)),
                 mode: 'lines+markers', type: 'scatter', name: 'Velocidade',
-                line: { color: '#89b4fa' }
+                line: { color: '#8a7cf2' }
             };
             Plotly.newPlot('current-chart', [trace], {
                 margin: { t: 10, r: 10, b: 40, l: 50 },
                 xaxis: { title: 'Velocidade (m/s)' },
                 yaxis: { title: 'Profundidade (m)' },
                 paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-                font: { color: this.currentTheme === 'dark' ? '#cdd6f4' : '#0f172a' }
+                font: { color: this.currentTheme === 'dark' ? '#f1f0f6' : '#17151f' }
             }, { responsive: true, displayModeBar: false });
         }
     }

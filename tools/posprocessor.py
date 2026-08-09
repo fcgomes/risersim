@@ -3,7 +3,7 @@ import sys
 import os
 
 def visualize_riser_3d(json_path="catenary_results.json"):
-    """Visualizador Tridimensional 3D Desacoplado do riserSim"""
+    """Standalone 3D visualizer for riserSim, decoupled from the main viewer"""
     if not os.path.exists(json_path):
         print(f"❌ Arquivo de resultados não encontrado: {json_path}")
         return

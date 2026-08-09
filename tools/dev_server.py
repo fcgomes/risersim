@@ -1,12 +1,12 @@
 """
 dev_server.py
-Servidor de arquivos estáticos para iteração local em preprocessor.html/posprocessor.html, com
-cache desabilitado (Cache-Control: no-store) em toda resposta -- python -m http.server sozinho
-não manda esse header, e o navegador cacheia agressivamente os módulos ES (js/*.js importados via
-<script type="module">), fazendo edições nesses arquivos parecerem "não aplicadas" mesmo depois de
-um refresh normal (só um hard refresh forçava a revalidação).
+Static file server for local iteration on preprocessor.html/posprocessor.html, with caching
+disabled (Cache-Control: no-store) on every response -- python -m http.server alone doesn't send
+this header, and the browser aggressively caches the ES modules (js/*.js imported via
+<script type="module">), making edits to those files look "not applied" even after a normal
+refresh (only a hard refresh forced revalidation).
 
-Uso: python3 dev_server.py [porta] [diretório]
+Usage: python3 dev_server.py [port] [directory]
 """
 import http.server
 import socketserver

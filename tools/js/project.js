@@ -1,53 +1,33 @@
 import { initThemeToggle } from './ui/ThemeToggle.js';
+import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON } from './utils/runManagerFormat.js';
 
 /**
  * project.js
- * Project detail page: source model info + run history table, "Nova Rodada" action, and a
- * per-run live log tail (polls GET .../stream with an increasing byte offset -- see
- * run_server.py's api_stream_run -- while the run hasn't finished).
+ * Project detail page: source model info + run history table, "New Run" action, a
+ * per-run live log tail (polls `GET .../stream` with an increasing byte offset -- see
+ * `run_server.py::api_stream_run` -- while the run hasn't finished yet), and the workspace tabs
+ * (Manager/Pre-processing/Post-processing, see `switchView()`).
  */
-
-const STATUS_LABELS = {
-    pending: 'Na fila',
-    running: 'Executando',
-    converged: 'Convergiu',
-    failed: 'Falhou',
-};
-
-function statusBadge(status) {
-    const label = STATUS_LABELS[status] || status || 'desconhecido';
-    return `<span class="badge badge-${status}">${label}</span>`;
-}
-
-function formatDate(iso) {
-    if (!iso) return '—';
-    try { return new Date(iso).toLocaleString('pt-BR'); } catch (e) { return iso; }
-}
-
-function escapeHtml(str) {
-    return String(str ?? '').replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
-}
-
-async function fetchJSON(url, options) {
-    const res = await fetch(url, options);
-    if (!res.ok) {
-        let detail = '';
-        try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
-        throw new Error(detail || `HTTP ${res.status}`);
-    }
-    return res.json();
-}
 
 class ProjectPage {
     constructor(projectId) {
         this.projectId = projectId;
         this.project = null;
-        this.openLogs = new Map(); // runId -> { offset, timer }
+        // runId -> { offset, timer, text }. `text` accumulates the whole log (not just the
+        // offset) because scheduleAutoRefresh() re-renders the whole table (innerHTML) every 2s
+        // while there's a pending/running run, which would destroy the open log's <pre> --
+        // keeping the text here lets renderRunRow() repopulate the box already with the
+        // accumulated content.
+        this.openLogs = new Map();
         this.refreshTimer = null;
+        // State of the Manager/Pre/Post tabs (see switchView) -- which one is currently visible
+        // and which run each iframe has loaded (so as not to needlessly reload when the same
+        // tab/run is reopened, which would lose the viewer's camera/zoom position).
+        this.currentView = 'manager';
+        this.currentRun = undefined;
         this.bindEvents();
-        this.load();
+        this.load().then(() => this.applyViewFromUrl());
     }
 
     bindEvents() {
@@ -58,6 +38,117 @@ class ProjectPage {
         });
         document.getElementById('refresh-btn').addEventListener('click', () => this.load());
         document.getElementById('new-run-btn').addEventListener('click', () => this.createRun());
+        document.getElementById('delete-project-btn').addEventListener('click', () => this.deleteProject());
+
+        document.getElementById('rename-project-btn').addEventListener('click', () => this.startRename());
+        document.getElementById('rename-save-btn').addEventListener('click', () => this.submitRename());
+        document.getElementById('rename-cancel-btn').addEventListener('click', () => this.cancelRename());
+        document.getElementById('rename-project-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this.submitRename();
+            if (e.key === 'Escape') this.cancelRename();
+        });
+
+        document.querySelectorAll('.btn-tab[data-view]').forEach(btn => {
+            btn.addEventListener('click', () => this.switchView(btn.getAttribute('data-view')));
+        });
+
+        // Delegated (not rebound per element) because "View input"/"Input used"/"View
+        // results" are recreated all the time in renderHeader()/renderActionsCell() -- a single
+        // listener on the document covers any of them, present or future. Only intercepts a
+        // plain click (in-page tab switch); Ctrl/Cmd/Shift/Alt-click and middle click
+        // (button!==0) let the real <a href> open in a new browser tab, as usual.
+        document.addEventListener('click', (e) => {
+            const el = e.target.closest('[data-switch-view]');
+            if (!el || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            this.switchView(el.getAttribute('data-switch-view'), { run: el.getAttribute('data-run') || undefined });
+        });
+
+        window.addEventListener('popstate', () => this.applyViewFromUrl());
+    }
+
+    /** Reads `?view=&run=` from the current URL and switches tabs accordingly (without pushing
+     * another history entry -- used on initial load and on the browser's Back/Forward button,
+     * see popstate above). Without `?view=`, falls back to the Manager -- compatible with every
+     * old link/bookmark that points only to `project.html?project=<id>`. */
+    applyViewFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const view = params.get('view') || 'manager';
+        const run = params.get('run') || undefined;
+        this.switchView(view, { run, pushHistory: false });
+    }
+
+    /** Switches which tab is visible (Manager/Pre/Post). Pre/Post live in an <iframe> (a
+     * separate HTML document -- see the plan/roadmap: preprocessor.html/posprocessor.html are
+     * full-page apps with the same IDs as each other, merging them into this page's DOM would
+     * cost a major rewrite of them). The iframe's `src` is only set the first time (or when the
+     * requested run changes) -- reopening the same tab/run doesn't reload the viewer, preserving
+     * camera/zoom.
+     * @param {'manager'|'pre'|'post'} view
+     * @param {{run?: string, pushHistory?: boolean}} opts `run`: run id (actually required for
+     *   'post' -- without it, uses the most recent converged run; 'pre' without `run` shows the
+     *   project's CURRENT input, outside any run). `pushHistory`: false when reacting to the URL
+     *   (initial load/popstate), true on a genuine user tab switch (pushes history so the Back
+     *   button works).
+     */
+    switchView(view, { run, pushHistory = true } = {}) {
+        if (!['manager', 'pre', 'post'].includes(view)) view = 'manager';
+
+        document.querySelectorAll('.workspace-view').forEach(el => { el.style.display = 'none'; });
+        document.getElementById(`view-${view}`).style.display = '';
+        document.querySelectorAll('.btn-tab[data-view]').forEach(btn => {
+            btn.classList.toggle('active', btn.getAttribute('data-view') === view);
+        });
+
+        const theme = document.body.classList.contains('light-mode') ? 'light' : 'dark';
+
+        if (view === 'pre') {
+            const url = run
+                ? `preprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run)}&theme=${theme}`
+                : `preprocessor.html?project=${encodeURIComponent(this.projectId)}&theme=${theme}`;
+            this._loadFrameIfNeeded('pre-frame', url);
+        } else if (view === 'post') {
+            const resolvedRun = run || this.mostRecentConvergedRunId();
+            const frame = document.getElementById('post-frame');
+            const emptyEl = document.getElementById('post-empty');
+            if (resolvedRun) {
+                const url = `posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(resolvedRun)}&theme=${theme}`;
+                this._loadFrameIfNeeded('post-frame', url);
+                frame.style.display = '';
+                emptyEl.style.display = 'none';
+            } else {
+                frame.style.display = 'none';
+                emptyEl.style.display = '';
+            }
+            run = resolvedRun || undefined;
+        }
+
+        this.currentView = view;
+        this.currentRun = run;
+
+        if (pushHistory) {
+            const params = new URLSearchParams(window.location.search);
+            params.set('view', view);
+            if (run) params.set('run', run); else params.delete('run');
+            history.pushState({ view, run }, '', `${window.location.pathname}?${params.toString()}`);
+        }
+    }
+
+    _loadFrameIfNeeded(frameId, url) {
+        const frame = document.getElementById(frameId);
+        if (frame.dataset.loadedUrl !== url) {
+            frame.src = url;
+            frame.dataset.loadedUrl = url;
+        }
+    }
+
+    /** `this.project.runs` already comes most-recent-first (see list_runs) -- used as the Post
+     * tab's default when it's opened without a specific run in mind (clicking the generic tab,
+     * not a row's "View results" link). */
+    mostRecentConvergedRunId() {
+        const runs = (this.project && this.project.runs) || [];
+        const converged = runs.find(r => r.status === 'converged');
+        return converged ? converged.id : null;
     }
 
     async load() {
@@ -78,34 +169,70 @@ class ProjectPage {
         document.getElementById('project-name').innerText = this.project.name;
         document.getElementById('project-meta').innerText =
             `ID: ${this.project.id} · Criado em ${formatDate(this.project.created_at)}`;
-        document.getElementById('view-input-link').href =
-            `preprocessor.html?project=${encodeURIComponent(this.projectId)}`;
+        // A real href (ctrl/cmd-click or middle click still opens a new browser tab) +
+        // data-switch-view (a plain click switches to the "Pre" tab within this page -- see the
+        // delegated listener in bindEvents()/switchView()). Without `data-run`: shows the
+        // project's CURRENT input (not a specific run's snapshot -- per a user decision, the
+        // manager no longer exposes that per-row snapshot, only the current input here).
+        const viewInputLink = document.getElementById('view-input-link');
+        viewInputLink.href = `preprocessor.html?project=${encodeURIComponent(this.projectId)}`;
+        viewInputLink.setAttribute('data-switch-view', 'pre');
 
-        // xml_path/h5_path/aml_path agora são caminhos internos (projects/<id>/source/model.*,
-        // ver ProjectStore._store_source_files) -- o projeto é autocontido mesmo se
-        // trunk/exemplos/ deixar de estar montado.
+        // xml_path/h5_path/aml_path are internal paths (projects/<id>/source/<real-name>, see
+        // ProjectStore._store_source_files) -- the project is self-contained even if
+        // trunk/exemplos/ stops being mounted. On screen, only shows the file's NAME (not the
+        // internal "source/..." path -- irrelevant to the user) -- one case = one input file, so
+        // the name alone already identifies where it came from; the real downloads are in the
+        // links below.
         const src = this.project.source || {};
         const lines = [];
         if (src.example_id) lines.push(`<div class="kv-line"><span class="k">Exemplo:</span>${escapeHtml(src.example_id)}</div>`);
-        if (src.kind === 'upload') lines.push(`<div class="kv-line"><span class="k">Origem:</span>📤 Upload manual</div>`);
-        if (src.xml_path) lines.push(`<div class="kv-line"><span class="k">XML:</span>${escapeHtml(src.xml_path)}</div>`);
-        if (src.h5_path) lines.push(`<div class="kv-line"><span class="k">H5:</span>${escapeHtml(src.h5_path)}</div>`);
-        if (src.aml_path) lines.push(`<div class="kv-line"><span class="k">AML:</span>${escapeHtml(src.aml_path)}</div>`);
+        else if (src.kind === 'upload') lines.push(`<div class="kv-line"><span class="k">Origem:</span>📤 Upload manual</div>`);
+        if (src.xml_path) lines.push(`<div class="kv-line"><span class="k">Arquivo:</span>${escapeHtml(src.xml_path.split('/').pop())}</div>`);
         document.getElementById('project-source').innerHTML = lines.join('') || '<div class="kv-line">—</div>';
+
+        const downloads = [];
+        for (const key of ['xml_path', 'h5_path', 'aml_path']) {
+            const path = src[key];
+            if (!path) continue;
+            const filename = path.split('/').pop();
+            const url = `/api/projects/${encodeURIComponent(this.projectId)}/source/${encodeURIComponent(filename)}?download=1`;
+            downloads.push(`<a class="link-btn" href="${url}">⬇ ${escapeHtml(filename)}</a>`);
+        }
+        downloads.push(`<a class="link-btn" href="/api/projects/${encodeURIComponent(this.projectId)}/input?download=1">⬇ JSON compilado</a>`);
+        document.getElementById('project-downloads').innerHTML = downloads.join('');
     }
 
     renderRuns() {
         const container = document.getElementById('runs-container');
         const runs = this.project.runs || [];
         if (runs.length === 0) {
+            this.lastRunsKey = null;
             container.innerHTML = '<div class="empty-state">Nenhuma rodada ainda. Clique em "Nova Rodada" para disparar a primeira.</div>';
             return;
         }
 
-        // Badge discreta "= run-X" quando o model_hash bate com uma rodada anterior do mesmo
-        // projeto -- só uma pista visual (ver docs/roadmap.md Eixo 3b), não uma reestruturação da
-        // lista. `runs` já vem mais recente primeiro (list_runs), então percorre de trás pra
-        // frente pra achar a rodada mais ANTIGA de cada hash (a "original" que a badge referencia).
+        // The set/order of IDs only changes when a run is created (list_runs already comes
+        // most-recent-first) -- in that case (rare, once per "New Run" click) it's worth
+        // rebuilding the whole table. On scheduleAutoRefresh()'s other polls (every 2s, with the
+        // same run set), only each row's content changes (status/timestamps) -- rebuilding
+        // everything via innerHTML in that case is wasteful (needlessly redoes DOM/listeners) and
+        // fragile (it was the cause of the "flickering" log bug before this round of changes).
+        // That's why patchRuns() below only updates the cells that actually changed.
+        const runsKey = runs.map(r => r.id).join(',');
+        if (this.lastRunsKey === runsKey) {
+            this.patchRuns(runs);
+            return;
+        }
+        this.lastRunsKey = runsKey;
+        this.lastRunsById = new Map(runs.map(r => [r.id, r]));
+
+        // A subtle "= run-X" badge when the model_hash matches an earlier run in the same
+        // project -- just a visual hint (see docs/roadmap.md, Axis 3b), not a restructuring of
+        // the list. `runs` already comes most-recent-first (list_runs), so it walks backwards to
+        // find the OLDEST run for each hash (the "original" the badge references). It doesn't
+        // change for an existing run (model_hash is fixed at creation), so it only needs to be
+        // recomputed here, in the full-rebuild path.
         const firstRunForHash = new Map();
         for (let i = runs.length - 1; i >= 0; i--) {
             const h = runs[i].model_hash;
@@ -114,34 +241,114 @@ class ProjectPage {
 
         const rows = runs.map(run => this.renderRunRow(run, firstRunForHash)).join('');
         container.innerHTML = `
-            <table class="run-table">
-                <thead>
-                    <tr>
-                        <th>Rodada</th>
-                        <th>Status</th>
-                        <th>Criada</th>
-                        <th>Início</th>
-                        <th>Fim</th>
-                        <th>Ações</th>
-                    </tr>
-                </thead>
-                <tbody>${rows}</tbody>
-            </table>
+            <div class="runs-list">
+                <table class="run-table">
+                    <thead>
+                        <tr>
+                            <th>Rodada</th>
+                            <th>Status</th>
+                            <th>Criada</th>
+                            <th>Início</th>
+                            <th>Fim</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
         `;
 
-        container.querySelectorAll('[data-toggle-log]').forEach(btn => {
+        this.bindRowActions(container);
+
+        // Keeps the scroll at the bottom for open logs that were just repopulated (see
+        // renderRunRow() -- the text already comes filled in the HTML, it just needs to be
+        // scrolled to the end).
+        for (const runId of this.openLogs.keys()) {
+            const box = document.getElementById(`log-box-${runId}`);
+            if (box) box.scrollTop = box.scrollHeight;
+        }
+    }
+
+    bindRowActions(scope) {
+        scope.querySelectorAll('[data-toggle-log]').forEach(btn => {
             btn.addEventListener('click', () => this.toggleLog(btn.getAttribute('data-toggle-log')));
+        });
+        scope.querySelectorAll('[data-delete-run]').forEach(btn => {
+            btn.addEventListener('click', () => this.deleteRun(btn.getAttribute('data-delete-run')));
+        });
+        scope.querySelectorAll('[data-abort-run]').forEach(btn => {
+            btn.addEventListener('click', () => this.abortRun(btn.getAttribute('data-abort-run')));
         });
     }
 
-    renderRunRow(run, firstRunForHash) {
+    /** Updates only the rows whose status/timestamps actually changed since the last poll,
+     * instead of rebuilding the whole table (see the comment on renderRuns()). Since Actions
+     * depends on the status (the "View results" link only exists once converged), the Actions
+     * cell is re-rendered along with it when the status changes -- which is why it needs to
+     * rebind that cell's log button specifically (the rest of the table, including any open log,
+     * isn't touched at all). */
+    patchRuns(runs) {
+        for (const run of runs) {
+            const prev = this.lastRunsById.get(run.id);
+            this.lastRunsById.set(run.id, run);
+            if (prev && prev.status === run.status && prev.started_at === run.started_at && prev.finished_at === run.finished_at) {
+                continue;
+            }
+
+            const statusCell = document.getElementById(`status-${run.id}`);
+            if (statusCell) statusCell.innerHTML = statusPill(run.status);
+
+            const startedCell = document.getElementById(`started-${run.id}`);
+            if (startedCell) startedCell.innerText = formatDate(run.started_at);
+
+            const finishedCell = document.getElementById(`finished-${run.id}`);
+            if (finishedCell) finishedCell.innerText = formatDate(run.finished_at);
+
+            const actionsCell = document.getElementById(`actions-${run.id}`);
+            if (actionsCell) {
+                actionsCell.innerHTML = this.renderActionsCell(run);
+                this.bindRowActions(actionsCell);
+            }
+        }
+    }
+
+    renderActionsCell(run) {
         const resultsLink = run.status === 'converged'
-            ? `<a class="link-btn" href="posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run.id)}" target="_blank">Ver resultados</a>`
+            ? `<a class="link-btn" href="posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run.id)}" data-switch-view="post" data-run="${escapeHtml(run.id)}">Ver resultados</a>`
             : '';
-        // "Entrada usada" (snapshot congelado dessa rodada) fica sempre disponível, diferente de
-        // "Ver resultados" (só existe pra rodadas convergidas) -- input_simulation.json é
-        // copiado em create_run() antes da rodada sequer começar a rodar.
-        const inputLink = `<a class="link-btn" href="preprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run.id)}" target="_blank">🔍 Entrada usada</a>`;
+        // Download the raw results JSON (catenary_results.json) -- only exists for a converged
+        // run (same gate as resultsLink above; a failed/aborted run never generates this file).
+        const resultsDownload = run.status === 'converged'
+            ? `<a class="link-btn" href="/api/projects/${encodeURIComponent(this.projectId)}/runs/${encodeURIComponent(run.id)}/results/catenary_results.json?download=1">⬇ Resultados</a>`
+            : '';
+        const isActive = run.status === 'pending' || run.status === 'running';
+        // Aborting only makes sense for a run still in progress; deleting is only allowed for a
+        // run that's already finished (see risersim_projects.py::request_abort/delete_run -- the
+        // two cases are mutually exclusive, they never appear together on the same row).
+        const abortBtn = isActive
+            ? `<button class="btn small danger" data-abort-run="${escapeHtml(run.id)}">⏹ Abortar</button>`
+            : '';
+        const deleteBtn = !isActive
+            ? `<button class="btn small danger" data-delete-run="${escapeHtml(run.id)}">🗑</button>`
+            : '';
+        return `
+            <button class="btn small secondary" data-toggle-log="${escapeHtml(run.id)}">📜 Log</button>
+            ${resultsLink}
+            ${resultsDownload}
+            ${abortBtn}
+            ${deleteBtn}
+        `;
+    }
+
+    renderRunRow(run, firstRunForHash) {
+        // If this log was open before the re-render (see scheduleAutoRefresh()), repopulates the
+        // already-visible <pre> with the accumulated text instead of starting hidden/empty --
+        // without this the log "flickers" and closes itself every 2s while the run is in
+        // progress. Only relevant here (full rebuild) -- patchRuns() never touches a run's log
+        // row.
+        const logState = this.openLogs.get(run.id);
+        const logDisplay = logState ? '' : 'none';
+        const logText = logState ? escapeHtml(logState.text) : '';
 
         const dupOf = run.model_hash ? firstRunForHash.get(run.model_hash) : null;
         const dupBadge = (dupOf && dupOf !== run.id)
@@ -150,19 +357,15 @@ class ProjectPage {
 
         return `
             <tr>
-                <td>${escapeHtml(run.id)}${dupBadge}</td>
-                <td id="status-${escapeHtml(run.id)}">${statusBadge(run.status)}</td>
-                <td>${formatDate(run.created_at)}</td>
-                <td>${formatDate(run.started_at)}</td>
-                <td>${formatDate(run.finished_at)}</td>
-                <td>
-                    <button class="btn small secondary" data-toggle-log="${escapeHtml(run.id)}">📜 Log</button>
-                    ${resultsLink}
-                    ${inputLink}
-                </td>
+                <td class="run-id-cell mono">${escapeHtml(run.id)}${dupBadge}</td>
+                <td id="status-${escapeHtml(run.id)}">${statusPill(run.status)}</td>
+                <td class="mono">${formatDate(run.created_at)}</td>
+                <td id="started-${escapeHtml(run.id)}" class="mono">${formatDate(run.started_at)}</td>
+                <td id="finished-${escapeHtml(run.id)}" class="mono">${formatDate(run.finished_at)}</td>
+                <td id="actions-${escapeHtml(run.id)}">${this.renderActionsCell(run)}</td>
             </tr>
-            <tr class="log-row" id="log-row-${escapeHtml(run.id)}" style="display:none;">
-                <td colspan="6"><pre class="log-box" id="log-box-${escapeHtml(run.id)}"></pre></td>
+            <tr class="log-row" id="log-row-${escapeHtml(run.id)}" style="display:${logDisplay};">
+                <td colspan="6"><pre class="log-box" id="log-box-${escapeHtml(run.id)}">${logText}</pre></td>
             </tr>
         `;
     }
@@ -181,7 +384,7 @@ class ProjectPage {
 
     startLogPolling(runId) {
         if (this.openLogs.has(runId)) return;
-        const state = { offset: 0 };
+        const state = { offset: 0, text: '' };
         this.openLogs.set(runId, state);
         const poll = async () => {
             if (!this.openLogs.has(runId)) return;
@@ -189,6 +392,11 @@ class ProjectPage {
                 const data = await fetchJSON(`/api/projects/${encodeURIComponent(this.projectId)}/runs/${encodeURIComponent(runId)}/stream?offset=${state.offset}`);
                 state.offset = data.next_offset;
                 if (data.content) {
+                    // Accumulates into `state.text` (not just the DOM) -- renderRunRow() uses
+                    // this to repopulate the box if the table gets re-rendered by
+                    // scheduleAutoRefresh() while the log is open (see the comment in the
+                    // constructor).
+                    state.text += data.content;
                     const box = document.getElementById(`log-box-${runId}`);
                     if (box) {
                         box.textContent += data.content;
@@ -196,7 +404,7 @@ class ProjectPage {
                     }
                 }
                 const statusCell = document.getElementById(`status-${runId}`);
-                if (statusCell) statusCell.innerHTML = statusBadge(data.status);
+                if (statusCell) statusCell.innerHTML = statusPill(data.status);
                 if (!data.done && this.openLogs.has(runId)) {
                     state.timer = setTimeout(poll, 1000);
                 } else {
@@ -236,12 +444,14 @@ class ProjectPage {
                 body: JSON.stringify({ force }),
             });
             if (res.status === 409) {
-                // Rodada duplicada (mesmo model_hash de uma rodada já terminada) -- pergunta antes
-                // de gastar a fila serial rodando de novo à toa (ver run_server.py::api_create_run).
+                // Duplicate run (same model_hash as an already-finished run) -- asks before
+                // needlessly spending the serial queue running it again (see
+                // run_server.py::api_create_run).
                 const body = await res.json().catch(() => ({}));
                 const msg = `Já existe uma rodada terminada (${body.run_id || '?'}, status: ${body.status || '?'}) ` +
                             `com o mesmo modelo. Rodar mesmo assim?`;
-                if (window.confirm(msg)) {
+                const ok = await confirmDialog({ title: 'Rodada duplicada', message: msg, confirmLabel: 'Rodar mesmo assim', danger: false });
+                if (ok) {
                     await this.createRun(true);
                     return;
                 }
@@ -254,10 +464,116 @@ class ProjectPage {
             }
             await this.load();
         } catch (err) {
-            alert(`Falha ao criar rodada: ${err.message}`);
+            await alertDialog({ title: 'Falha ao criar rodada', message: err.message });
         } finally {
             btn.disabled = false;
             btn.innerText = '▶ Nova Rodada';
+        }
+    }
+
+    async abortRun(runId) {
+        const ok = await confirmDialog({
+            title: 'Abortar rodada',
+            message: `Abortar a rodada ${runId}? O solver será interrompido no meio da execução -- não há como retomar de onde parou.`,
+            confirmLabel: 'Abortar',
+        });
+        if (!ok) return;
+        try {
+            const res = await fetch(`/api/projects/${encodeURIComponent(this.projectId)}/runs/${encodeURIComponent(runId)}/abort`, { method: 'POST' });
+            if (!res.ok) {
+                let detail = '';
+                try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
+                throw new Error(detail || `HTTP ${res.status}`);
+            }
+            // The worker is what actually changes the status to "aborted" (see run_worker.py) --
+            // it can take up to ~ABORT_POLL_INTERVAL_S to react, so this reload might still show
+            // pending/running for a moment; scheduleAutoRefresh() picks up the real update
+            // shortly after.
+            await this.load();
+        } catch (err) {
+            await alertDialog({ title: 'Falha ao abortar rodada', message: err.message });
+        }
+    }
+
+    async deleteRun(runId) {
+        const ok = await confirmDialog({
+            title: 'Apagar rodada',
+            message: `Apagar a rodada ${runId}? Isso remove o log e os resultados dela permanentemente.`,
+            confirmLabel: 'Apagar',
+        });
+        if (!ok) return;
+        try {
+            const res = await fetch(`/api/projects/${encodeURIComponent(this.projectId)}/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+            if (!res.ok && res.status !== 204) {
+                let detail = '';
+                try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
+                throw new Error(detail || `HTTP ${res.status}`);
+            }
+            this.stopLogPolling(runId);
+            await this.load();
+        } catch (err) {
+            await alertDialog({ title: 'Falha ao apagar rodada', message: err.message });
+        }
+    }
+
+    startRename() {
+        document.getElementById('project-name-display').style.display = 'none';
+        const editEl = document.getElementById('project-name-edit');
+        editEl.style.display = '';
+        const input = document.getElementById('rename-project-input');
+        input.value = this.project.name;
+        input.focus();
+        input.select();
+    }
+
+    cancelRename() {
+        document.getElementById('project-name-edit').style.display = 'none';
+        document.getElementById('project-name-display').style.display = '';
+    }
+
+    async submitRename() {
+        const input = document.getElementById('rename-project-input');
+        const newName = input.value.trim();
+        if (!newName) { input.focus(); return; }
+        if (newName === this.project.name) { this.cancelRename(); return; }
+        try {
+            // PATCH returns the raw project.json (without the `runs` list, which only
+            // api_get_project attaches) -- merges just the `name` into the already-loaded
+            // `this.project` instead of replacing the whole object, so as not to lose `runs`
+            // until the next full load().
+            const updated = await fetchJSON(`/api/projects/${encodeURIComponent(this.projectId)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName }),
+            });
+            this.project = { ...this.project, name: updated.name };
+            this.cancelRename();
+            this.renderHeader();
+        } catch (err) {
+            await alertDialog({ title: 'Falha ao renomear projeto', message: err.message });
+        }
+    }
+
+    async deleteProject() {
+        const ok = await confirmDialog({
+            title: 'Apagar projeto',
+            message: `Apagar o projeto "${this.project.name}" e TODAS as suas rodadas? Essa ação não pode ser desfeita.`,
+            confirmLabel: 'Apagar tudo',
+        });
+        if (!ok) return;
+        const btn = document.getElementById('delete-project-btn');
+        btn.disabled = true;
+        try {
+            const res = await fetch(`/api/projects/${encodeURIComponent(this.projectId)}`, { method: 'DELETE' });
+            if (!res.ok && res.status !== 204) {
+                let detail = '';
+                try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
+                throw new Error(detail || `HTTP ${res.status}`);
+            }
+            window.location.href = 'dashboard.html';
+        } catch (err) {
+            await alertDialog({ title: 'Falha ao apagar projeto', message: err.message });
+            btn.disabled = false;
         }
     }
 }

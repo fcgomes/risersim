@@ -2,40 +2,66 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>riserSim - Projeto</title>
+    <title>RiserSim - Projeto</title>
     <link rel="stylesheet" href="css/shared.css">
     <link rel="stylesheet" href="css/dashboard.css">
 </head>
 <body class="dark-mode">
     <div id="header">
-        <h1>🌊 riserSim - Gerenciador de Rodadas</h1>
+        <h1>🌊 RiserSim - Gerenciador de Rodadas</h1>
         <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
     </div>
 
-    <div class="page">
+    <div class="workspace-tabs">
         <a class="back-link" href="dashboard.html">← Painel</a>
+        <button class="btn-tab active" id="tab-manager-btn" data-view="manager" type="button">🗂 Gerenciador</button>
+        <button class="btn-tab" id="tab-pre-btn" data-view="pre" type="button">🔍 Pré-processamento</button>
+        <button class="btn-tab" id="tab-post-btn" data-view="post" type="button">📊 Pós-processamento</button>
+    </div>
 
-        <div class="page-header-row">
-            <div>
-                <h2 id="project-name">Carregando…</h2>
-                <div class="subtitle" id="project-meta"></div>
+    <div id="view-manager" class="workspace-view">
+        <div class="page">
+            <div class="page-header-row">
+                <div>
+                    <span id="project-name-display">
+                        <h2 id="project-name">Carregando…</h2>
+                        <button class="btn-icon-inline" id="rename-project-btn" type="button" title="Renomear projeto">✏️</button>
+                    </span>
+                    <span id="project-name-edit" style="display:none;">
+                        <input type="text" id="rename-project-input" class="rename-input">
+                        <button class="btn small" id="rename-save-btn" type="button">✓</button>
+                        <button class="btn small secondary" id="rename-cancel-btn" type="button">✕</button>
+                    </span>
+                    <div class="subtitle" id="project-meta"></div>
+                </div>
+                <div class="actions">
+                    <a class="btn secondary" id="view-input-link" href="#">🔍 Ver entrada</a>
+                    <button class="btn" id="new-run-btn">▶ Nova Rodada</button>
+                    <button class="btn secondary" id="refresh-btn">⟳ Atualizar</button>
+                    <button class="btn danger" id="delete-project-btn">🗑 Apagar Projeto</button>
+                </div>
             </div>
-            <div class="actions">
-                <a class="btn secondary" id="view-input-link" href="#" target="_blank">🔍 Ver entrada</a>
-                <button class="btn" id="new-run-btn">▶ Nova Rodada</button>
-                <button class="btn secondary" id="refresh-btn">⟳ Atualizar</button>
+
+            <div class="control-group" id="project-source-group">
+                <div class="control-title">📦 ORIGEM DO MODELO</div>
+                <div id="project-source"></div>
+                <div class="row" id="project-downloads"></div>
+            </div>
+
+            <h3 class="section-title runs-section-title">🕒 Rodadas</h3>
+            <div id="runs-container">
+                <div class="empty-state">Carregando…</div>
             </div>
         </div>
+    </div>
 
-        <div class="control-group" id="project-source-group" style="max-width:600px;">
-            <div class="control-title">📦 ORIGEM DO MODELO</div>
-            <div id="project-source"></div>
-        </div>
+    <div id="view-pre" class="workspace-view" style="display:none;">
+        <iframe id="pre-frame" class="workspace-iframe" title="Pré-processamento"></iframe>
+    </div>
 
-        <h3 class="section-title" style="margin-top:26px;">🕒 Rodadas</h3>
-        <div id="runs-container">
-            <div class="empty-state">Carregando…</div>
-        </div>
+    <div id="view-post" class="workspace-view" style="display:none;">
+        <iframe id="post-frame" class="workspace-iframe" title="Pós-processamento"></iframe>
+        <div class="empty-state" id="post-empty" style="display:none;">Nenhuma rodada convergida ainda -- rode o projeto primeiro pra ver resultados aqui.</div>
     </div>
 
     <script type="module" src="js/project.js"></script>

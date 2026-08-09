@@ -1,10 +1,10 @@
 """
 risersim_projects.py
 =====================
-Camada de persistência em sistema de arquivos para o "gerenciador de rodadas" (ver
-docs/roadmap.md Eixo 3b): projetos (modelo + config compilada) e suas rodadas (execuções do
-binário C++). Sem banco de dados -- o próprio layout de diretórios (compartilhado entre `web` e
-`worker` via volume Docker) é a fonte de verdade, exatamente como desenhado na spec:
+Filesystem persistence layer for the "run manager" (see docs/roadmap.md, Axis 3b): projects
+(model + compiled config) and their runs (executions of the C++ binary). No database -- the
+directory layout itself (shared between `web` and `worker` via a Docker volume) is the source of
+truth, exactly as designed in the spec:
 
     projects/
       <project-id>/
@@ -15,16 +15,16 @@ binário C++). Sem banco de dados -- o próprio layout de diretórios (compartil
             run.json
             input_simulation.json
             stdout.log
-            catenary_results.json   (após terminar)
-            catenary_results.h5     (após terminar)
+            catenary_results.json   (once finished)
+            catenary_results.h5     (once finished)
 
-Importante: essa é uma raiz NOVA (`risersim/projects/`), separada do `risersim_results/` de
-slot único usado pelo workflow manual `run_from_aml.py` -- não tocamos nesse último.
+Important: this is a NEW root (`risersim/projects/`), separate from the single-slot
+`risersim_results/` used by the manual `run_from_aml.py` workflow -- we don't touch that one.
 
-Usado tanto por `run_server.py` (API REST: cria projetos/rodadas, lê status) quanto por
-`run_worker.py` (loop serial: acha rodadas pendentes, atualiza status/resultados). Nenhum dos
-dois processos mantém estado em memória além do que está no disco -- é assim que os dois
-processos (containers separados) se comunicam, sem broker nenhum.
+Used both by `run_server.py` (REST API: creates projects/runs, reads status) and by
+`run_worker.py` (serial loop: finds pending runs, updates status/results). Neither process keeps
+in-memory state beyond what's on disk -- that's how the two processes (separate containers)
+communicate, with no broker at all.
 """
 
 import hashlib
@@ -41,10 +41,11 @@ from risersim_version import WEB_VERSION
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 
-# Raiz padrão: risersim/projects (irmã de risersim_results/, nunca a mesma pasta). Sobrescrita
-# via RISERSIM_PROJECTS_ROOT no ambiente Docker do docker-compose.yml -- mas o default já resolve
-# certo dentro do container também, porque a estrutura de diretórios copiada pelo Dockerfile
-# (WORKDIR /app/risersim, tools/ dentro dele) é a mesma relação relativa que existe localmente.
+# Default root: risersim/projects (a sibling of risersim_results/, never the same folder).
+# Overridden via RISERSIM_PROJECTS_ROOT in docker-compose.yml's Docker environment -- but the
+# default already resolves correctly inside the container too, because the directory structure
+# copied by the Dockerfile (WORKDIR /app/risersim, tools/ inside it) is the same relative
+# relationship that exists locally.
 DEFAULT_PROJECTS_ROOT = Path(os.environ.get("RISERSIM_PROJECTS_ROOT", str(_SCRIPT_DIR.parent / "projects")))
 
 
@@ -58,8 +59,8 @@ def _slugify(name):
 
 
 def generate_project_id(name, root):
-    """Slug do nome do projeto, com sufixo numérico curto só se colidir com um diretório de
-    projeto já existente (ver spec: IDs legíveis por humanos)."""
+    """Slug of the project name, with a short numeric suffix only if it collides with an
+    already-existing project directory (see spec: human-readable IDs)."""
     slug = _slugify(name)
     if not (root / slug).exists():
         return slug
@@ -68,14 +69,14 @@ def generate_project_id(name, root):
         candidate = f"{slug}-{suffix}"
         if not (root / candidate).exists():
             return candidate
-    # Extremamente improvável (20 colisões seguidas), mas não deixa travado.
+    # Extremely unlikely (20 collisions in a row), but doesn't leave it stuck.
     return f"{slug}-{int(datetime.now().timestamp())}"
 
 
 def generate_run_id(project_dir):
-    """ID baseado em timestamp (`run-YYYYMMDD-HHMMSS`), com sufixo contador só no raro caso de
-    colisão no mesmo segundo (ver spec). Ordena cronologicamente por construção -- o worker
-    usa isso pra achar "a rodada pendente mais antiga" sem precisar de outro campo."""
+    """Timestamp-based ID (`run-YYYYMMDD-HHMMSS`), with a counter suffix only in the rare case of
+    a same-second collision (see spec). Sorts chronologically by construction -- the worker uses
+    this to find "the oldest pending run" without needing another field."""
     runs_dir = project_dir / "runs"
     base = "run-" + datetime.now().strftime("%Y%m%d-%H%M%S")
     if not (runs_dir / base).exists():
@@ -132,36 +133,45 @@ class ProjectStore:
             return None
 
     def _store_source_files(self, pdir, xml_path, h5_path, aml_path=None):
-        """Copia os arquivos de origem (XML+H5 reais exportados pelo ANFLEX, AML opcional) pra
-        dentro de `projects/<id>/source/{model.xml, model.h5, model.aml}`, tornando o projeto
-        autocontido -- resolve o gap onde `source.xml_path` apontava pra fora do diretório do
-        projeto (dependente do mount de trunk/exemplos continuar no mesmo lugar). Caminho de
-        código único usado tanto pelo fluxo de exemplo pré-descoberto quanto pelo de upload (ver
-        run_server.py `api_create_project`/`api_upload_project`) -- nenhum dos dois duplica essa
-        lógica.
+        """Copies the source files (the real XML+H5 exported by ANFLEX, AML optional) into
+        `projects/<id>/source/`, making the project self-contained -- closes the gap where
+        `source.xml_path` used to point outside the project directory (dependent on the
+        trunk/exemplos mount staying in the same place). Single code path used by both the
+        pre-discovered-example flow and the upload flow (see run_server.py
+        `api_create_project`/`api_upload_project`) -- neither duplicates this logic.
 
-        Retorna os caminhos RELATIVOS ao diretório do projeto (pra gravar em
-        `project.json["source"]` sem vazar caminho absoluto de host)."""
+        Preserves each file's ORIGINAL NAME (not a generic name like "model.xml") --
+        `xml_path`/`h5_path`/`aml_path` already arrive here with the right basename in both flows
+        (the real one for the pre-discovered example; the uploaded one, already sanitized by
+        `api_upload_project::secure_filename` before being written to the temp directory) -- so
+        the user recognizes which real case it came from just by looking at the filename on
+        screen.
+
+        Returns the paths RELATIVE to the project directory (to write into
+        `project.json["source"]` without leaking an absolute host path)."""
         source_dir = pdir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(xml_path, source_dir / "model.xml")
-        shutil.copy2(h5_path, source_dir / "model.h5")
-        stored = {"xml_path": "source/model.xml", "h5_path": "source/model.h5", "aml_path": None}
+        xml_name = Path(xml_path).name
+        h5_name = Path(h5_path).name
+        shutil.copy2(xml_path, source_dir / xml_name)
+        shutil.copy2(h5_path, source_dir / h5_name)
+        stored = {"xml_path": f"source/{xml_name}", "h5_path": f"source/{h5_name}", "aml_path": None}
         if aml_path and Path(aml_path).is_file():
-            shutil.copy2(aml_path, source_dir / "model.aml")
-            stored["aml_path"] = "source/model.aml"
+            aml_name = Path(aml_path).name
+            shutil.copy2(aml_path, source_dir / aml_name)
+            stored["aml_path"] = f"source/{aml_name}"
         return stored
 
     def create_project(self, name, config, xml_path, h5_path, aml_path=None, origin=None, description=""):
-        """Cria um novo projeto: `project.json` + `input_simulation.json` (o config compilado,
-        pronto pro `ModelBuilder` consumir), copiando os arquivos de origem reais (XML+H5+AML
-        opcional) pra dentro do próprio diretório do projeto (`_store_source_files`). Não dispara
-        nenhuma rodada -- isso é um passo separado (`create_run`).
+        """Creates a new project: `project.json` + `input_simulation.json` (the compiled config,
+        ready for `ModelBuilder` to consume), copying the real source files (XML+H5+optional AML)
+        into the project's own directory (`_store_source_files`). Doesn't trigger any run --
+        that's a separate step (`create_run`).
 
-        `origin` é metadado de referência sobre de onde o modelo veio (ex.
-        `{"example_id": "..."}` pro fluxo por exemplo pré-descoberto, `{"kind": "upload"}` pro
-        fluxo de upload) -- mesclado com os caminhos internos já copiados em
-        `project.json["source"]`, sem função além de exibição/depuração."""
+        `origin` is reference metadata about where the model came from (e.g.
+        `{"example_id": "..."}` for the pre-discovered-example flow, `{"kind": "upload"}` for the
+        upload flow) -- merged with the internal paths already copied into
+        `project.json["source"]`, with no purpose beyond display/debugging."""
         project_id = generate_project_id(name, self.root)
         pdir = self.project_dir(project_id)
         (pdir / "runs").mkdir(parents=True, exist_ok=True)
@@ -177,8 +187,69 @@ class ProjectStore:
             "web_version": WEB_VERSION,
             "source": source,
         }
-        (pdir / "project.json").write_text(json.dumps(project, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._write_project(project_id, project)
         (pdir / "input_simulation.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        return project
+
+    def _write_project(self, project_id, project):
+        # Writes to a temp file + atomic rename -- same pattern as `_write_run` (only `web` writes
+        # `project.json`, so there's less concurrency than with `run.json`, but rename() is
+        # basically free and avoids any partial read).
+        pdir = self.project_dir(project_id)
+        tmp = pdir / "project.json.tmp"
+        tmp.write_text(json.dumps(project, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(pdir / "project.json"))
+
+    def rename_project(self, project_id, new_name):
+        """Renames a project -- only the `name` field in `project.json` changes; the `id`/
+        directory on disk stay the same (avoids having to move files or invalidate any already
+        shared/saved `?project=<id>`). Raises `FileNotFoundError` if the project doesn't exist,
+        `ValueError` if the new name is empty."""
+        new_name = (new_name or "").strip()
+        if not new_name:
+            raise ValueError("nome não pode ser vazio")
+        project = self.get_project(project_id)
+        if project is None:
+            raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
+        project["name"] = new_name
+        self._write_project(project_id, project)
+        return project
+
+    def duplicate_project(self, project_id, new_name=None):
+        """Creates a NEW project (its own id/directory) that starts as a copy of `project_id`'s
+        current source files + compiled `input_simulation.json` -- lets the user branch off an
+        existing model (e.g. to try a parameter variation) without touching the original. Only
+        the project-level input is copied; run history is deliberately NOT copied, a duplicate
+        always starts with an empty `runs/` (see run_server.py::api_duplicate_project /
+        project.js::duplicateProject). Raises `FileNotFoundError` if the source project (or its
+        `input_simulation.json`) doesn't exist."""
+        src_project = self.get_project(project_id)
+        if src_project is None:
+            raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
+        src_dir = self.project_dir(project_id)
+        src_config_file = src_dir / "input_simulation.json"
+        if not src_config_file.is_file():
+            raise FileNotFoundError(f"input_simulation.json não encontrado para '{project_id}'")
+
+        name = (new_name or "").strip() or f"{src_project['name']} (cópia)"
+        new_id = generate_project_id(name, self.root)
+        new_dir = self.project_dir(new_id)
+        (new_dir / "runs").mkdir(parents=True, exist_ok=True)
+
+        src_source_dir = src_dir / "source"
+        if src_source_dir.is_dir():
+            shutil.copytree(src_source_dir, new_dir / "source")
+        shutil.copy2(src_config_file, new_dir / "input_simulation.json")
+
+        project = {
+            "id": new_id,
+            "name": name,
+            "description": src_project.get("description", ""),
+            "created_at": _now_iso(),
+            "web_version": WEB_VERSION,
+            "source": src_project.get("source", {}),
+        }
+        self._write_project(new_id, project)
         return project
 
     # ---- runs ----
@@ -210,18 +281,19 @@ class ProjectStore:
             return None
 
     def create_run(self, project_id):
-        """Cria uma nova rodada: congela (snapshot) o `input_simulation.json` atual do projeto
-        dentro do diretório da rodada, e escreve `run.json` com `status: "pending"`. Não bloqueia
-        esperando a rodada terminar -- o `run_worker.py` (processo separado) que vai pegá-la da
-        fila e executar.
+        """Creates a new run: freezes (snapshots) the project's current `input_simulation.json`
+        into the run's directory, and writes `run.json` with `status: "pending"`. Doesn't block
+        waiting for the run to finish -- `run_worker.py` (a separate process) is what picks it up
+        from the queue and executes it.
 
-        Também grava aqui a proveniência que já dá pra saber na criação (ver docs/roadmap.md
-        Eixo 3b): `model_hash` (sha256 do snapshot recém-copiado -- usado por
-        `find_run_by_model_hash` pra evitar rodadas duplicadas do mesmo modelo), `schema_version`
-        (lido de volta do próprio snapshot, gravado por `xml_h5_reader.py::to_risersim_json()`) e
-        `web_version` (com qual versão da interface essa rodada foi criada). `solver_fingerprint`
-        começa `None` -- só o `run_worker.py` tem acesso ao binário compilado (containers
-        separados), então esse campo só é preenchido quando a rodada é de fato executada."""
+        Also records here the provenance that's already knowable at creation time (see
+        docs/roadmap.md, Axis 3b): `model_hash` (sha256 of the freshly-copied snapshot -- used by
+        `find_run_by_model_hash` to avoid duplicate runs of the same model), `schema_version`
+        (read back from the snapshot itself, written by
+        `xml_h5_reader.py::to_risersim_json()`), and `web_version` (which interface version this
+        run was created with). `solver_fingerprint` starts as `None` -- only `run_worker.py` has
+        access to the compiled binary (separate containers), so this field is only filled in once
+        the run is actually executed."""
         project = self.get_project(project_id)
         if project is None:
             raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
@@ -260,14 +332,98 @@ class ProjectStore:
         self._write_run(project_id, run_id, run)
         return run
 
+    def request_abort(self, project_id, run_id):
+        """Signals `run_worker.py` to interrupt a `pending`/`running` run -- the usual
+        communication channel (a file on the shared volume, no broker): creates an empty sentinel
+        file `abort_requested` inside the run's directory. The worker polls for this file (see
+        `run_worker.py::process_one_run`) both before launching the subprocess (run still
+        `pending` -- just marks it `aborted` without ever running it) and during execution
+        (`running` -- sends SIGTERM/SIGKILL to the subprocess). Doesn't delete anything or change
+        `run.json` directly here -- only the worker makes that status transition, to avoid two
+        processes writing to the same `run.json` at the same time.
+
+        Raises `FileNotFoundError` if the run doesn't exist, `ValueError` if it's already in a
+        terminal state (nothing to abort)."""
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            raise FileNotFoundError(f"rodada '{run_id}' do projeto '{project_id}' não encontrada")
+        if run.get("status") not in ("pending", "running"):
+            raise ValueError(f"rodada '{run_id}' já está '{run.get('status')}' -- nada a abortar")
+        (self.run_dir(project_id, run_id) / "abort_requested").touch()
+
+    def delete_run(self, project_id, run_id):
+        """Deletes an entire run's directory (run.json, snapshot, log, results). Refuses
+        `pending`/`running` runs: `run_worker.py`'s solver subprocess may be writing into this
+        directory (`cwd=run_dir`, see `process_one_run`) at this very moment -- deleting it out
+        from under it would cause unpredictable write failures mid-run, not a clean cancellation
+        (that's what `request_abort` is for, which aborts first AND lets the worker finish
+        writing run.json before the directory can be safely deleted). `converged`/`failed`/
+        `aborted` are safe at any time (the worker no longer touches them). Raises `ValueError`
+        (doesn't delete) in that case, `FileNotFoundError` if the run doesn't exist."""
+        run = self.get_run(project_id, run_id)
+        if run is None:
+            raise FileNotFoundError(f"rodada '{run_id}' do projeto '{project_id}' não encontrada")
+        if run.get("status") in ("pending", "running"):
+            raise ValueError(f"rodada '{run_id}' está '{run.get('status')}' -- espere terminar antes de apagar")
+        shutil.rmtree(self.run_dir(project_id, run_id))
+
+    def delete_project(self, project_id):
+        """Deletes the whole project (all its runs along with it). Same reasoning as
+        `delete_run`: refuses if ANY run in the project is `pending`/`running` (the worker could
+        be in the middle of it), so as not to delete the directory out from under a subprocess
+        in progress."""
+        pdir = self.project_dir(project_id)
+        if not pdir.is_dir():
+            raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
+        active = [r for r in self.list_runs(project_id) if r.get("status") in ("pending", "running")]
+        if active:
+            raise ValueError(f"projeto '{project_id}' tem {len(active)} rodada(s) em andamento -- espere terminar antes de apagar")
+        shutil.rmtree(pdir)
+
+    def recover_orphaned_running_runs(self):
+        """Called once at `run_worker.py` startup (main()), before the serial loop begins. The
+        design is a single worker, no concurrency (see spec) -- so any run that's already
+        `running` at the exact instant THIS process is coming up can only be orphaned: leftover
+        from a previous worker execution that died mid-run (e.g. `docker compose up -d worker`
+        after a redeploy, or the container going down for any other reason) without a chance to
+        finish writing `run.json`. Without this check, the run stays stuck in `running` forever --
+        the real solver isn't running anymore either (the subprocess died along with the old
+        container), and nothing ever marks a terminal status.
+
+        Marks it as `aborted` (not `failed`): there's no evidence the SOLVER failed on this
+        input, only that the infrastructure was interrupted mid-way -- the same "no reliable
+        result" semantics that already apply to a user-requested abort, including for
+        `find_run_by_model_hash`'s dedup (which already ignores `aborted`, so a recovered orphan
+        run doesn't stop the user from running that model again). Leaves a note in the run's own
+        `stdout.log` explaining what happened (different from the "aborted by user" note that
+        `run_worker.py::process_one_run` writes).
+
+        Returns the list of recovered `(project_id, run_id)` pairs, for `run_worker.py` to log."""
+        recovered = []
+        for project in self.list_projects():
+            for run in self.list_runs(project["id"]):
+                if run.get("status") != "running":
+                    continue
+                self.update_run(project["id"], run["id"], status="aborted", finished_at=_now_iso())
+                log_path = self.run_dir(project["id"], run["id"]) / "stdout.log"
+                try:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write("\n[run_worker] rodada interrompida por reinício do worker (ex.: "
+                                "redeploy) antes de terminar -- marcada como 'aborted', sem "
+                                "resultado confiável.\n")
+                except OSError:
+                    pass
+                recovered.append((project["id"], run["id"]))
+        return recovered
+
     def find_run_by_model_hash(self, project_id, model_hash):
-        """Procura, entre as rodadas de um projeto, a mais recente já TERMINADA
-        (`status in (converged, failed)`) com o mesmo `model_hash` -- usado por
-        `POST /api/projects/<id>/runs` pra evitar disparar uma rodada duplicada do mesmo
-        `input_simulation.json` sem querer (solver determinístico dado o mesmo binário: duas
-        rodadas do mesmo modelo dão o mesmo resultado). Rodadas `pending`/`running` não contam
-        (ainda não se sabe o resultado, e travar a fila serial por engano não vale o risco).
-        Retorna o `run` (dict) ou `None`. `list_runs` já devolve mais recente primeiro."""
+        """Looks, among a project's runs, for the most recent already-FINISHED one
+        (`status in (converged, failed)`) with the same `model_hash` -- used by
+        `POST /api/projects/<id>/runs` to avoid accidentally triggering a duplicate run of the
+        same `input_simulation.json` (deterministic solver given the same binary: two runs of the
+        same model give the same result). `pending`/`running` runs don't count (the result isn't
+        known yet, and blocking the serial queue by accident isn't worth the risk). Returns the
+        `run` (dict) or `None`. `list_runs` already returns most-recent-first."""
         for run in self.list_runs(project_id):
             if run.get("model_hash") == model_hash and run.get("status") in ("converged", "failed"):
                 return run
@@ -283,18 +439,18 @@ class ProjectStore:
 
     def _write_run(self, project_id, run_id, run):
         rdir = self.run_dir(project_id, run_id)
-        # Escreve em arquivo temporário + rename atômico: web e worker leem/escrevem run.json
-        # concorrentemente (mesmo volume, processos diferentes) -- isso evita que uma leitura
-        # concorrente pegue um JSON pela metade.
+        # Writes to a temp file + atomic rename: web and worker read/write run.json concurrently
+        # (same volume, different processes) -- this prevents a concurrent read from catching a
+        # half-written JSON.
         tmp = rdir / "run.json.tmp"
         tmp.write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(str(tmp), str(rdir / "run.json"))
 
     def find_oldest_pending_run(self):
-        """Usado pelo worker: acha a rodada `pending` mais antiga entre todos os projetos (fila
-        serial única, sem prioridade). Retorna `(project_id, run_id)` ou `None`. Ordena pelo
-        próprio run_id (formato `run-YYYYMMDD-HHMMSS[-N]`, que já ordena cronologicamente como
-        string) -- sem precisar de nenhum índice/banco separado."""
+        """Used by the worker: finds the oldest `pending` run across all projects (a single serial
+        queue, no priority). Returns `(project_id, run_id)` or `None`. Sorts by the run_id itself
+        (format `run-YYYYMMDD-HHMMSS[-N]`, which already sorts chronologically as a string) --
+        without needing any separate index/database."""
         candidates = []
         for project in self.list_projects():
             for run in self.list_runs(project["id"]):

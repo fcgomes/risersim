@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>riserSim 3D Three.js Web Visualizer</title>
+    <title>RiserSim 3D Three.js Web Visualizer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/h5wasm@0.4.10/dist/h5wasm.js"></script>
@@ -57,11 +57,23 @@
         .tension-val { font-weight: bold; color: #047857; }
         .status-seabed { background: #ffedd5; color: #c2410c; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
         .status-water { background: #dbeafe; color: #1e40af; padding: 2px 6px; border-radius: 4px; }
+
+        /* Static styling for markup below that has no dynamic JS-driven style toggles. */
+        #viewport-tabs { position: absolute; top: 10px; left: 10px; z-index: 25; display: flex; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px); }
+        /* Full-bleed viewport layers (the 3D canvas and the 3 chart overlays) -- app.js's
+           switchViewportView() toggles each one's `display` individually via inline style
+           (kept inline below); everything else about their sizing is static and shared here. */
+        .viewport-layer { width: 100%; height: 100%; box-sizing: border-box; }
+        .step-slider-label { font-size: 12px; }
+        .step-label-value { font-weight: bold; }
+        .table-tab-heading-controls { font-size: 11px; padding: 3px 8px; }
+        #table-view-elements-btn { margin-left: 8px; }
+        .table-step-status { font-size: 11px; opacity: 0.85; }
     </style>
 </head>
 <body class="dark-mode">
     <div id="header">
-        <h1>🌊 riserSim 3D Three.js Web Visualizer</h1>
+        <h1>🌊 RiserSim 3D Three.js Web Visualizer</h1>
         <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
     </div>
 
@@ -90,7 +102,7 @@
 
         <div id="canvas-container">
             <!-- Floating top tabs over the viewport (3D scene vs. 2D charts) -->
-            <div id="viewport-tabs" style="position: absolute; top: 10px; left: 10px; z-index: 25; display: flex; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px);">
+            <div id="viewport-tabs">
                 <button class="btn-tab active" id="vtab-3d-btn">🧊 Cena 3D WebGL</button>
                 <button class="btn-tab" id="vtab-tension-btn">📈 Tração Efetiva T_eff</button>
                 <button class="btn-tab" id="vtab-moment-btn">📐 Momento & Curvatura</button>
@@ -98,19 +110,25 @@
             </div>
 
             <!-- 1. Canvas 3D -->
-            <canvas id="three-canvas" style="width:100%; height:100%; display:block;"></canvas>
+            <!-- No width/height here: shared.css's #three-canvas rule already forces 100%/100%
+                 with !important. `display` is left as a plain attribute-less default (also
+                 `block` in shared.css) and is toggled dynamically via inline style by
+                 app.js::switchViewportView(). -->
+            <canvas id="three-canvas"></canvas>
 
             <!-- 2. High-resolution 2D charts (full viewport height) -->
-            <div id="tension-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
-            <div id="moment-curv-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
-            <div id="vonmises-chart" style="width:100%; height:100%; display:none; box-sizing:border-box;"></div>
+            <!-- `display:none` is set here as the initial state and later toggled by
+                 app.js::switchViewportView() via inline style; sizing lives in .viewport-layer. -->
+            <div id="tension-chart" class="viewport-layer" style="display:none;"></div>
+            <div id="moment-curv-chart" class="viewport-layer" style="display:none;"></div>
+            <div id="vonmises-chart" class="viewport-layer" style="display:none;"></div>
 
             <div id="zoom-rect"></div>
 
             <!-- Floating Colorbar Legend -->
             <div id="colorbar-legend">
-                <div style="font-size: 11px; font-weight: bold; color: #89b4fa; text-align: center;" id="cbar-unit-title">Tração (kN)</div>
-                <div style="display: flex; gap: 10px; align-items: stretch;">
+                <div class="colorbar-caption" id="cbar-unit-title">Tração (kN)</div>
+                <div class="colorbar-ticks-row">
                     <div id="colorbar-ticks">
                         <span id="cbar-max">10.0</span>
                         <span id="cbar-mid2">7.5</span>
@@ -143,7 +161,7 @@
 
                 <div class="control-group">
                     <div class="control-title">🎬 CONTROLES DE ANIMAÇÃO</div>
-                    <label for="step-slider" style="font-size:12px;">Passo: <span id="step-label" style="font-weight:bold;">400/400 (20.00s)</span></label>
+                    <label for="step-slider" class="step-slider-label">Passo: <span id="step-label" class="step-label-value">400/400 (20.00s)</span></label>
                     <input type="range" id="step-slider" min="0" max="400" value="400" step="1">
 
                     <div class="btn-row">
@@ -196,15 +214,15 @@
             </div>
 
             <div class="bottom-tab-panel" id="tab-table">
-                <h3 style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                <h3 class="panel-heading-row">
                     <span>
                         📊 Tabela de Resultados
-                        <button class="btn-tab active" id="table-view-elements-btn" style="font-size:11px; padding:3px 8px; margin-left:8px;">Elementos</button>
-                        <button class="btn-tab" id="table-view-nodes-btn" style="font-size:11px; padding:3px 8px;">Nós</button>
+                        <button class="btn-tab active table-tab-heading-controls" id="table-view-elements-btn">Elementos</button>
+                        <button class="btn-tab table-tab-heading-controls" id="table-view-nodes-btn">Nós</button>
                     </span>
-                    <span style="font-size: 11px; opacity: 0.85;">Passo Ativo: <span id="table-step-title">Passo 20 (100%)</span></span>
+                    <span class="table-step-status">Passo Ativo: <span id="table-step-title">Passo 20 (100%)</span></span>
                 </h3>
-                <div style="flex:1; min-height:120px; overflow:auto;">
+                <div class="scrollable-table-wrap">
                     <table class="excel-table" id="elements-table">
                         <thead>
                             <tr>

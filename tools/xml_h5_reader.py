@@ -6,26 +6,28 @@ import json
 import math
 import h5py
 
-# Versão do schema do JSON compilado (o que to_risersim_json() produz, consumido por
-# ModelBuilder::load_from_json em C++) -- bumpar à mão quando o formato mudar de um jeito que o
-# ModelBuilder precise diferenciar. Gravada no próprio JSON abaixo; risersim_projects.py lê esse
-# campo de volta do snapshot já copiado pra dentro do diretório da rodada e grava em run.json,
-# junto do model_hash e do web_version -- ver docs/roadmap.md Eixo 3b (proveniência de versões).
+# Version of the compiled JSON's schema (what to_risersim_json() produces, consumed by
+# ModelBuilder::load_from_json in C++) -- bump by hand when the format changes in a way
+# ModelBuilder needs to distinguish. Written into the JSON itself below; risersim_projects.py
+# reads this field back from the snapshot already copied into the run's directory and writes it
+# into run.json, alongside model_hash and web_version -- see docs/roadmap.md, Axis 3b (version
+# provenance).
 SCHEMA_VERSION = 1
 
 
 def extract_assembly_flag(aml_path):
-    """Lê o flag real `%ASSEMBLY.USING.TRUE`/`%ASSEMBLY.USING.FALSE` do texto `.aml`/`.pml`.
+    """Reads the real `%ASSEMBLY.USING.TRUE`/`%ASSEMBLY.USING.FALSE` flag from the `.aml`/`.pml`
+    text.
 
-    Convenção AML autodescritiva (palavra-chave já carrega o valor booleano, sem linha de valor
-    separada -- ex.: `%ASSEMBLY.USING.FALSE` sozinho numa linha), diferente do padrão
-    chave/valor em duas linhas usado por outras diretivas (`%ASSEMBLY.TOTAL_TIME`, etc.).
+    Self-describing AML convention (the keyword already carries the boolean value, no separate
+    value line -- e.g. `%ASSEMBLY.USING.FALSE` alone on a line), unlike the two-line key/value
+    pattern used by other directives (`%ASSEMBLY.TOTAL_TIME`, etc.).
 
-    Esse flag só existe no `.aml`/`.pml`, não no XML/H5 -- controla se o ANFLEX real roda uma
-    fase de "assembly" (rigidez artificial em todo passo, seguida de uma fase "static" separada)
-    antes da análise estática real, ou só uma única rampa suave (ver
-    docs/mapa_classes_anflex_estatica.md). Retorna True/False, ou None se não encontrado (JSON
-    fica sem o campo, risersim usa o próprio default seguro).
+    This flag only exists in the `.aml`/`.pml`, not in the XML/H5 -- it controls whether the real
+    ANFLEX runs an "assembly" phase (artificial stiffness at every step, followed by a separate
+    "static" phase) before the real static analysis, or just a single smooth ramp (see
+    docs/mapa_classes_anflex_estatica.md). Returns True/False, or None if not found (the JSON is
+    left without the field, risersim uses its own safe default).
     """
     if not aml_path or not os.path.isfile(aml_path):
         return None
@@ -38,19 +40,20 @@ def extract_assembly_flag(aml_path):
 
 
 def extract_static_convergence_criterium(aml_path):
-    """Lê `%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`/`%ANALYSIS_CASE.STATIC.MAX_UNBALANCED`
-    reais do texto `.aml`/`.pml` (padrão chave/valor em duas linhas, diferente da convenção
-    autodescritiva de `extract_assembly_flag`).
+    """Reads the real `%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`/
+    `%ANALYSIS_CASE.STATIC.MAX_UNBALANCED` from the `.aml`/`.pml` text (two-line key/value
+    pattern, unlike `extract_assembly_flag`'s self-describing convention).
 
-    O ANFLEX real suporta combinar o critério de razão de deslocamento (sempre ativo) com um
-    critério de força/momento desbalanceado máximo (`'DISP_AND_FORCE'`, com um teto em
-    `MAX_UNBALANCED`) -- risersim já tem essa válvula de escape implementada
+    The real ANFLEX supports combining the displacement-ratio criterion (always active) with a
+    maximum unbalanced force/moment criterion (`'DISP_AND_FORCE'`, with a cap in
+    `MAX_UNBALANCED`) -- risersim already has this escape valve implemented
     (`StaticAnalysis::enable_unbalanced_criteria`/`unbalanced_force_tol`/`unbalanced_moment_tol`,
-    ver docs/mapa_classes_anflex_estatica.md), só nunca lida do AML real antes.
+    see docs/mapa_classes_anflex_estatica.md), it just had never been read from the real AML
+    before.
 
-    Retorna `(enable_unbalanced: bool, max_unbalanced: float | None)`. `enable_unbalanced` é
-    `True` quando o critério real inclui força (contém `'FORCE'`, cobre `'DISP_AND_FORCE'` e
-    variantes), `False` caso contrário ou se não encontrado.
+    Returns `(enable_unbalanced: bool, max_unbalanced: float | None)`. `enable_unbalanced` is
+    `True` when the real criterion includes force (contains `'FORCE'`, covers
+    `'DISP_AND_FORCE'` and variants), `False` otherwise or if not found.
     """
     if not aml_path or not os.path.isfile(aml_path):
         return False, None
@@ -73,13 +76,12 @@ class ANFLEXXmlH5Reader:
         self.tree = ET.parse(xml_path)
         self.root = self.tree.getroot()
         self.h5 = h5py.File(h5_path, 'r')
-        # O nome do grupo sob <Groups> varia de caixa entre exportações do ANFLEX
-        # (ex.: Exemplo_01a usa "group1", Exemplo_02a usa "Group1") -- descoberto
-        # dinamicamente em vez de hardcoded, tanto no XML quanto no dataset HDF5
-        # correspondente (a mesma inconsistência de caixa existe nos dois arquivos).
-        # Um valor hardcoded errado falha silenciosamente (find() retorna None) e
-        # produz um modelo com 0 nós/elementos, sem nenhum erro visível até o
-        # binário C++ tentar processá-lo.
+        # The group name under <Groups> varies in case between ANFLEX exports (e.g. Exemplo_01a
+        # uses "group1", Exemplo_02a uses "Group1") -- discovered dynamically instead of
+        # hardcoded, both in the XML and in the corresponding HDF5 dataset (the same case
+        # inconsistency exists in both files). A wrong hardcoded value fails silently (find()
+        # returns None) and produces a model with 0 nodes/elements, with no visible error until
+        # the C++ binary tries to process it.
         self.group_name = self._detect_group_name()
 
     def _detect_group_name(self, default="group1"):
@@ -110,10 +112,10 @@ class ANFLEXXmlH5Reader:
             return default
 
     def get_optional_float(self, xpath):
-        """Como get_float, mas retorna None (em vez de um default) quando o XML não tem o
-        elemento -- usado para campos que só devem entrar no JSON quando realmente presentes
-        na fonte real, para não mascarar a ausência com um valor "de mentirinha" (ver uso em
-        extract_data() para o atrito axial/lateral do solo)."""
+        """Like get_float, but returns None (instead of a default) when the XML doesn't have the
+        element -- used for fields that should only enter the JSON when actually present in the
+        real source, so as not to mask their absence with a "fake" value (see usage in
+        extract_data() for the soil's axial/lateral friction)."""
         elem = self.root.find(xpath)
         if elem is None or not elem.text:
             return None
@@ -123,9 +125,9 @@ class ANFLEXXmlH5Reader:
             return None
 
     def extract_nodes(self):
-        """Lê os nós diretamente do dataset HDF5 especificado no XML."""
+        """Reads the nodes directly from the HDF5 dataset specified in the XML."""
         nodes = []
-        # Buscando o dataset de nodes da malha principal
+        # Looking up the main mesh's nodes dataset
         nodes_elem = self.root.find(f".//Groups/{self.group_name}/Nodes")
         if nodes_elem is not None:
             h5_dataset_path = f"Groups/{self.group_name}/Nodes"
@@ -134,7 +136,7 @@ class ANFLEXXmlH5Reader:
                 for idx in range(len(ds)):
                     row = ds[idx]
                     label = row[0].decode('utf-8').strip()
-                    # Salva ID do nó (1-based index) e coordenadas reais
+                    # Stores the node ID (1-based index) and its real coordinates
                     nodes.append({
                         "id": idx + 1,
                         "label": label,
@@ -143,18 +145,18 @@ class ANFLEXXmlH5Reader:
         return nodes
 
     def extract_elements(self, nodes):
-        """Lê e constrói a conectividade dos elementos baseados nos segmentos do XML."""
+        """Reads and builds element connectivity based on the XML's line segments."""
         elements = []
         label_to_id = {node["label"]: node["id"] for node in nodes}
-        
-        # Procura as estruturas de linha
+
+        # Looks for the line structures
         lines_elem = self.root.find(f".//Groups/{self.group_name}/Elements")
         if lines_elem is not None:
             elem_id_counter = 1
             for line_child in lines_elem:
                 line_name = line_child.tag
-                # Lê os nós sequencialmente para mapear conectividade
-                # No H5/XML, a lista de nós do grupo (Nodes) está na ordem exata da malha (catenária)
+                # Reads the nodes sequentially to map connectivity
+                # In the H5/XML, the group's node list (Nodes) is in the mesh's exact order (catenary)
                 for i in range(len(nodes) - 1):
                     elements.append({
                         "id": elem_id_counter,
@@ -166,18 +168,18 @@ class ANFLEXXmlH5Reader:
         return elements
 
     def extract_material_properties(self):
-        """Extrai as propriedades físicas e mecânicas da linha do XML.
+        """Extracts the line's physical and mechanical properties from the XML.
 
-        O material real fica em Groups/<nome_do_grupo>/Materials/<NomeDoSegmento>
-        (nome dinâmico por segmento, ex. "RISE_L1_seg001"), não em uma tag fixa
-        "FlexibleLine". Os campos do ANFLEX usam unidades de engenharia
-        (kN, kN/m², kN/m³), não SI puro — a conversão é feita explicitamente
-        abaixo.
+        The real material lives at Groups/<group_name>/Materials/<SegmentName>
+        (a dynamic name per segment, e.g. "RISE_L1_seg001"), not under a fixed
+        "FlexibleLine" tag. ANFLEX's fields use engineering units
+        (kN, kN/m², kN/m³), not pure SI — the conversion is done explicitly
+        below.
         """
         mat = None
         materials_group = self.root.find(f".//Groups/{self.group_name}/Materials")
         if materials_group is not None and len(materials_group) > 0:
-            mat = materials_group[0]  # Pega o primeiro material do grupo
+            mat = materials_group[0]  # Takes the group's first material
 
         material_data = {}
         if mat is not None:
@@ -194,7 +196,7 @@ class ANFLEXXmlH5Reader:
             area = mf("area", math.pi * (do**2 - di**2) / 4.0)
             hidro_area = mf("hidrostatic_area", math.pi * do**2 / 4.0)
 
-            density_kNm3 = mf("density", 37.18)                 # peso específico estrutural (kN/m3)
+            density_kNm3 = mf("density", 37.18)                 # structural specific weight (kN/m3)
             ext_fluid_kNm3 = mf("external_fluid_density", 10.055)
             int_fluid_kNm3 = mf("internal_fluid_density", ext_fluid_kNm3)
 
@@ -208,19 +210,18 @@ class ANFLEXXmlH5Reader:
             cd = mf("drag_normal_coef", 1.0)
             cd_long = mf("drag_longitudinal_coef", 0.0)
 
-            # Amortecimento de Rayleigh real, por material (mass_damping/stiffness_damping já
-            # calculados pelo ANFLEX real a partir de %MATERIAL.RAYLEIGH.PERIOD/DAMPING.FIRST/
-            # SECOND do AML -- nomes que batem com os do próprio C++ real, m_mass_damping/
-            # m_stiff_damping, ver beamSD.cpp). consider_damping="no" (visto em todos os exemplos
-            # disponíveis) significa que o elemento não aplica amortecimento nenhum, mesmo que os
-            # coeficientes não estejam zerados.
+            # Real per-material Rayleigh damping (mass_damping/stiffness_damping already computed
+            # by the real ANFLEX from %MATERIAL.RAYLEIGH.PERIOD/DAMPING.FIRST/SECOND in the AML --
+            # names that match the real C++'s own, m_mass_damping/m_stiff_damping, see beamSD.cpp).
+            # consider_damping="no" (seen in every example available) means the element applies no
+            # damping at all, even if the coefficients aren't zeroed out.
             consider_damping_el = mat.find("consider_damping")
             consider_damping = (consider_damping_el is not None and consider_damping_el.text
                                  and consider_damping_el.text.strip().lower() == "yes")
             mass_damping = mf("mass_damping", 0.0)
             stiffness_damping = mf("stiffness_damping", 0.0)
 
-            # Conversão para SI: ANFLEX usa kN / kN/m2 / kN/m3 internamente
+            # Conversion to SI: ANFLEX uses kN / kN/m2 / kN/m3 internally
             E = elasticity_kNm2 * 1000.0                # Pa
             G = E / (2.0 * (1.0 + poisson))              # Pa
             ea_N = E * area
@@ -228,7 +229,7 @@ class ANFLEXXmlH5Reader:
             gj_Nm2 = G * xi
 
             weight_dry_kNm = density_kNm3 * area
-            # Peso submerso = peso seco - empuxo (peso específico da água externa * área hidrostática)
+            # Submerged weight = dry weight - buoyancy (external water's specific weight * hydrostatic area)
             weight_wet_kNm = weight_dry_kNm - ext_fluid_kNm3 * hidro_area
 
             material_data = {
@@ -259,7 +260,7 @@ class ANFLEXXmlH5Reader:
             }
 
         if not material_data:
-            # Fallback só quando o XML não tem nenhum material (não deveria ocorrer)
+            # Fallback only for when the XML has no material at all (shouldn't happen)
             material_data = {
                 "name": "RISE",
                 "inner_diameter_m": 0.2032,
@@ -284,11 +285,10 @@ class ANFLEXXmlH5Reader:
         return material_data
 
     def _find_chosen_current(self):
-        """Localiza o elemento Currents/<Nome> associado ao primeiro caso de
-        carregamento (LoadingCases/<Caso>/current_id), com fallback pro primeiro
-        caso de corrente do XML se não achar/não houver current_id. Compartilhado
-        por extract_current_profile() e extract_current_ramp() -- mesmo caso de
-        corrente alimenta tanto o perfil quanto a curva de rampa de carga.
+        """Locates the Currents/<Name> element associated with the first loading case
+        (LoadingCases/<Case>/current_id), falling back to the XML's first current case if not
+        found/no current_id. Shared by extract_current_profile() and extract_current_ramp() --
+        the same current case feeds both the profile and the load ramp curve.
         """
         current_id = None
         loading_cases = self.root.find(".//LoadingCases")
@@ -318,11 +318,11 @@ class ANFLEXXmlH5Reader:
         return chosen
 
     def extract_current_profile(self):
-        """Lê o perfil de corrente real associado ao caso de carregamento do XML.
+        """Reads the real current profile associated with the XML's loading case.
 
-        O perfil fica em Currents/<Nome>/profile/values, como linhas
-        "profundidade|ângulo|velocidade" (profundidade medida a partir do leito
-        marinho, crescente em direção à superfície).
+        The profile lives at Currents/<Name>/profile/values, as
+        "depth|angle|velocity" lines (depth measured from the seabed,
+        increasing toward the surface).
         """
         chosen = self._find_chosen_current()
 
@@ -341,27 +341,27 @@ class ANFLEXXmlH5Reader:
                             continue
 
         if not depths:
-            # Fallback só quando o XML não tem nenhum perfil de corrente
+            # Fallback only for when the XML has no current profile at all
             return [0.0, 265.0], [90.0, 90.0], [1.02, 0.27]
 
-        # "Depth" no XML é medido a partir do leito marinho (0=fundo, crescente até a
-        # superfície) -- mas CurrentProfile::depth_below_surface_m (current_profile.hpp) espera a
-        # convenção OPOSTA: profundidade a partir da SUPERFÍCIE (0=superfície), ascendente (exigido por
-        # interp1(), que não suporta tabela descendente -- ver o bug descrito abaixo). Transforma
-        # cada ponto para essa convenção antes de guardar, em vez de só reordenar os índices como
-        # a versão anterior fazia.
+        # "Depth" in the XML is measured from the seabed (0=bottom, increasing toward the
+        # surface) -- but CurrentProfile::depth_below_surface_m (current_profile.hpp) expects the
+        # OPPOSITE convention: depth from the SURFACE (0=surface), ascending (required by
+        # interp1(), which doesn't support a descending table -- see the bug described below).
+        # Transforms each point into this convention before storing it, instead of just
+        # reordering the indices like the previous version did.
         #
-        # Bug real encontrado e corrigido (ver mapa_classes_anflex_estatica.md): a versão anterior
-        # só invertia a ORDEM dos índices (mais raso primeiro), mas mantinha os VALORES de
-        # profundidade como "altura acima do leito" (0=fundo) -- ficando descendente
-        # (ex.: [265, 225, ..., 0] em vez de ascendente. `interp1()` (current_profile.hpp) exige
-        # x_table ascendente e sua primeira checagem (`x <= x_table.front()`) vira um curto-
-        # circuito para QUALQUER profundidade de consulta quando a tabela é descendente -- sempre
-        # devolvia o ponto de superfície (a maior velocidade real do perfil), inclusive para nós
-        # encostados no leito marinho. Como a força de arrasto escala com v², isso aplicava até
-        # ~27x mais carga lateral que a real bem na zona de touchdown (Exemplo_01a: 1,78 m/s vs.
-        # 0,34 m/s reais ali) -- a mesma região onde solo+atrito já são mais delicados.
-        total_water_depth = max(depths)  # o topo do perfil tabulado corresponde à superfície
+        # Real bug found and fixed (see mapa_classes_anflex_estatica.md): the previous version
+        # only reversed the ORDER of the indices (shallowest first), but kept the depth VALUES as
+        # "height above the seabed" (0=bottom) -- ending up descending (e.g. [265, 225, ..., 0])
+        # instead of ascending. `interp1()` (current_profile.hpp) requires an ascending x_table,
+        # and its first check (`x <= x_table.front()`) turns into a short-circuit for ANY query
+        # depth when the table is descending -- it always returned the surface point (the
+        # profile's real highest velocity), including for nodes resting on the seabed. Since drag
+        # force scales with v², this applied up to ~27x more lateral load than the real value
+        # right in the touchdown zone (Exemplo_01a: 1.78 m/s vs. the real 0.34 m/s there) -- the
+        # same region where soil+friction are already the most delicate.
+        total_water_depth = max(depths)  # the tabulated profile's top corresponds to the surface
         order = sorted(range(len(depths)), key=lambda i: depths[i], reverse=True)
         depths = [total_water_depth - depths[i] for i in order]
         angles = [angles[i] for i in order]
@@ -370,22 +370,21 @@ class ANFLEXXmlH5Reader:
         return depths, angles, vels
 
     def extract_current_ramp(self):
-        """Lê a curva real de rampa de carga da corrente (Currents/<caso>/static_function_id
-        -> Functions/<Tag>/id -> Functions/<Tag>/points no HDF5).
+        """Reads the real current load ramp curve (Currents/<case>/static_function_id
+        -> Functions/<Tag>/id -> Functions/<Tag>/points in the HDF5).
 
-        No ANFLEX real, o peso próprio nunca é rampeado (m_has_gravitational_load nunca é
-        atribuído no código-fonte -- fica sempre com magnitude total), mas a corrente é
-        rampeada por uma curva própria e independente, tipicamente mantendo a corrente
-        praticamente zerada no primeiro passo de carga e só crescendo gradualmente até o
-        valor total no último passo -- ver mapa_classes_anflex_estatica.md. O eixo X é
-        normalizado pelo seu próprio máximo (domínio vira fração [0,1] do total de passos
-        daquela curva), pra poder ser reamostrado com qualquer número de passos de carga
-        configurado no risersim, sem depender do static_steps bater exatamente com o X
-        original do XML.
+        In the real ANFLEX, self-weight is never ramped (m_has_gravitational_load is never
+        assigned in the source code -- it always stays at full magnitude), but the current is
+        ramped by its own independent curve, typically keeping the current practically at zero on
+        the first load step and only growing gradually to the full value on the last step -- see
+        mapa_classes_anflex_estatica.md. The X axis is normalized by its own maximum (the domain
+        becomes a [0,1] fraction of that curve's total steps), so it can be resampled with
+        whatever number of load steps is configured in risersim, without depending on
+        static_steps matching the XML's original X exactly.
 
-        Retorna (ramp_x, ramp_y); listas vazias se o XML não tiver static_function_id ou a
-        função correspondente (fallback: risersim usa a mesma rampa do peso, comportamento
-        anterior a esta mudança).
+        Returns (ramp_x, ramp_y); empty lists if the XML has no static_function_id or the
+        corresponding function (fallback: risersim uses the same ramp as the weight, the behavior
+        before this change).
         """
         chosen = self._find_chosen_current()
         if chosen is None:
@@ -399,10 +398,11 @@ class ANFLEXXmlH5Reader:
         except ValueError:
             return [], []
 
-        # Filho direto da raiz -- só o catálogo real de funções (TempFunc/StaTfDef/DispFunc/...).
-        # ".//Functions" pegaria o primeiro na ordem do documento, que na prática é outro elemento
-        # de mesmo nome em LoadingCases/.../Loads/Functions (X/Y/Z/RX/RY/RZ, sem relação nenhuma
-        # com static_function_id de corrente) -- confirmado lendo a árvore real do Exemplo_01a.
+        # Direct child of the root -- only the real function catalog (TempFunc/StaTfDef/DispFunc/...).
+        # ".//Functions" would grab the first one in document order, which in practice is a
+        # different element with the same name under LoadingCases/.../Loads/Functions
+        # (X/Y/Z/RX/RY/RZ, with no relation at all to the current's static_function_id) --
+        # confirmed by reading Exemplo_01a's real tree.
         functions_root = self.root.find("Functions")
         if functions_root is None:
             return [], []
@@ -433,27 +433,29 @@ class ANFLEXXmlH5Reader:
         return ramp_x, ys
 
     def extract_vessel_motion_raw(self):
-        """Lê os dados reais (crus, sem nenhuma conta de física) do movimento de topo real:
-        tipo de movimento dinâmico do caso de carga, geometria RAO->nó, tabela RAO completa
-        (H5) e parâmetros JONSWAP.
+        """Reads the real (raw, no physics computed) data for the real top movement: the loading
+        case's dynamic movement type, RAO->node geometry, the full RAO table (H5), and JONSWAP
+        parameters.
 
-        Fiel ao mesmo padrão de `extract_current_profile()`: Python só extrai/reestrutura o
-        dado real, sem interpolar ou calcular nada -- quem faz a física (JONSWAP, interpolação
-        da tabela RAO, momentos espectrais, extremos de Rayleigh, transferência geométrica
-        CM->ponto) é o C++ (`VesselMotion`, `vessel_motion.hpp`/`.cpp`), no mesmo espírito de
-        `CurrentProfile::get_velocity()` interpolar o perfil de corrente já lá, não aqui.
+        Faithful to the same pattern as `extract_current_profile()`: Python only extracts/
+        restructures the real data, without interpolating or computing anything -- the one doing
+        the physics (JONSWAP, RAO table interpolation, spectral moments, Rayleigh extremes,
+        CM->point geometric transfer) is the C++ (`VesselMotion`, `vessel_motion.hpp`/`.cpp`), in
+        the same spirit as `CurrentProfile::get_velocity()` already interpolating the current
+        profile there, not here.
 
-        Só suporta `dynamic_movement_type == "equivalent_harmonic"` (o modo real usado no
-        Exemplo_01a e o único com um algoritmo replicado no risersim hoje -- síntese espectral
-        irregular completa, outro modo real do ANFLEX, fica fora de escopo; ver
-        docs/mapa_aml_exemplos_e_web_interface.md). Retorna `None` quando o XML não usa esse
-        modo, não tem a seção `Dynamic`/`Loads`, ou não tem uma tabela RAO real associada --
-        nesses casos o caller cai no fallback já existente (onda regular só em Z).
+        Only supports `dynamic_movement_type == "equivalent_harmonic"` (the real mode used in
+        Exemplo_01a and the only one with an algorithm replicated in risersim today -- full
+        irregular spectral synthesis, another real ANFLEX mode, is out of scope; see
+        docs/mapa_aml_exemplos_e_web_interface.md). Returns `None` when the XML doesn't use this
+        mode, doesn't have the `Dynamic`/`Loads` section, or doesn't have a real RAO table
+        associated with it -- in these cases the caller falls back to the existing fallback
+        (regular wave in Z only).
         """
         loading_cases = self.root.find(".//LoadingCases")
         if loading_cases is None or len(loading_cases) == 0:
             return None
-        case = loading_cases[0]  # mesmo caso único usado por _find_chosen_current()
+        case = loading_cases[0]  # the same single case used by _find_chosen_current()
 
         dyn = case.find("Dynamic")
         if dyn is None:
@@ -466,7 +468,7 @@ class ANFLEXXmlH5Reader:
         loads = dyn.find("Loads")
         if loads is None or len(loads) == 0:
             return None
-        load_node = loads[0]  # primeiro (e único, nos exemplos disponíveis) nó de carga dinâmica
+        load_node = loads[0]  # first (and only, in the available examples) dynamic load node
 
         rao_node = load_node.find("Rao")
         if rao_node is None:
@@ -495,9 +497,9 @@ class ANFLEXXmlH5Reader:
         except ValueError:
             return None
 
-        # Acha a tabela RAO real (RAOs/<Nome>) cujo <id> bate com Rao/id do nó de carga --
-        # mesmo padrão de resolução por ID já usado pra corrente (_find_chosen_current) e
-        # função de rampa (extract_current_ramp).
+        # Finds the real RAO table (RAOs/<Name>) whose <id> matches the load node's Rao/id --
+        # the same by-ID resolution pattern already used for the current (_find_chosen_current)
+        # and the ramp function (extract_current_ramp).
         raos_root = self.root.find("RAOs")
         if raos_root is None or len(raos_root) == 0:
             return None
@@ -520,8 +522,8 @@ class ANFLEXXmlH5Reader:
         amplitude = {name.lower(): [] for name in dof_names}
         phase_deg = {name.lower(): [] for name in dof_names}
 
-        # Ordena por heading numérico (o nome do filho, "Heading_015.00", já carrega o valor;
-        # a ordem de documento do XML não é garantidamente crescente).
+        # Sorts by numeric heading (the child's name, "Heading_015.00", already carries the
+        # value; the XML's document order isn't guaranteed to be increasing).
         heading_children = []
         for child in rao_group:
             if not child.tag.startswith("Heading_"):
@@ -543,19 +545,19 @@ class ANFLEXXmlH5Reader:
             headings_deg.append(heading_val)
             for name in dof_names:
                 amplitude[name.lower()].append([float(v) for v in ds[f"{name}_Amp"]])
-                # Fase real do H5 vem em GRAUS (verificado lendo o arquivo direto) -- mantida
-                # em graus aqui de propósito, mesma filosofia do achado 3
-                # (depth_below_surface_m): conversão de unidade pura fica no C++ no ponto de
-                # uso, não em Python.
+                # The H5's real phase comes in DEGREES (verified by reading the file directly) --
+                # kept in degrees here on purpose, same philosophy as finding 3
+                # (depth_below_surface_m): pure unit conversion stays in the C++ at the point of
+                # use, not in Python.
                 phase_deg[name.lower()].append([float(v) for v in ds[f"{name}_Phase"]])
 
         if not headings_deg or frequencies_rad_s is None:
             return None
 
-        # Parâmetros JONSWAP reais completos -- period/gamma também já são lidos em
-        # to_risersim_json() pro bloco "wave" (metadado), mas o VesselMotion (C++) precisa do
-        # espectro JONSWAP completo pra fazer a própria conta, então ficam duplicados aqui de
-        # propósito (mesma fonte real, dois consumidores).
+        # Full real JONSWAP parameters -- period/gamma are also already read in to_risersim_json()
+        # for the "wave" block (metadata), but VesselMotion (C++) needs the full JONSWAP spectrum
+        # to do its own computation, so they're duplicated here on purpose (same real source, two
+        # consumers).
         alpha = self.get_float(".//Waves/ON/alpha", 0.0)
         gamma = self.get_float(".//Waves/ON/gamma", 2.07)
         period_s = self.get_float(".//Waves/ON/period", 10.0)
@@ -584,42 +586,43 @@ class ANFLEXXmlH5Reader:
         }
 
     def to_risersim_json(self):
-        """Converte a modelagem XML+H5 para o novo formato JSON estruturado."""
+        """Converts the XML+H5 model into the new structured JSON format."""
         title = self.get_text("ModelName", "ANFLEX XML Simulation")
-        
-        # 1. Nós e elementos
+
+        # 1. Nodes and elements
         nodes = self.extract_nodes()
         elements = self.extract_elements(nodes)
         material = self.extract_material_properties()
-        
-        # Associa as propriedades do material aos elementos
+
+        # Associates the material properties with the elements
         weight_wet_kNm = material["weight_wet_kNm"]
         weight_dry_kNm = material["weight_dry_kNm"]
-        # rho_structural é o peso específico estrutural real (`density`, kN/m3) convertido pra
-        # kg/m3 -- conversão de unidade direta, sem passar por peso/área (que se cancelariam
-        # algebricamente de qualquer forma: density*area/area). Quando o XML não tem material
-        # (fallback sintético, sem "density_kNm3"), cai de volta no valor antigo derivado do peso.
+        # rho_structural is the real structural specific weight (`density`, kN/m3) converted to
+        # kg/m3 -- a direct unit conversion, without going through weight/area (which would cancel
+        # out algebraically anyway: density*area/area). When the XML has no material (synthetic
+        # fallback, no "density_kNm3"), falls back to the old value derived from the weight.
         if "density_kNm3" in material:
             rho_structural = material["density_kNm3"] * 1000.0 / 9.81
         else:
             rho_structural = (weight_dry_kNm * 1000.0 / 9.81) / material["A_m2"] if material["A_m2"] > 0 else 3793.35
-        # "rho" (usado pela fórmula de peso estático `w_dry = rho*A*g`) agora é a MESMA densidade
-        # real de rho_structural, não mais uma "densidade equivalente" fabricada a partir do peso
-        # já líquido de empuxo. Antes, `rho` embutia o empuxo (via weight_wet_kNm) e
-        # `environmental.water_density` era zerado no C++ (`simulation.cpp`) pra não subtrair
-        # empuxo em dobro -- bug de arquitetura corrigido nesta sessão (ver
-        # mapa_aml_exemplos_e_web_interface.md, achado 2): agora o empuxo é sempre subtraído uma
-        # única vez pela fórmula genérica já existente (`w_dry - water_density*outer_area*g`),
-        # igual ao caminho sintético, com o `water_density` real (abaixo) em vez de zerado.
+        # "rho" (used by the static weight formula `w_dry = rho*A*g`) is now the SAME real density
+        # as rho_structural, no longer an "equivalent density" fabricated from the weight already
+        # net of buoyancy. Previously, `rho` baked in buoyancy (via weight_wet_kNm) and
+        # `environmental.water_density` was zeroed out in the C++ (`simulation.cpp`) to avoid
+        # subtracting buoyancy twice -- an architecture bug fixed in this session (see
+        # mapa_aml_exemplos_e_web_interface.md, finding 2): now buoyancy is always subtracted
+        # exactly once by the already-existing generic formula
+        # (`w_dry - water_density*outer_area*g`), same as the synthetic path, with the real
+        # `water_density` (below) instead of zeroed out.
         rho_dry = rho_structural
         water_density_real = material.get("external_fluid_density_kgm3", 1025.0)
 
-        # Amortecimento de Rayleigh: usa o real do material (mass_damping/stiffness_damping,
-        # já calculados pelo ANFLEX real -- ver extract_material_properties()) quando o XML tem
-        # consider_damping="yes"; caso contrário (visto em todos os exemplos disponíveis:
-        # consider_damping="no"), o modelo real não aplica amortecimento nenhum -- zero é o valor
-        # fiel, não um fallback "de mentirinha". Sem material (fallback sintético, sem a chave
-        # "consider_damping"), mantém os valores antigos hardcoded.
+        # Rayleigh damping: uses the material's real values (mass_damping/stiffness_damping,
+        # already computed by the real ANFLEX -- see extract_material_properties()) when the XML
+        # has consider_damping="yes"; otherwise (seen in every example available:
+        # consider_damping="no"), the real model applies no damping at all -- zero is the faithful
+        # value, not a "fake" fallback. Without material (synthetic fallback, no
+        # "consider_damping" key), keeps the old hardcoded values.
         if "consider_damping" in material:
             if material["consider_damping"]:
                 alpha_rayleigh = material["mass_damping"]
@@ -649,44 +652,44 @@ class ANFLEXXmlH5Reader:
                 "Cd": material.get("Cd", 1.0),
             }
 
-        # 2. Condições de Contorno
-        # Nós de topo e fundo são identificados por restrições no XML
+        # 2. Boundary Conditions
+        # Top and bottom nodes are identified by restraints in the XML
         prescribed_nodes = []
         restrained_nodes = []
-        
-        # FPSO C1 (geralmente nó 1) tem movimentos prescritos
+
+        # The FPSO C1 (usually node 1) has prescribed movements
         prescribed_nodes.append({
             "node_id": 1,
-            "dofs": [-1, -1, -1, -1, -1, -1] # Fixos / controlados
+            "dofs": [-1, -1, -1, -1, -1, -1] # Fixed / controlled
         })
-        # Âncora de fundo (geralmente nó final)
+        # Bottom anchor (usually the last node)
         restrained_nodes.append({
             "node_id": len(nodes),
             "dofs": [-1, -1, -1, -1, -1, -1]
         })
-        
-        # 3. Solo (Soils/Solo/vertical_stiffness e lateral_friction são campos diretos,
-        # não aninhados sob "spring"/"friction" como no XPath antigo)
+
+        # 3. Soil (Soils/Solo/vertical_stiffness and lateral_friction are direct fields,
+        # not nested under "spring"/"friction" like in the old XPath)
         soil_stiff_kNm = self.get_float(".//Soils/Solo/vertical_stiffness", 800.0)
         friction_lat = self.get_float(".//Soils/Solo/lateral_friction", 0.95)
-        # Atrito axial/lateral real e limites elásticos distintos (Soils/Solo/axial_friction
-        # etc., confirmado em Exemplo_01a_A1.xml:784-800 -- axial e lateral divergem bastante
-        # entre si, ex. axial_friction=0.92/axial_elastic_deflection_limit=0.03m vs.
-        # lateral_friction=0.95/lateral_elastic_deflection_limit=0.278m). Só escritos no JSON
-        # se o XML realmente os tiver -- quando ausentes, ModelBuilder já cai de volta no
-        # friction_coeff isotrópico (sentinela -1.0 em EnvironmentalConfig, ver model.hpp),
-        # exatamente o comportamento de antes desta mudança. Ver
+        # Real axial/lateral friction and distinct elastic limits (Soils/Solo/axial_friction
+        # etc., confirmed in Exemplo_01a_A1.xml:784-800 -- axial and lateral diverge quite a bit
+        # from each other, e.g. axial_friction=0.92/axial_elastic_deflection_limit=0.03m vs.
+        # lateral_friction=0.95/lateral_elastic_deflection_limit=0.278m). Only written into the
+        # JSON if the XML actually has them -- when absent, ModelBuilder already falls back to
+        # the isotropic friction_coeff (sentinel -1.0 in EnvironmentalConfig, see model.hpp),
+        # exactly the behavior before this change. See
         # docs/mapa_classes_anflex_interface.md.
         soil_axial_friction = self.get_optional_float(".//Soils/Solo/axial_friction")
         soil_lateral_friction = self.get_optional_float(".//Soils/Solo/lateral_friction")
         soil_axial_elastic_limit = self.get_optional_float(".//Soils/Solo/axial_elastic_deflection_limit")
         soil_lateral_elastic_limit = self.get_optional_float(".//Soils/Solo/lateral_elastic_deflection_limit")
-        # <coupled>yes|no</coupled> -- tag real confirmada no XML (não "soil_model"), mapeada
-        # para os valores que ModelBuilder já espera em environmental.seabed.soil_model.
+        # <coupled>yes|no</coupled> -- the real tag confirmed in the XML (not "soil_model"),
+        # mapped to the values ModelBuilder already expects in environmental.seabed.soil_model.
         soil_coupled_text = self.get_text(".//Soils/Solo/coupled", "").strip().lower()
         soil_model = {"yes": "coupled", "no": "uncoupled"}.get(soil_coupled_text)
-        # GlobalData/seabed é um escalar de referência (não um branch com "depth");
-        # a lâmina d'água real é GlobalData/seawater_level
+        # GlobalData/seabed is a reference scalar (not a branch with "depth");
+        # the real water depth is GlobalData/seawater_level
         seabed_depth = self.get_float(".//GlobalData/seawater_level", 265.0)
 
         seabed_dict = {
@@ -705,9 +708,9 @@ class ANFLEXXmlH5Reader:
         if soil_model is not None:
             seabed_dict["soil_model"] = soil_model
 
-        # 4. Caso de Análise Estática / Dinâmica
-        # (num_max_iter, não max_num_iteration; x_tol é a tolerância relativa de
-        # deslocamento, compatível com o critério rel_R < tolerance do solver)
+        # 4. Static / Dynamic Analysis Case
+        # (num_max_iter, not max_num_iteration; x_tol is the relative displacement
+        # tolerance, compatible with the solver's rel_R < tolerance criterion)
         static_total_time = self.get_float(".//AnalysisData/Static/total_time", 11.0)
         static_time_step = self.get_float(".//AnalysisData/Static/time_step", 1.0)
         static_max_iter = self.get_int(".//AnalysisData/Static/num_max_iter", 40)
@@ -720,24 +723,24 @@ class ANFLEXXmlH5Reader:
 
         static_steps = max(1, int(static_total_time / (static_time_step if static_time_step > 0 else 1.0)))
 
-        # 5. Onda (JONSWAP)
+        # 5. Wave (JONSWAP)
         wave_height = self.get_float(".//Waves/ON/height", 6.3)
         wave_period = self.get_float(".//Waves/ON/period", 10.0)
         wave_gamma = self.get_float(".//Waves/ON/gamma", 2.07)
         wave_angle = self.get_float(".//Waves/ON/angle", 0.0)
 
-        # 6. Corrente (perfil real lido de Currents/<id>/profile, associado ao
-        # current_id do primeiro caso de carregamento)
+        # 6. Current (real profile read from Currents/<id>/profile, associated with the
+        # first loading case's current_id)
         curr_depths, curr_angles, curr_vels = self.extract_current_profile()
         curr_ramp_x, curr_ramp_y = self.extract_current_ramp()
 
-        # 7. Movimento de topo real (RAO + JONSWAP "equivalent harmonic") -- None quando o XML
-        # não usa esse modo ou não tem tabela RAO real associada; nesse caso "vessel_motion"
-        # simplesmente não entra no JSON, e o C++ cai no fallback já existente (onda regular
-        # só em Z). Ver docs/mapa_aml_exemplos_e_web_interface.md.
+        # 7. Real top movement (RAO + "equivalent harmonic" JONSWAP) -- None when the XML
+        # doesn't use this mode or doesn't have a real RAO table associated with it; in that
+        # case "vessel_motion" simply isn't included in the JSON, and the C++ falls back to the
+        # existing fallback (regular wave in Z only). See docs/mapa_aml_exemplos_e_web_interface.md.
         vessel_motion_raw = self.extract_vessel_motion_raw()
 
-        # Montagem do JSON estruturado
+        # Assembly of the structured JSON
         data = {
             "title": title,
             "schema_version": SCHEMA_VERSION,
@@ -751,11 +754,12 @@ class ANFLEXXmlH5Reader:
             },
             "environmental": {
                 "seabed": seabed_dict,
-                # Densidade real da água externa (`external_fluid_density` do material, kg/m3) --
-                # consumida por StaticAnalysis::water_density pra subtrair o empuxo uma única vez
-                # da fórmula genérica de peso (ver "rho"/"rho_structural" acima); antes esse campo
-                # nem existia no JSON, e o C++ zerava water_density pra JSON real como caso
-                # especial (achado 2 de mapa_aml_exemplos_e_web_interface.md).
+                # Real external water density (`external_fluid_density` from the material,
+                # kg/m3) -- consumed by StaticAnalysis::water_density to subtract buoyancy
+                # exactly once from the generic weight formula (see "rho"/"rho_structural"
+                # above); this field didn't even exist in the JSON before, and the C++ zeroed
+                # out water_density for real JSON as a special case (finding 2 in
+                # mapa_aml_exemplos_e_web_interface.md).
                 "water_density": water_density_real,
                 "current": {
                     "depth_below_surface_m": curr_depths,
@@ -779,7 +783,7 @@ class ANFLEXXmlH5Reader:
                     "max_iterations": static_max_iter,
                     "tolerance": static_tol,
                     "vessel_offset": {
-                        "near_m": 0.0, # Sempre nominal zero para catenária pura
+                        "near_m": 0.0, # Always nominally zero for a pure catenary
                         "far_m": 0.0
                     }
                 },
@@ -798,10 +802,10 @@ class ANFLEXXmlH5Reader:
         }
         return data
 
-# Para rodar direto do terminal e exportar o JSON estruturado
+# To run directly from the terminal and export the structured JSON
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        # Defaults para teste
+        # Defaults for testing
         xml_in = r"exemplos/Curso/Exemplo_01/Exemplo_01a/Exemplo_01a_analysis/Exemplo_01a_A1.xml"
         h5_in = r"exemplos/Curso/Exemplo_01/Exemplo_01a/Exemplo_01a_analysis/Exemplo_01a_A1.h5"
         json_out = r"risersim_results/input_simulation_structured.json"

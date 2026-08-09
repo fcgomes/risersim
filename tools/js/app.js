@@ -33,6 +33,18 @@ class RiserSimApp {
         this.zoomWindow = new ZoomWindowController(this.cameraController, this.renderer3D);
         this.chartsController = new ProfileChartsController();
 
+        // `?theme=light|dark` -- read by the parent page (project.js::switchView) when this page
+        // opens inside an <iframe> on the "Post-processing" tab, so it at least starts in the
+        // same theme (it doesn't stay live-synced afterwards -- separate documents). The same
+        // class/text/background swap that ThemeToggle.js already does on click, just applied
+        // once here before the first render.
+        if (new URLSearchParams(window.location.search).get('theme') === 'light') {
+            this.currentTheme = 'light';
+            document.body.className = 'light-mode';
+            document.getElementById('theme-toggle-btn').innerText = '🌙 Modo Escuro';
+            this.renderer3D.scene.background.setHex(0xf7f6fb);
+        }
+
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
@@ -439,7 +451,7 @@ class RiserSimApp {
                     <td>${momentStr}</td>
                     <td style="font-family:monospace;">${curvStr}</td>
                     <td style="font-weight:bold; color:#e11d48;">${vmStr}</td>
-                    <td style="font-weight:bold; color:#2563eb;">${mbrStr}</td>
+                    <td style="font-weight:bold; color:#7c6ce0;">${mbrStr}</td>
                 `;
                 elTbody.appendChild(tr);
             });

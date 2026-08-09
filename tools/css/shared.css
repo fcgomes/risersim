@@ -5,60 +5,119 @@
  * (control-group/stat-card/buttons/tabs), the camera/zoom icon toolbar, the custom tooltip, and
  * the common part of the spreadsheet-style table.
  *
+ * Theme colors are CSS custom properties (`--bg`/`--surface`/`--accent`/etc.), defined once per
+ * `body.dark-mode`/`body.light-mode` block below and referenced everywhere else via `var()` --
+ * swapping the whole app's palette (as happened once already, from a blue/Catppuccin-ish theme to
+ * the current violet one) means editing the two token blocks, not hunting hex codes across every
+ * selector. The light/dark TOGGLE mechanism itself is unchanged (still `body.dark-mode`/
+ * `body.light-mode`, flipped by ThemeToggle.js via `document.body.className`) -- only how colors
+ * are sourced changed.
+ *
  * What's deliberately NOT here, because it's content specific to each page (not accidental
  * duplication): sizing of #colorbar-legend/#colorbar-ticks/#colorbar-bar (the preprocessor uses a
  * simple 140px diameter legend; the postprocessor uses a 180px version with fine tick offsets for
  * real results), table.kv-table (preprocessor.html only), .warning-item/.tension-val/
  * .status-seabed/.status-water, #model-status, #current-chart, and table.excel-table's text
- * alignment (left in the preprocessor, center in the postprocessor).
+ * alignment (left in the preprocessor, center in the postprocessor). Also NOT tokenized: the
+ * results colorbar's gradient (`posprocessor.html`, blue-to-red) -- that's the physics tension
+ * scale, not a UI theme color, and must stay fixed regardless of light/dark/accent choice.
  */
 
-body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #1e1e2e; color: #cdd6f4; overflow: hidden; transition: background-color 0.3s; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; background-color: #0a0a10; color: #f1f0f6; overflow: hidden; transition: background-color 0.3s; }
 
-/* Dark Theme Styles (Default) */
-body.dark-mode { background-color: #1e1e2e; color: #cdd6f4; }
-body.dark-mode #header { background: #11111b; border-bottom-color: #313244; }
-body.dark-mode #sidebar { background: #181825; border-right-color: #313244; color: #cdd6f4; }
-body.dark-mode #data-panel { background: #181825; border-left-color: #313244; color: #cdd6f4; }
-body.dark-mode .control-group { background: #313244; }
-body.dark-mode .control-title { color: #89b4fa; }
-body.dark-mode .stat-card { background: #11111b; border-color: #313244; }
-body.dark-mode .stat-title { color: #a6adc8; }
-body.dark-mode .stat-value { color: #a6e3a1; }
-body.dark-mode select, body.dark-mode input[type="range"], body.dark-mode input[type="file"], body.dark-mode input[type="text"] { background: #181825; border-color: #45475a; color: #cdd6f4; }
-body.dark-mode #colorbar-legend { background: rgba(17, 17, 27, 0.88); border-color: #313244; color: #cdd6f4; }
-body.dark-mode #data-panel h3 { color: #89b4fa; }
-body.dark-mode table.excel-table { color: #cdd6f4; }
-body.dark-mode table.excel-table th { background: #181825; color: #89b4fa; border-color: #313244; }
-body.dark-mode table.excel-table td { border-color: #313244; }
-body.dark-mode table.excel-table tr:nth-child(even) { background: #1e1e2e; }
-body.dark-mode table.excel-table tr:hover { background: #45475a; color: #a6e3a1; }
-body.dark-mode #resizer-h { background: #313244; border-color: #45475a; }
-body.dark-mode #resizer-h:hover, body.dark-mode #resizer-h.dragging { background: #2563eb; }
+/* Monospace/tabular-nums treatment for numbers, dates, IDs -- matches the tested palette mockup
+   (riserSim-palette-test.html), which uses this on stat values, run IDs, and date columns so
+   figures line up and read as data rather than prose. */
+.mono { font-family: ui-monospace, 'Cascadia Code', 'SF Mono', 'JetBrains Mono', Consolas, monospace; font-variant-numeric: tabular-nums; }
 
-/* Light Theme Styles */
-body.light-mode { background-color: #ffffff; color: #0f172a; }
-body.light-mode #header { background: #1e293b; border-bottom-color: #cbd5e1; }
-body.light-mode #sidebar { background: #f8fafc; border-right-color: #e2e8f0; color: #0f172a; }
-body.light-mode #data-panel { background: #f8fafc; border-left-color: #e2e8f0; color: #0f172a; }
-body.light-mode .control-group { background: #e2e8f0; }
-body.light-mode .control-title { color: #1e3a8a; }
-body.light-mode .stat-card { background: #ffffff; border-color: #cbd5e1; }
-body.light-mode .stat-title { color: #64748b; }
-body.light-mode .stat-value { color: #047857; }
-body.light-mode select, body.light-mode input[type="range"], body.light-mode input[type="file"], body.light-mode input[type="text"] { background: #ffffff; border-color: #94a3b8; color: #0f172a; }
-body.light-mode #colorbar-legend { background: rgba(255, 255, 255, 0.95); border-color: #cbd5e1; color: #0f172a; }
-body.light-mode #data-panel h3 { color: #1e3a8a; }
-body.light-mode table.excel-table { color: #0f172a; }
-body.light-mode table.excel-table th { background: #f1f5f9; color: #1e3a8a; border-color: #cbd5e1; }
-body.light-mode table.excel-table td { border-color: #cbd5e1; }
-body.light-mode table.excel-table tr:nth-child(even) { background: #f8fafc; }
-body.light-mode table.excel-table tr:hover { background: #e2e8f0; color: #047857; }
-body.light-mode #resizer-h { background: #e2e8f0; border-color: #cbd5e1; }
-body.light-mode #resizer-h:hover, body.light-mode #resizer-h.dragging { background: #2563eb; }
+/* Dark theme tokens (default) */
+body.dark-mode {
+    --bg: #0a0a10;
+    --bg-recessed: #100f18;
+    --surface: #15151f;
+    --surface-2: #1b1b27;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: #3a3a4a;
+    --text: #f1f0f6;
+    --text-muted: #9a98ae;
+    --text-faint: #5d5b72;
+    --accent: #8a7cf2;
+    --accent-strong: #a79af7;
+    --accent-soft: rgba(138, 124, 242, 0.16);
+    --accent-soft-2: rgba(138, 124, 242, 0.28);
+    --status-pending: #9a98ae;
+    --status-running: #35d3ee;
+    --status-converged: #3fd8a1;
+    --status-failed: #fb7373;
+    --status-aborted: #f5a94e;
+    --status-pending-soft: rgba(154, 152, 174, 0.16);
+    --status-running-soft: rgba(53, 211, 238, 0.14);
+    --status-converged-soft: rgba(63, 216, 161, 0.14);
+    --status-failed-soft: rgba(251, 115, 115, 0.16);
+    --status-aborted-soft: rgba(245, 169, 78, 0.16);
+    --info: #38bdf8;
+    --info-soft: rgba(56, 189, 248, 0.16);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 24px 48px -24px rgba(0, 0, 0, 0.65);
+}
+
+/* Light theme tokens */
+body.light-mode {
+    --bg: #f7f6fb;
+    --bg-recessed: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f0eef9;
+    --border: #e4e1f1;
+    --border-strong: #c9c5de;
+    --text: #17151f;
+    --text-muted: #5b5870;
+    --text-faint: #8c899e;
+    --accent: #6d5ae0;
+    --accent-strong: #5a47c7;
+    --accent-soft: rgba(109, 90, 224, 0.10);
+    --accent-soft-2: rgba(109, 90, 224, 0.18);
+    --status-pending: #767489;
+    --status-running: #0891b2;
+    --status-converged: #15803d;
+    --status-failed: #dc2626;
+    --status-aborted: #b45a09;
+    --status-pending-soft: rgba(118, 116, 137, 0.12);
+    --status-running-soft: rgba(8, 145, 178, 0.12);
+    --status-converged-soft: rgba(21, 128, 61, 0.12);
+    --status-failed-soft: rgba(220, 38, 38, 0.12);
+    --status-aborted-soft: rgba(180, 90, 9, 0.12);
+    --info: #0284c7;
+    --info-soft: rgba(2, 132, 199, 0.10);
+    --shadow-1: 0 1px 2px rgba(23, 21, 31, 0.05);
+    --shadow-2: 0 16px 32px -18px rgba(23, 21, 31, 0.22);
+}
+
+body.dark-mode, body.light-mode { background-color: var(--bg); color: var(--text); }
+body.dark-mode #header, body.light-mode #header { background: var(--bg-recessed); border-bottom-color: var(--border); }
+body.dark-mode #sidebar, body.light-mode #sidebar { background: var(--surface); border-right-color: var(--border); color: var(--text); }
+body.dark-mode #data-panel, body.light-mode #data-panel { background: var(--surface); border-left-color: var(--border); color: var(--text); }
+body.dark-mode .control-group, body.light-mode .control-group { background: var(--surface-2); }
+body.dark-mode .control-title, body.light-mode .control-title { color: var(--accent); }
+body.dark-mode .stat-card, body.light-mode .stat-card { background: var(--bg-recessed); border-color: var(--border); }
+body.dark-mode .stat-title, body.light-mode .stat-title { color: var(--text-muted); }
+body.dark-mode .stat-value, body.light-mode .stat-value { color: var(--accent-strong); }
+body.dark-mode select, body.dark-mode input[type="range"], body.dark-mode input[type="file"], body.dark-mode input[type="text"],
+body.light-mode select, body.light-mode input[type="range"], body.light-mode input[type="file"], body.light-mode input[type="text"] {
+    background: var(--surface); border-color: var(--border-strong); color: var(--text);
+}
+body.dark-mode #colorbar-legend, body.light-mode #colorbar-legend { background: color-mix(in srgb, var(--bg-recessed) 90%, transparent); border-color: var(--border); color: var(--text); }
+body.dark-mode #data-panel h3, body.light-mode #data-panel h3 { color: var(--accent); }
+body.dark-mode table.excel-table, body.light-mode table.excel-table { color: var(--text); }
+body.dark-mode table.excel-table th, body.light-mode table.excel-table th { background: var(--surface); color: var(--accent); border-color: var(--border); }
+body.dark-mode table.excel-table td, body.light-mode table.excel-table td { border-color: var(--border); }
+body.dark-mode table.excel-table tr:nth-child(even), body.light-mode table.excel-table tr:nth-child(even) { background: var(--bg); }
+body.dark-mode table.excel-table tr:hover, body.light-mode table.excel-table tr:hover { background: var(--surface-2); color: var(--accent-strong); }
+body.dark-mode #resizer-h, body.light-mode #resizer-h { background: var(--surface-2); border-color: var(--border-strong); }
+body.dark-mode #resizer-h:hover, body.dark-mode #resizer-h.dragging,
+body.light-mode #resizer-h:hover, body.light-mode #resizer-h.dragging { background: var(--accent); }
 
 #header { padding: 12px 25px; border-bottom: 2px solid; display: flex; justify-content: space-between; align-items: center; height: 50px; box-sizing: border-box; }
-h1 { margin: 0; font-size: 20px; color: #89b4fa; }
+h1 { margin: 0; font-size: 20px; color: var(--accent); }
 
 /* Main layout: camera/zoom sidebar | 3D canvas | drag handle | tabbed data panel */
 #main-layout { display: flex; height: calc(100vh - 50px); min-height: 0; }
@@ -95,7 +154,7 @@ select, input[type="range"], input[type="file"], input[type="text"] { width: 100
 .btn-row { display: flex; gap: 5px; margin-top: 6px; }
 .btn-icon { flex: 1; background: #94a3b8; color: #ffffff; border: none; padding: 7px 4px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 12px; text-align: center; }
 .btn-icon:hover { opacity: 0.85; }
-.btn-primary { background: #2563eb; color: #ffffff; }
+.btn-primary { background: var(--accent); color: #ffffff; }
 .btn-theme { background: #f59e0b; color: #11111b; font-weight: bold; border-radius: 6px; padding: 6px 14px; border: none; cursor: pointer; }
 
 /* Thin column icon bar (views/zoom) -- small square buttons, no long text label, with a custom
@@ -105,11 +164,10 @@ select, input[type="range"], input[type="file"], input[type="text"] { width: 100
     width: 28px; height: 28px; padding: 0; box-sizing: border-box;
     display: flex; align-items: center; justify-content: center;
     border-radius: 6px; border: 1px solid; font-size: 11px; font-weight: bold;
-    cursor: pointer; background: #313244; color: #cdd6f4; border-color: #45475a;
+    cursor: pointer; background: var(--surface-2); color: var(--text); border-color: var(--border-strong);
 }
 .btn-icon-sm:hover { opacity: 0.85; }
-.btn-icon-sm.btn-primary, .btn-icon-sm.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
-body.light-mode .btn-icon-sm { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
+.btn-icon-sm.btn-primary, .btn-icon-sm.active { background: var(--accent); color: #ffffff; border-color: var(--accent); }
 
 /* Custom tooltip -- the browser's native title has inconsistent delay/styling across browsers;
    this one appears quickly and matches the page's light/dark theme. */
@@ -117,17 +175,35 @@ body.light-mode .btn-icon-sm { background: #e2e8f0; color: #0f172a; border-color
 [data-tip]::after {
     content: attr(data-tip);
     position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
-    background: #11111b; color: #cdd6f4; padding: 5px 9px; border-radius: 5px;
+    background: var(--bg-recessed); color: var(--text); padding: 5px 9px; border-radius: 5px;
     font-size: 11px; font-weight: normal; text-align: left; line-height: 1.35;
     width: max-content; max-width: 190px;
     opacity: 0; pointer-events: none; transition: opacity 0.12s ease 0.2s;
-    z-index: 60; border: 1px solid #313244; box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    z-index: 60; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0,0,0,0.35);
 }
 [data-tip]:hover::after { opacity: 1; }
-body.light-mode [data-tip]::after { background: #1e293b; color: #f8fafc; border-color: #334155; }
 
 /* Drag rectangle for "zoom by window", drawn over the 3D canvas. */
-#zoom-rect { position: absolute; display: none; border: 1px dashed #2563eb; background: rgba(37, 99, 235, 0.15); pointer-events: none; z-index: 25; }
+#zoom-rect { position: absolute; display: none; border: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); pointer-events: none; z-index: 25; }
+
+/* Colorbar legend caption + tick row -- byte-identical between preprocessor.html (diameter
+   legend) and posprocessor.html (results legend), only the number/title text differs at runtime. */
+.colorbar-caption { font-size: 11px; font-weight: bold; color: var(--accent); text-align: center; }
+.colorbar-ticks-row { display: flex; gap: 10px; align-items: stretch; }
+
+/* Scrollable wrapper around the element/node data tables -- identical in preprocessor.html
+   (Geometry tab) and posprocessor.html (Table tab). */
+.scrollable-table-wrap { flex: 1; min-height: 120px; overflow: auto; }
+
+/* Data-panel section heading with a title on the left and controls (view-mode buttons, step
+   counter) on the right -- same layout in preprocessor.html's "Elementos e Nós" heading and
+   posprocessor.html's "Tabela de Resultados" heading. */
+.panel-heading-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
+.panel-heading-row--shrink0 { flex-shrink: 0; }
+
+/* Small reusable spacing utility -- for the handful of static elements whose only bespoke style
+   was a top margin. */
+.mt-8 { margin-top: 8px; }
 
 /* Common part of the spreadsheet-style table -- text alignment is deliberately left out (each
    page declares its own: left in the preprocessor -- technical listings --, center in the
@@ -136,7 +212,5 @@ table.excel-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.excel-table th, table.excel-table td { padding: 5px 10px; white-space: nowrap; }
 table.excel-table th { font-weight: bold; position: sticky; top: 0; }
 
-.btn-tab { background: #313244; color: #cdd6f4; border: 1px solid #45475a; padding: 4px 10px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 11px; }
-.btn-tab.active { background: #2563eb; color: #ffffff; border-color: #2563eb; }
-body.light-mode .btn-tab { background: #e2e8f0; color: #0f172a; border-color: #cbd5e1; }
-body.light-mode .btn-tab.active { background: #2563eb; color: #ffffff; }
+.btn-tab { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong); padding: 4px 10px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 11px; }
+.btn-tab.active { background: var(--accent); color: #ffffff; border-color: var(--accent); }

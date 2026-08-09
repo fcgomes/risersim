@@ -14,7 +14,7 @@ export function initThemeToggle(app) {
         app.currentTheme = app.currentTheme === 'dark' ? 'light' : 'dark';
         document.body.className = app.currentTheme === 'dark' ? 'dark-mode' : 'light-mode';
         document.getElementById('theme-toggle-btn').innerText = app.currentTheme === 'dark' ? '☀️ Modo Claro' : '🌙 Modo Escuro';
-        app.renderer3D.scene.background.setHex(app.currentTheme === 'dark' ? 0x1e1e2e : 0xffffff);
+        app.renderer3D.scene.background.setHex(app.currentTheme === 'dark' ? 0x0a0a10 : 0xf7f6fb);
         app.render();
     });
 }

@@ -27,7 +27,7 @@ export class Riser3DRenderer {
         this.renderer.setSize(width, height);
         this.renderer.setPixelRatio(window.devicePixelRatio);
 
-        this.scene.background = new THREE.Color(0x1e1e2e);
+        this.scene.background = new THREE.Color(0x0a0a10);
 
         // far=2000/initial position are just a reasonable guess for Exemplo_01a's typical scale
         // -- CameraViewController.setView() reframes and adjusts the far plane to the model's

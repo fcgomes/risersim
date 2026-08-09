@@ -1,20 +1,20 @@
 """
 risersim_runner.py
 ===================
-Lógica compartilhada de orquestração do pipeline riserSim, extraída de `run_from_aml.py` (o
-workflow manual original, CLI-only) para que o novo "gerenciador de rodadas" (`run_server.py` /
-`run_worker.py`, ver docs/roadmap.md Eixo 3b) possa reaproveitá-la em vez de duplicá-la.
+Shared riserSim pipeline orchestration logic, extracted from `run_from_aml.py` (the original
+manual, CLI-only workflow) so the new "run manager" (`run_server.py` / `run_worker.py`, see
+docs/roadmap.md, Axis 3b) can reuse it instead of duplicating it.
 
-Funções aqui:
-- `find_executable()`: localiza o binário compilado `risersim_test_main`.
-- `discover_xml_h5_examples()`: varre `trunk/exemplos/` procurando pastas `<nome>_analysis/` com
-  um par XML+H5 real exportado pelo ANFLEX (o requisito de `xml_h5_reader.py`) -- hoje só 7 dos
-  ~30 exemplos têm essa pasta (ver docs/mapa_aml_exemplos_e_web_interface.md).
-- `build_config_from_xml_h5()`: compila o JSON de simulação (schema que `ModelBuilder` consome) a
-  partir de um par XML+H5, reaproveitando `xml_h5_reader.py` tal e qual.
-- `run_simulation_subprocess()`: invoca o binário C++ com o mesmo padrão de `subprocess` que
-  `run_from_aml.py` já usava (stdout/stderr redirecionáveis para um arquivo de log, cwd no
-  diretório de saída).
+Functions here:
+- `find_executable()`: locates the compiled `risersim_test_main` binary.
+- `discover_xml_h5_examples()`: scans `trunk/exemplos/` looking for `<name>_analysis/` folders
+  with a real XML+H5 pair exported by ANFLEX (the requirement of `xml_h5_reader.py`) -- today only
+  7 of the ~30 examples have this folder (see docs/mapa_aml_exemplos_e_web_interface.md).
+- `build_config_from_xml_h5()`: compiles the simulation JSON (the schema `ModelBuilder` consumes)
+  from an XML+H5 pair, reusing `xml_h5_reader.py` as-is.
+- `run_simulation_subprocess()`: invokes the C++ binary with the same `subprocess` pattern
+  `run_from_aml.py` already used (stdout/stderr redirectable to a log file, cwd in the output
+  directory).
 """
 
 import shutil
@@ -29,8 +29,8 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 
 def find_executable(custom_path: str = None) -> Path:
-    """Localiza o executável risersim_test_main. Mesma lógica de sempre (ver run_from_aml.py
-    histórico): caminho customizado > locais típicos de build CMake > PATH do sistema."""
+    """Locates the risersim_test_main executable. Same logic as always (see run_from_aml.py's
+    history): custom path > typical CMake build locations > system PATH."""
     exe_name = 'risersim_test_main.exe' if platform.system() == 'Windows' else 'risersim_test_main'
 
     if custom_path:
@@ -38,7 +38,7 @@ def find_executable(custom_path: str = None) -> Path:
         if p.is_file():
             return p
 
-    # Locais típicos de compilação CMake
+    # Typical CMake build locations
     root = _SCRIPT_DIR.parent
     candidates = [
         root / 'build' / 'bin' / exe_name,
@@ -62,24 +62,24 @@ def find_executable(custom_path: str = None) -> Path:
 
 
 def discover_xml_h5_examples(exemplos_root):
-    """Varre `exemplos_root` procurando pastas `<nome>_analysis/` com um par XML+H5 real
-    exportado (o único formato de entrada suportado no Phase 1 do gerenciador de rodadas -- ver
-    docs/roadmap.md Eixo 3b e docs/mapa_aml_exemplos_e_web_interface.md).
+    """Scans `exemplos_root` looking for `<name>_analysis/` folders with a real exported XML+H5
+    pair (the only input format supported in Phase 1 of the run manager -- see docs/roadmap.md,
+    Axis 3b, and docs/mapa_aml_exemplos_e_web_interface.md).
 
-    Descoberta por conteúdo, não por convenção de nome fixa: a maioria dos exemplos usa
-    `<nome>_A1.xml`/`.h5`, mas pelo menos um (`Manifold`) usa `<nome>_An1.xml`/`.h5` -- em vez de
-    assumir o sufixo "_A1" (como `run_from_aml.py` faz para o caso de uso CLI single-file), aqui
-    procuramos o único XML "principal" da pasta (excluindo os `..._results_static/dynamic.xml`
-    secundários, que são saídas de pós-processamento do ANFLEX, não entradas de modelo) e
-    pareamos com o H5 de mesmo nome-base.
+    Content-based discovery, not a fixed naming convention: most examples use
+    `<name>_A1.xml`/`.h5`, but at least one (`Manifold`) uses `<name>_An1.xml`/`.h5` -- instead of
+    assuming the "_A1" suffix (like `run_from_aml.py` does for the single-file CLI use case), here
+    we look for the folder's single "main" XML (excluding the secondary
+    `..._results_static/dynamic.xml` files, which are ANFLEX post-processing outputs, not model
+    inputs) and pair it with the H5 of the same base name.
 
-    Retorna uma lista de dicts `{id, name, xml_path, h5_path, aml_path, source_dir}`, ordenada
-    por id. `id` é o caminho relativo (com "/" mesmo no Windows) da pasta do exemplo em relação a
-    `exemplos_root` -- único mesmo quando o nome-base colide entre exemplos diferentes (ex.:
-    "Sombra/EfeitoSombra" vs. "SemSombra/EfeitoSombra"). `aml_path` é `None` quando o `.aml`
-    correspondente não está ao lado da pasta `_analysis/` (não deveria ocorrer nos exemplos reais,
-    mas o `.aml` é só usado para dois metadados opcionais -- ver `build_config_from_xml_h5` --,
-    não é estritamente necessário).
+    Returns a list of dicts `{id, name, xml_path, h5_path, aml_path, source_dir}`, sorted by id.
+    `id` is the example folder's path relative to `exemplos_root` (with "/" even on Windows) --
+    unique even when the base name collides between different examples (e.g.
+    "Sombra/EfeitoSombra" vs. "SemSombra/EfeitoSombra"). `aml_path` is `None` when the
+    corresponding `.aml` isn't next to the `_analysis/` folder (shouldn't happen in the real
+    examples, but the `.aml` is only used for two optional metadata fields -- see
+    `build_config_from_xml_h5` -- it's not strictly required).
     """
     exemplos_root = Path(exemplos_root)
     results = []
@@ -118,24 +118,23 @@ def discover_xml_h5_examples(exemplos_root):
 
 
 def build_config_from_xml_h5(xml_path, h5_path, aml_path=None, duration=None, dt=None, static_only=False):
-    """Compila o JSON de simulação (schema que `ModelBuilder::load_from_json` consome) a partir
-    de um par XML+H5 real, usando `xml_h5_reader.py` tal e qual (não reimplementado aqui).
+    """Compiles the simulation JSON (the schema `ModelBuilder::load_from_json` consumes) from a
+    real XML+H5 pair, using `xml_h5_reader.py` as-is (not reimplemented here).
 
-    Extraído do branch `use_xml_h5` de `run_from_aml.py` (o pipeline CLI original) para que tanto
-    o CLI quanto o novo gerenciador de rodadas (`run_server.py`) montem o config exatamente do
-    mesmo jeito.
+    Extracted from `run_from_aml.py`'s `use_xml_h5` branch (the original CLI pipeline) so both
+    the CLI and the new run manager (`run_server.py`) build the config in exactly the same way.
 
-    `aml_path`, se informado, alimenta dois metadados que só existem no texto `.aml`/`.pml`, não
-    no XML/H5 (ver `xml_h5_reader.extract_assembly_flag`/`extract_static_convergence_criterium`):
-    o flag real `%ASSEMBLY.USING` e o critério de convergência estática real
-    (`%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`/`MAX_UNBALANCED`). Sem `aml_path`, o config
-    fica sem esses campos e o risersim usa os próprios defaults seguros (comportamento idêntico a
-    antes desta extração).
+    `aml_path`, if given, feeds two metadata fields that only exist in the `.aml`/`.pml` text, not
+    in the XML/H5 (see `xml_h5_reader.extract_assembly_flag`/`extract_static_convergence_criterium`):
+    the real `%ASSEMBLY.USING` flag and the real static convergence criterion
+    (`%ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM`/`MAX_UNBALANCED`). Without `aml_path`, the
+    config is left without these fields and risersim uses its own safe defaults (identical
+    behavior to before this extraction).
 
-    `duration`/`dt`, se informados (não `None`), sobrescrevem a duração/passo de tempo dinâmicos
-    lidos do XML -- mesma semântica de `--duration`/`--dt` no CLI original (só sobrescreve quando
-    o usuário realmente pediu, para não mascarar os valores reais do XML com um default fixo).
-    `static_only=True` desliga a análise dinâmica inteira (mesma semântica de `--static-only`).
+    `duration`/`dt`, if given (not `None`), override the dynamic duration/timestep read from the
+    XML -- the same semantics as `--duration`/`--dt` in the original CLI (only overrides when the
+    user actually asked for it, so as not to mask the XML's real values with a fixed default).
+    `static_only=True` turns off the entire dynamic analysis (same semantics as `--static-only`).
     """
     from xml_h5_reader import ANFLEXXmlH5Reader, extract_assembly_flag, extract_static_convergence_criterium
 
@@ -168,16 +167,16 @@ def build_config_from_xml_h5(xml_path, h5_path, aml_path=None, duration=None, dt
 
 
 def run_simulation_subprocess(exe_path, input_json_path, out_dir, stdout_file=None):
-    """Invoca o binário `risersim_test_main` -- mesmo padrão de `subprocess` que `run_from_aml.py`
-    já usava (`[exe, input_json, out_dir]`, cwd=out_dir), com o adicional opcional de redirecionar
-    stdout/stderr para um arquivo (usado pelo `run_worker.py`: `stdout.log` é a fonte de verdade de
-    progresso ao vivo de uma rodada, já que o binário C++ imprime por iteração via
-    `std::cout`/`std::endl`, sem precisar de nenhuma mudança no C++).
+    """Invokes the `risersim_test_main` binary -- the same `subprocess` pattern `run_from_aml.py`
+    already used (`[exe, input_json, out_dir]`, cwd=out_dir), with the optional addition of
+    redirecting stdout/stderr to a file (used by `run_worker.py`: `stdout.log` is the source of
+    truth for a run's live progress, since the C++ binary already prints per iteration via
+    `std::cout`/`std::endl`, with no change needed in the C++).
 
-    `stdout_file`: caminho (str/Path) para onde redirecionar stdout+stderr combinados, ou `None`
-    para herdar o stdout/stderr do processo Python chamador (comportamento do CLI original).
+    `stdout_file`: path (str/Path) to redirect combined stdout+stderr to, or `None` to inherit
+    the calling Python process's stdout/stderr (the original CLI's behavior).
 
-    Retorna o código de saída do processo.
+    Returns the process's exit code.
     """
     cmd = [str(exe_path), str(input_json_path), str(out_dir)]
     if stdout_file is not None:

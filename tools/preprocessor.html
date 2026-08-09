@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>riserSim Pré-processador (Dados de Entrada)</title>
+    <title>RiserSim Pré-processador (Dados de Entrada)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -12,18 +12,14 @@
            control-group/stat-card, buttons, icon-toolbar/tooltip/zoom-rect, btn-tab, spreadsheet-
            style table) is in css/shared.css, shared with posprocessor.html. */
 
-        body.dark-mode table.kv-table { color: #cdd6f4; }
-        body.dark-mode table.kv-table th { background: #181825; color: #89b4fa; border-color: #313244; }
-        body.dark-mode table.kv-table td { border-color: #313244; }
-        body.dark-mode table.kv-table tr:nth-child(even) { background: #1e1e2e; }
+        table.kv-table { color: var(--text); }
+        table.kv-table th { background: var(--surface); color: var(--accent); border-color: var(--border); }
+        table.kv-table td { border-color: var(--border); }
+        table.kv-table tr:nth-child(even) { background: var(--bg); }
         body.dark-mode .warning-error { background: #451a1a; color: #f87171; border-color: #7f1d1d; }
         body.dark-mode .warning-warning { background: #452e0e; color: #fbbf24; border-color: #78350f; }
         body.dark-mode .warning-info { background: #0f2942; color: #7dd3fc; border-color: #0c4a6e; }
 
-        body.light-mode table.kv-table { color: #0f172a; }
-        body.light-mode table.kv-table th { background: #f1f5f9; color: #1e3a8a; border-color: #cbd5e1; }
-        body.light-mode table.kv-table td { border-color: #cbd5e1; }
-        body.light-mode table.kv-table tr:nth-child(even) { background: #f8fafc; }
         body.light-mode .warning-error { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
         body.light-mode .warning-warning { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
         body.light-mode .warning-info { background: #e0f2fe; color: #0369a1; border-color: #7dd3fc; }
@@ -34,6 +30,7 @@
         #colorbar-ticks { display: flex; flex-direction: column; justify-content: space-between; height: 140px; font-size: 11px; font-weight: bold; text-align: right; line-height: 1; }
         #colorbar-bar { width: 20px; height: 140px; border-radius: 4px; border: 1px solid #94a3b8; box-sizing: border-box; }
 
+        #model-status { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; margin-bottom: 10px; }
         #model-status .stat-card { flex: 1 1 120px; min-width: 110px; margin-bottom: 0; }
 
         table.excel-table th, table.excel-table td, table.kv-table th, table.kv-table td { text-align: left; }
@@ -45,11 +42,18 @@
         .warning-item { padding: 8px 10px; border-radius: 6px; border: 1px solid; margin-bottom: 6px; font-size: 12px; line-height: 1.4; }
 
         #current-chart { width: 100%; height: 220px; flex-shrink: 0; }
+
+        /* Static styling for markup below that has no dynamic JS-driven style toggles. */
+        .colorbar-note { font-size: 9px; opacity: 0.8; }
+        .url-load-row { margin-top: 8px; display: flex; gap: 4px; }
+        .url-load-input { flex: 1; }
+        .url-load-submit { flex: 0 0 auto; padding: 6px 10px; }
+        .bc-panel-wrap { flex-shrink: 0; margin-top: 10px; }
     </style>
 </head>
 <body class="dark-mode">
     <div id="header">
-        <h1>🔍 riserSim Pré-processador (Dados de Entrada)</h1>
+        <h1>🔍 RiserSim Pré-processador (Dados de Entrada)</h1>
         <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
     </div>
 
@@ -80,8 +84,8 @@
             <canvas id="three-canvas"></canvas>
             <div id="zoom-rect"></div>
             <div id="colorbar-legend">
-                <div style="font-size: 11px; font-weight: bold; color: #89b4fa; text-align: center;">Diâmetro externo (m)</div>
-                <div style="display: flex; gap: 10px; align-items: stretch;">
+                <div class="colorbar-caption">Diâmetro externo (m)</div>
+                <div class="colorbar-ticks-row">
                     <div id="colorbar-ticks">
                         <span id="cbar-max">-</span>
                         <span id="cbar-mid2">-</span>
@@ -90,7 +94,7 @@
                     </div>
                     <div id="colorbar-bar"></div>
                 </div>
-                <div style="font-size: 9px; opacity: 0.8;">🔴 nó prescrito &nbsp; 🟠 nó restringido</div>
+                <div class="colorbar-note">🔴 nó prescrito &nbsp; 🟠 nó restringido</div>
             </div>
         </div>
 
@@ -108,9 +112,9 @@
                 <div class="control-group">
                     <div class="control-title">📁 CARREGAR JSON DE ENTRADA</div>
                     <input type="file" id="json-input" accept=".json">
-                    <div style="margin-top:8px; display:flex; gap:4px;">
-                        <input type="text" id="url-input" placeholder="../input_simulation.json" style="flex:1;">
-                        <button class="btn-icon btn-primary" id="url-load-btn" style="flex:0 0 auto; padding:6px 10px;">Carregar</button>
+                    <div class="url-load-row">
+                        <input type="text" id="url-input" placeholder="../input_simulation.json" class="url-load-input">
+                        <button class="btn-icon btn-primary url-load-submit" id="url-load-btn">Carregar</button>
                     </div>
                 </div>
 
@@ -121,9 +125,9 @@
             </div>
 
             <div class="bottom-tab-panel" id="tab-geometry">
-                <div id="model-status" style="display:flex; flex-wrap:wrap; gap:8px; flex-shrink:0; margin-bottom:10px;"></div>
+                <div id="model-status"></div>
 
-                <h3 style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; flex-shrink:0;">
+                <h3 class="panel-heading-row panel-heading-row--shrink0">
                     <span>📋 Elementos e Nós</span>
                     <span>
                         <button class="btn-tab active" id="view-grouped-btn">Agrupado por seção</button>
@@ -131,7 +135,7 @@
                         <button class="btn-tab" id="view-nodes-btn">Nós</button>
                     </span>
                 </h3>
-                <div style="flex:1; min-height:120px; overflow:auto;">
+                <div class="scrollable-table-wrap">
                     <table class="excel-table" id="section-table">
                         <thead>
                             <tr>
@@ -162,7 +166,7 @@
                     </table>
                 </div>
 
-                <div style="flex-shrink:0; margin-top:10px;">
+                <div class="bc-panel-wrap">
                     <h3>🔗 Condições de Contorno</h3>
                     <div id="bc-panel"></div>
                 </div>
@@ -172,7 +176,7 @@
                 <h3>🌊 Ambiental</h3>
                 <div id="env-panel"></div>
 
-                <div class="control-title" style="margin-top:8px;">📈 PERFIL DE CORRENTE</div>
+                <div class="control-title mt-8">📈 PERFIL DE CORRENTE</div>
                 <table class="kv-table">
                     <thead><tr><th>Profundidade (m)</th><th>Velocidade (m/s)</th><th>Ângulo (°)</th></tr></thead>
                     <tbody id="current-tbody"></tbody>

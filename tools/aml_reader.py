@@ -7,39 +7,39 @@ class ANFLEXAMLReader:
     """
     ANFLEX AML Reader & Model Extractor (v2)
     =========================================
-    Parseia arquivos de entrada .aml do ANFLEX e converte em configurações
-    físicas prontas para o riserSim.
+    Parses ANFLEX .aml input files and converts them into physical
+    configurations ready for riserSim.
 
-    Formato AML:
-      - Tags iniciam com '%'
-      - Linhas sem '%' são dados da tag anterior
-      - Primeira linha de dados após a tag é a 1ª linha de valor
-      - Correntes: 1ª linha de dados = N, seguido de N valores (um por linha)
-      - Seção %LINE.SEGMENT.MESH: 1ª linha = N_segmentos,
-        próximas N linhas = "length factor_start factor_end"
+    AML format:
+      - Tags start with '%'
+      - Lines without '%' are data for the preceding tag
+      - The first data line after the tag is the 1st value line
+      - Currents: 1st data line = N, followed by N values (one per line)
+      - %LINE.SEGMENT.MESH section: 1st line = N_segments,
+        next N lines = "length factor_start factor_end"
 
-    Unidades nativas do AML:
-      - Comprimentos: metros
-      - Pesos/forças: kN
-      - Rigidez EA: kN
-      - Rigidez EI: kN.m²
-      - Rigidez GJ: kN.m²
-      - Velocidade: m/s
-      - Ângulos: graus
+    AML's native units:
+      - Lengths: meters
+      - Weights/forces: kN
+      - EA stiffness: kN
+      - EI stiffness: kN.m²
+      - GJ stiffness: kN.m²
+      - Velocity: m/s
+      - Angles: degrees
     """
 
     def __init__(self, aml_filepath):
         self.filepath = aml_filepath
-        # raw_sections: dict[tag_str] -> list[str] (linhas de dados)
+        # raw_sections: dict[tag_str] -> list[str] (data lines)
         self.raw_sections = {}
-        # Para tags que aparecem múltiplas vezes (ex: %CURRENT), lista de ocorrências
+        # For tags that appear multiple times (e.g. %CURRENT), a list of occurrences
         self.raw_sections_multi = {}
         self.model_data = {}
         self._parse_file()
         self._extract_all()
 
     # -------------------------------------------------------------------------
-    # PARSING BRUTO
+    # RAW PARSING
     # -------------------------------------------------------------------------
     def _parse_file(self):
         if not os.path.exists(self.filepath):
@@ -58,9 +58,9 @@ class ANFLEXAMLReader:
 
             if stripped.startswith('%'):
                 if current_tag is not None:
-                    # Armazena última ocorrência em raw_sections
+                    # Stores the last occurrence in raw_sections
                     self.raw_sections[current_tag] = tag_lines
-                    # Armazena TODAS as ocorrências em raw_sections_multi
+                    # Stores ALL occurrences in raw_sections_multi
                     self.raw_sections_multi.setdefault(current_tag, []).append(tag_lines)
                 current_tag = stripped
                 tag_lines = []
@@ -72,10 +72,10 @@ class ANFLEXAMLReader:
             self.raw_sections_multi.setdefault(current_tag, []).append(tag_lines)
 
     # -------------------------------------------------------------------------
-    # HELPERS DE ACESSO
+    # ACCESS HELPERS
     # -------------------------------------------------------------------------
     def _get_float(self, tag, default=0.0, line_idx=0, col_idx=0):
-        """Retorna um float do dado de uma tag."""
+        """Returns a float from a tag's data."""
         if tag in self.raw_sections and len(self.raw_sections[tag]) > line_idx:
             try:
                 parts = self.raw_sections[tag][line_idx].split()
@@ -85,17 +85,17 @@ class ANFLEXAMLReader:
         return default
 
     def _get_str(self, tag, default='', line_idx=0):
-        """Retorna uma string do dado de uma tag (remove aspas)."""
+        """Returns a string from a tag's data (strips quotes)."""
         if tag in self.raw_sections and len(self.raw_sections[tag]) > line_idx:
             return self.raw_sections[tag][line_idx].strip().strip("'\"")
         return default
 
     def _get_profile(self, tag):
         """
-        Lê um perfil de N valores onde:
-          - 1ª linha de dados = N (contagem)
-          - próximas N linhas = 1 valor cada
-        Retorna list[float].
+        Reads a profile of N values where:
+          - 1st data line = N (count)
+          - next N lines = 1 value each
+        Returns list[float].
         """
         if tag not in self.raw_sections:
             return []
@@ -115,7 +115,7 @@ class ANFLEXAMLReader:
         return result
 
     def _get_all_profiles(self, tag):
-        """Como _get_profile mas retorna lista de listas (todas as ocorrências da tag)."""
+        """Like _get_profile but returns a list of lists (every occurrence of the tag)."""
         result = []
         for occurrence_data in self.raw_sections_multi.get(tag, []):
             if not occurrence_data:
@@ -134,15 +134,15 @@ class ANFLEXAMLReader:
         return result
 
     # -------------------------------------------------------------------------
-    # EXTRAÇÃO DOS DADOS DO MODELO
+    # MODEL DATA EXTRACTION
     # -------------------------------------------------------------------------
     def _extract_all(self):
-        g = 9.81  # vai ser sobrescrito pelo valor real do AML
+        g = 9.81  # will be overwritten by the AML's real value
 
-        # 1. Título
+        # 1. Title
         title = self._get_str('%TITLE', 'ANFLEX Model')
 
-        # 2. Parâmetros Globais
+        # 2. Global Parameters
         seabed_depth_m = self._get_float('%GLOBAL.SEABED.DEPTH', 265.0)
         gravity        = self._get_float('%GLOBAL.GRAVITY', 9.81)
         water_sp_wt_kNm3 = self._get_float('%GLOBAL.WATER_SPECIFIC_WEIGHT', 10.0553)
@@ -150,14 +150,14 @@ class ANFLEXAMLReader:
         g = gravity
         water_density_kgm3 = (water_sp_wt_kNm3 * 1000.0) / g if g > 0 else 1025.0
 
-        # 3. Solo
+        # 3. Soil
         soil_name     = self._get_str('%SOIL', 'Solo')
         soil_stiff_kNm = self._get_float('%SOIL.SPRING.STIFFNESS', 800.0)
         soil_damping  = self._get_float('%SOIL.SPRING.DAMPING', 0.0)
         friction_axial   = self._get_float('%SOIL.FRICTION.AXIAL', 0.92)
         friction_lateral = self._get_float('%SOIL.FRICTION.LATERAL', 0.95)
 
-        # 4. Material da linha flexível
+        # 4. Flexible line material
         mat_name = self._get_str('%MATERIAL.FLEXIBLE_LINE', 'RISE')
         di = self._get_float('%MATERIAL.DIAMETER.INTERNAL', 0.2032)
         do = self._get_float('%MATERIAL.DIAMETER.EXTERNAL', 0.2779)
@@ -171,7 +171,7 @@ class ANFLEXAMLReader:
         cm       = self._get_float('%MATERIAL.MORISON.INERTIA', 2.0)
         cd_long  = self._get_float('%MATERIAL.MORISON.DRAG.LONGITUDINAL', 0.0)
 
-        # Módulos de flutuação embutidos no material
+        # Buoyancy modules embedded in the material
         floater_weight_kNm  = self._get_float('%MATERIAL.FLOATER.WEIGHT', 0.0)
         floater_buoy_kNm    = self._get_float('%MATERIAL.FLOATER.BUOYANCY', 0.0)
         floater_diam_m      = self._get_float('%MATERIAL.FLOATER.DIAMETER', 0.0)
@@ -180,22 +180,22 @@ class ANFLEXAMLReader:
         floater_width       = self._get_float('%MATERIAL.FLOATER.WIDTH', 1.0)
         floater_eff         = self._get_float('%MATERIAL.FLOATER.EFFICIENCY_FACTOR', 1.0)
 
-        # Amortecimento de Rayleigh
+        # Rayleigh damping
         rayleigh_T1  = self._get_float('%MATERIAL.RAYLEIGH.PERIOD.FIRST', 0.0)
         rayleigh_T2  = self._get_float('%MATERIAL.RAYLEIGH.PERIOD.SECOND', 0.0)
         rayleigh_xi1 = self._get_float('%MATERIAL.RAYLEIGH.DAMPING.FIRST', 0.0)
         rayleigh_xi2 = self._get_float('%MATERIAL.RAYLEIGH.DAMPING.SECOND', 0.0)
 
-        # Conversão para SI
+        # Conversion to SI
         ea_N   = ea_kN   * 1000.0
         ei_Nm2 = ei_kNm2 * 1000.0
         gj_Nm2 = gj_kNm2 * 1000.0
         w_dry_N_per_m = w_dry_kNm * 1000.0  # N/m
 
-        # Derivar E, A, I, G, J a partir de EA, EI, GJ, diâmetros
+        # Derive E, A, I, G, J from EA, EI, GJ, diameters
         area_outer = math.pi * do**2 / 4.0
         area_inner = math.pi * di**2 / 4.0
-        area_struct = area_outer - area_inner   # área anular (m²)
+        area_struct = area_outer - area_inner   # annular area (m²)
         I_y = math.pi * (do**4 - di**4) / 64.0
         J_tors = math.pi * (do**4 - di**4) / 32.0
 
@@ -205,17 +205,17 @@ class ANFLEXAMLReader:
         # Use E from EA (primary structural stiffness)
         G = gj_Nm2 / J_tors if J_tors > 0 else 8.0e10
 
-        # Massa linear seca (kg/m)
+        # Dry linear mass (kg/m)
         dry_mass_kgm = w_dry_N_per_m / g if g > 0 else 0.0
 
-        # 5. Linhas (múltiplas possíveis)
+        # 5. Lines (multiple possible)
         lines_data = []
         for i, name_data in enumerate(self.raw_sections_multi.get('%LINE', [])):
             line_name = name_data[0].strip("'\"") if name_data else f'L{i+1}'
 
-            # Ângulo de catenária, azimute, offsets
-            # Essas tags aparecem dentro da seção de cada linha — extraímos a
-            # i-ésima ocorrência de cada tag para corresponder à i-ésima linha
+            # Catenary angle, azimuth, offsets
+            # These tags appear inside each line's section -- we extract the
+            # i-th occurrence of each tag to correspond to the i-th line
             def get_nth(tag, default, n=i, col=0, line=0):
                 occ = self.raw_sections_multi.get(tag, [])
                 if n < len(occ) and occ[n]:
@@ -233,7 +233,7 @@ class ANFLEXAMLReader:
             top_press_static  = get_nth('%LINE.TOP_PRESSURE', 0.0, col=0)
             top_press_content = get_nth('%LINE.TOP_PRESSURE', 0.0, col=1)
 
-            # Segmentos da linha
+            # Line segments
             segments = []
             mesh_occ = self.raw_sections_multi.get('%LINE.SEGMENT.MESH', [])
             mat_id_occ = self.raw_sections_multi.get('%LINE.SEGMENT.MATERIAL_ID', [])
@@ -250,10 +250,10 @@ class ANFLEXAMLReader:
                             seg_len = float(parts[0]) if parts else 0.0
                             elem_len = float(parts[1]) if len(parts) > 1 else 5.0
                             total_length_m += seg_len
-                            # Calcular número de elementos para o segmento
+                            # Compute number of elements for the segment
                             seg_elements = max(1, int(round(seg_len / (elem_len if elem_len > 0.0 else 5.0))))
-                            
-                            # Material e buoy IDs para este segmento
+
+                            # Material and buoy IDs for this segment
                             mat_id = -1
                             buoy_id = -1
                             if i < len(mat_id_occ) and len(mat_id_occ[i]) > s:
@@ -288,7 +288,7 @@ class ANFLEXAMLReader:
                 'segments': segments,
             })
 
-        # 6. Correntes (múltiplas, identificadas por %CURRENT + %CURRENT.ID)
+        # 6. Currents (multiple, identified by %CURRENT + %CURRENT.ID)
         currents = []
         current_names   = [d[0].strip("'\"") for d in self.raw_sections_multi.get('%CURRENT', []) if d]
         current_ids     = [d[0] if d else '-1' for d in self.raw_sections_multi.get('%CURRENT.ID', [])]
@@ -305,7 +305,7 @@ class ANFLEXAMLReader:
                 'angles_deg': angle_profiles[i] if i < len(angle_profiles) else [0.0, 0.0],
             })
 
-        # 7. Ondas (JONSWAP)
+        # 7. Waves (JONSWAP)
         waves = []
         wave_ids    = [d[0] if d else '-1' for d in self.raw_sections_multi.get('%WAVE.ID', [])]
         wave_jonswap = [d[0].strip("'\"").upper() if d else 'OFF' for d in self.raw_sections_multi.get('%WAVE.JONSWAP', [])]
@@ -324,7 +324,7 @@ class ANFLEXAMLReader:
                 'angle_deg': wave_angles[i] if i < len(wave_angles) else 0.0,
             })
 
-        # Monta o dicionário principal do modelo
+        # Assembles the model's main dictionary
         self.model_data = {
             'title': title,
             'global': {
@@ -353,12 +353,12 @@ class ANFLEXAMLReader:
                 'EA_N': ea_N,
                 'EI_Nm2': ei_Nm2,
                 'GJ_Nm2': gj_Nm2,
-                # Propriedades elementares derivadas
+                # Derived elementary properties
                 'E_Pa': E,
                 'G_Pa': G,
                 'A_m2': area_struct,
                 'IY_m4': I_y,
-                'IZ_m4': I_y,    # tubo axissimétrico
+                'IZ_m4': I_y,    # axisymmetric tube
                 'J_m4': J_tors,
                 'rho_kgm3': dry_mass_kgm / area_struct if area_struct > 0 else 7850.0,
                 'Cd': cd,
@@ -378,7 +378,7 @@ class ANFLEXAMLReader:
                     'period_2_s': rayleigh_T2,
                     'damping_ratio_1': rayleigh_xi1,
                     'damping_ratio_2': rayleigh_xi2,
-                    # Coeficientes alpha/beta se os períodos estiverem definidos
+                    # Alpha/beta coefficients if the periods are defined
                     'alpha': self._compute_rayleigh_alpha(rayleigh_T1, rayleigh_T2, rayleigh_xi1, rayleigh_xi2),
                     'beta':  self._compute_rayleigh_beta(rayleigh_T1, rayleigh_T2, rayleigh_xi1, rayleigh_xi2),
                 },
@@ -404,7 +404,7 @@ class ANFLEXAMLReader:
 
     @staticmethod
     def _compute_rayleigh_alpha(T1, T2, xi1, xi2):
-        """Coeficiente α do amortecimento de Rayleigh: C = α*M + β*K."""
+        """Rayleigh damping coefficient α: C = α*M + β*K."""
         if T1 > 0 and T2 > 0 and T1 != T2:
             w1 = 2 * math.pi / T1
             w2 = 2 * math.pi / T2
@@ -417,7 +417,7 @@ class ANFLEXAMLReader:
 
     @staticmethod
     def _compute_rayleigh_beta(T1, T2, xi1, xi2):
-        """Coeficiente β do amortecimento de Rayleigh: C = α*M + β*K."""
+        """Rayleigh damping coefficient β: C = α*M + β*K."""
         if T1 > 0 and T2 > 0 and T1 != T2:
             w1 = 2 * math.pi / T1
             w2 = 2 * math.pi / T2
@@ -427,22 +427,22 @@ class ANFLEXAMLReader:
         return 0.0
 
     # -------------------------------------------------------------------------
-    # MÉTODO DE CONFIGURAÇÃO PARA O riserSim
+    # CONFIGURATION METHOD FOR riserSim
     # -------------------------------------------------------------------------
     def to_risersim_config(self, line_index=0):
         """
-        Retorna um dicionário de configuração pronto para instanciar uma
-        StaticAnalysis + DynamicAnalysis do riserSim.
+        Returns a configuration dict ready to instantiate a riserSim
+        StaticAnalysis + DynamicAnalysis.
 
-        Parâmetros:
-          line_index: índice da linha a simular (0 = primeira, default)
+        Parameters:
+          line_index: index of the line to simulate (0 = first, default)
 
-        Retorna dict com:
-          'beam_props'   : BeamMaterialProps em SI
+        Returns a dict with:
+          'beam_props'   : BeamMaterialProps in SI
           'geometry'     : num_elements, total_length, depth, span_x
           'seabed'       : SeabedInteraction params
-          'wave'         : DynamicAnalysis wave params (1ª onda disponível)
-          'current'      : 1ª corrente disponível
+          'wave'         : DynamicAnalysis wave params (1st wave available)
+          'current'      : 1st current available
           'rayleigh'     : alpha, beta
           'offsets'      : near, far
         """
@@ -457,7 +457,7 @@ class ANFLEXAMLReader:
         total_length = line.get('total_length_m', 500.0)
         depth = glb['seabed_depth_m']
 
-        # Soma o número de elementos de todos os segmentos da linha definidos no AML
+        # Sums the number of elements across every line segment defined in the AML
         if 'segments' in line and line['segments']:
             num_elements = sum(seg.get('num_elements', 0) for seg in line['segments'])
         else:
@@ -465,9 +465,9 @@ class ANFLEXAMLReader:
         if num_elements <= 0:
             num_elements = 100
 
-        # Alcance horizontal real X_span da catenária (com trecho repousando no solo TDZ):
-        # Para um riser flexível suspenso de comprimento L e profundidade h,
-        # o alcance horizontal típico da âncora é ~0.70 * L (ex: 350m para L=500m, h=265m)
+        # Catenary's real horizontal reach X_span (with a stretch resting on the seabed TDZ):
+        # For a suspended flexible riser of length L and depth h,
+        # the anchor's typical horizontal reach is ~0.70 * L (e.g. 350m for L=500m, h=265m)
         span_x = min(total_length * 0.70, math.sqrt(max(0.0, total_length**2 - depth**2)) * 0.85)
 
         config = {
@@ -479,11 +479,11 @@ class ANFLEXAMLReader:
                 'IY':        mat['IY_m4'],
                 'IZ':        mat['IZ_m4'],
                 'J':         mat['J_m4'],
-                'EI':        mat['EI_Nm2'],  # Rigidez fletora real EI (N.m²)
+                'EI':        mat['EI_Nm2'],  # Real bending stiffness EI (N.m²)
                 'rho':       mat['rho_kgm3'],
                 'D_outer':   mat['outer_diameter_m'],
                 'D_inner':   mat['inner_diameter_m'],
-                'rho_fluid': glb['water_density_kgm3'],  # Assume fluido interno = água (conservador)
+                'rho_fluid': glb['water_density_kgm3'],  # Assumes internal fluid = water (conservative)
                 'Ca':        mat['Cm'] - 1.0,            # Cm = 1 + Ca
                 'Cd':        mat['Cd'],
             },
@@ -494,14 +494,14 @@ class ANFLEXAMLReader:
                 'catenary_angle_deg': line.get('catenary_angle_deg', 5.0),
                 'azimuth_deg': line.get('azimuth_deg', 0.0),
                 'span_x_m': span_x,
-                # Convenção de Coordenadas:
-                # ANFLEX: Seabed em Z = 0.0, Superfície em Z = +water_depth
-                # risersim: Superfície em Z = 0.0, Seabed em Z = -water_depth
+                # Coordinate Convention:
+                # ANFLEX: Seabed at Z = 0.0, Surface at Z = +water_depth
+                # risersim: Surface at Z = 0.0, Seabed at Z = -water_depth
                 'anflex_z_seabed_m': 0.0,
                 'anflex_z_surface_m': depth,
             },
             'seabed': {
-                'depth_m': -depth,  # riserSim usa Z negativo
+                'depth_m': -depth,  # riserSim uses negative Z
                 'stiffness_Nm': soil['stiffness_Nm'],
                 'friction_coeff': soil['friction_lateral'],
             },
@@ -528,7 +528,7 @@ class ANFLEXAMLReader:
             },
             'water_density_kgm3': glb['water_density_kgm3'],
             'simulation_options': {
-                # Configurações de passos e solvers extraídas do AML
+                # Step and solver settings extracted from the AML
                 'static_steps': max(1, int(self.model_data['analysis']['static']['total_time'] / 
                                           (self.model_data['analysis']['static']['time_step'] if self.model_data['analysis']['static']['time_step'] > 0 else 1.0))),
                 'static_max_iter': self.model_data['analysis']['static']['max_iter'],
@@ -542,7 +542,7 @@ class ANFLEXAMLReader:
         return config
 
     # -------------------------------------------------------------------------
-    # SAÍDA
+    # OUTPUT
     # -------------------------------------------------------------------------
     def summary(self):
         d = self.model_data
@@ -577,7 +577,7 @@ class ANFLEXAMLReader:
         print("==========================================================")
 
     def to_json(self, json_path=None):
-        """Salva model_data em JSON. Retorna string JSON se json_path=None."""
+        """Saves model_data as JSON. Returns the JSON string if json_path=None."""
         text = json.dumps(self.model_data, indent=2, ensure_ascii=False)
         if json_path:
             with open(json_path, 'w', encoding='utf-8') as f:
@@ -598,7 +598,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         reader.to_json(sys.argv[2])
     else:
-        # Imprime a configuração riserSim no stdout
+        # Prints the riserSim configuration to stdout
         cfg = reader.to_risersim_config()
         print("\n--- Configuração riserSim ---")
         print(json.dumps(cfg, indent=2, ensure_ascii=False))

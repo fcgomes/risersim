@@ -1,48 +1,34 @@
 import { initThemeToggle } from './ui/ThemeToggle.js';
+import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
+import { statusPill, formatDate, formatRelativeDate, escapeHtml, fetchJSON } from './utils/runManagerFormat.js';
+
+/** Chip label per status, used on project cards' status-dots row (see Dashboard.renderProjects) --
+ * separate from STATUS_LABELS (run-table wording) because these read as a short summary count
+ * ("2 convergidas") rather than a standalone badge ("Convergiu"), and singular/plural varies with
+ * the count. */
+const STATUS_CHIP_LABEL = {
+    pending: () => 'na fila',
+    running: () => 'rodando',
+    converged: (n) => (n === 1 ? 'convergida' : 'convergidas'),
+    failed: (n) => (n === 1 ? 'falhou' : 'falharam'),
+    aborted: (n) => (n === 1 ? 'abortada' : 'abortadas'),
+};
+// Display order for the chips -- successes first, then in-progress, then problems.
+const STATUS_CHIP_ORDER = ['converged', 'running', 'pending', 'failed', 'aborted'];
 
 /**
  * dashboard.js
- * Home page of the run manager: stat-card row, project grid, recent-runs grid, and the "Novo
- * Projeto" creation modal. Talks only to the REST API exposed by run_server.py (tools/run_server.py).
+ * Home page of the run manager: stat-card row, project grid, recent-runs grid, and the
+ * "New Project" creation modal. Talks only to the REST API exposed by `run_server.py`.
  */
-
-const STATUS_LABELS = {
-    pending: 'Na fila',
-    running: 'Executando',
-    converged: 'Convergiu',
-    failed: 'Falhou',
-};
-
-function statusBadge(status) {
-    const label = STATUS_LABELS[status] || status || 'desconhecido';
-    return `<span class="badge badge-${status}">${label}</span>`;
-}
-
-function formatDate(iso) {
-    if (!iso) return '—';
-    try {
-        return new Date(iso).toLocaleString('pt-BR');
-    } catch (e) {
-        return iso;
-    }
-}
-
-async function fetchJSON(url, options) {
-    const res = await fetch(url, options);
-    if (!res.ok) {
-        let detail = '';
-        try { detail = (await res.json()).error || ''; } catch (e) { /* ignore */ }
-        throw new Error(detail || `HTTP ${res.status}`);
-    }
-    return res.json();
-}
 
 class Dashboard {
     constructor() {
         this.projects = [];
         this.recentRuns = [];
         this.currentTheme = 'dark';
-        this.sourceTab = 'example'; // 'example' | 'upload' -- qual aba do modal "Novo Projeto" está ativa
+        this.projectSort = 'name'; // 'name' | 'modified' | 'created' -- see renderProjects()
+        this.sourceTab = 'example'; // 'example' | 'upload' -- which tab of the "New Project" modal is active
         this.bindEvents();
         this.refresh();
     }
@@ -73,6 +59,16 @@ class Dashboard {
         document.getElementById('project-name-input').addEventListener('input', (e) => {
             e.target.dataset.userEdited = '1';
         });
+
+        document.querySelectorAll('#project-sort-switch button[data-sort]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.projectSort = btn.getAttribute('data-sort');
+                document.querySelectorAll('#project-sort-switch button').forEach(b => {
+                    b.classList.toggle('active', b === btn);
+                });
+                this.renderProjects();
+            });
+        });
     }
 
     async refresh() {
@@ -82,9 +78,14 @@ class Dashboard {
             console.error('Falha ao carregar projetos:', err);
             this.projects = [];
         }
+        // Fills in each project's `lastActivity` (most recent run, or the project's own
+        // created_at if it has none yet) before the first render -- both renderProjects()'s
+        // "Última atividade" row and the sort-by-modified option need it, and it isn't part of
+        // the /api/projects summary (list_projects() doesn't track a project-level updated_at).
+        await this.loadRecentRuns();
         this.renderStats();
         this.renderProjects();
-        await this.loadRecentRuns();
+        this.renderRecentRuns();
     }
 
     renderStats() {
@@ -102,88 +103,164 @@ class Dashboard {
         document.getElementById('stat-running').innerText = running;
     }
 
+    /** The filename (or example id) shown under a project's name on its card -- one input source
+     * per project, so this alone identifies where it came from (same reasoning as
+     * project.js::renderHeader's "Origem do modelo" panel, just condensed to one line here). */
+    projectSourceLabel(p) {
+        const src = p.source || {};
+        if (src.xml_path) return src.xml_path.split('/').pop();
+        if (src.example_id) return src.example_id;
+        return '—';
+    }
+
+    sortedProjects() {
+        const list = this.projects.slice();
+        if (this.projectSort === 'modified') {
+            list.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
+        } else if (this.projectSort === 'created') {
+            list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+        } else {
+            list.sort((a, b) => a.name.localeCompare(b.name));
+        }
+        return list;
+    }
+
     renderProjects() {
         const grid = document.getElementById('projects-grid');
+        document.getElementById('projects-count').innerText = this.projects.length ? String(this.projects.length) : '';
         if (this.projects.length === 0) {
             grid.innerHTML = '<div class="empty-state">Nenhum projeto ainda. Clique em "Novo Projeto" para começar.</div>';
             return;
         }
-        grid.innerHTML = this.projects.map(p => {
+        grid.innerHTML = this.sortedProjects().map(p => {
             const counts = p.status_counts || {};
+            const chips = STATUS_CHIP_ORDER
+                .filter(status => counts[status])
+                .map(status => `<span class="status-dot-chip badge-${status}"><span class="dot"></span>${counts[status]} ${STATUS_CHIP_LABEL[status](counts[status])}</span>`)
+                .join('');
             return `
-                <div class="card">
-                    <h3><a href="project.html?project=${encodeURIComponent(p.id)}">${escapeHtml(p.name)}</a></h3>
-                    <div class="meta">ID: ${escapeHtml(p.id)} · Criado em ${formatDate(p.created_at)}</div>
-                    <div>${p.run_count || 0} rodada(s)
-                        ${counts.converged ? ` · ${counts.converged} convergida(s)` : ''}
-                        ${counts.running ? ` · ${counts.running} em execução` : ''}
-                        ${counts.failed ? ` · ${counts.failed} falhada(s)` : ''}
+                <div class="project-card">
+                    <div class="top-row">
+                        <div>
+                            <div class="name"><a href="project.html?project=${encodeURIComponent(p.id)}">${escapeHtml(p.name)}</a></div>
+                            <div class="source mono">${escapeHtml(this.projectSourceLabel(p))}</div>
+                        </div>
+                        <div class="run-count-badge">${p.run_count || 0} rodada${p.run_count === 1 ? '' : 's'}</div>
                     </div>
-                    <div class="row">
+                    ${chips ? `<div class="status-dots">${chips}</div>` : ''}
+                    <div class="meta">
+                        <div class="row"><span>Criado em</span><span class="mono">${formatRelativeDate(p.created_at)}</span></div>
+                        <div class="row"><span>Última atividade</span><span class="mono">${formatRelativeDate(p.lastActivity)}</span></div>
+                    </div>
+                    <div class="card-actions">
                         <a class="link-btn" href="project.html?project=${encodeURIComponent(p.id)}">Ver projeto →</a>
-                        <button class="btn small" data-run-project="${escapeHtml(p.id)}">▶ Nova Rodada</button>
+                        <div class="card-actions-right">
+                            <button class="btn small info" data-duplicate-project="${escapeHtml(p.id)}" data-tip="Duplicar projeto: cria uma cópia com os mesmos arquivos de origem e configuração atual, sem repetir o histórico de rodadas">⧉</button>
+                            <button class="btn small danger" data-delete-project="${escapeHtml(p.id)}" data-tip="Apagar projeto: remove o projeto e TODAS as suas rodadas permanentemente">🗑</button>
+                        </div>
                     </div>
                 </div>
             `;
         }).join('');
 
-        grid.querySelectorAll('[data-run-project]').forEach(btn => {
+        // Duplicates the project (new id, same source files + compiled input, no run history --
+        // see risersim_projects.py::duplicate_project) straight from the card.
+        grid.querySelectorAll('[data-duplicate-project]').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                const projectId = e.target.getAttribute('data-run-project');
+                const projectId = e.target.getAttribute('data-duplicate-project');
                 e.target.disabled = true;
-                e.target.innerText = 'Criando…';
                 try {
-                    await fetchJSON(`/api/projects/${encodeURIComponent(projectId)}/runs`, { method: 'POST' });
-                    window.location.href = `project.html?project=${encodeURIComponent(projectId)}`;
+                    const project = await fetchJSON(`/api/projects/${encodeURIComponent(projectId)}/duplicate`, { method: 'POST' });
+                    window.location.href = `project.html?project=${encodeURIComponent(project.id)}`;
                 } catch (err) {
-                    alert(`Falha ao criar rodada: ${err.message}`);
+                    await alertDialog({ title: 'Falha ao duplicar projeto', message: err.message });
                     e.target.disabled = false;
-                    e.target.innerText = '▶ Nova Rodada';
+                }
+            });
+        });
+
+        // Quick deletion straight from the card, without opening the project -- see
+        // project.js::deleteProject for the full flow (same API, DELETE /api/projects/<id>);
+        // refuses (409) if any run is pending/running (see risersim_projects.py::delete_project).
+        grid.querySelectorAll('[data-delete-project]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const projectId = e.target.getAttribute('data-delete-project');
+                const ok = await confirmDialog({
+                    title: 'Apagar projeto',
+                    message: 'Apagar esse projeto e TODAS as suas rodadas? Essa ação não pode ser desfeita.',
+                    confirmLabel: 'Apagar tudo',
+                });
+                if (!ok) return;
+                e.target.disabled = true;
+                try {
+                    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+                    if (!res.ok && res.status !== 204) {
+                        let detail = '';
+                        try { detail = (await res.json()).error || ''; } catch (err) { /* ignore */ }
+                        throw new Error(detail || `HTTP ${res.status}`);
+                    }
+                    await this.refresh();
+                } catch (err) {
+                    await alertDialog({ title: 'Falha ao apagar projeto', message: err.message });
+                    e.target.disabled = false;
                 }
             });
         });
     }
 
+    /** Fetches every project's detail (few projects expected in this phase, no pagination) to
+     * get at their run lists -- /api/projects's summary only has counts, not the runs themselves.
+     * Fills `this.recentRuns` (most recent 9, across all projects) and each project's
+     * `lastActivity` (most recent run's created_at, falling back to the project's own
+     * created_at when it has no runs yet) -- used by both renderProjects() and renderRecentRuns(). */
     async loadRecentRuns() {
-        const grid = document.getElementById('runs-grid');
         if (this.projects.length === 0) {
-            grid.innerHTML = '<div class="empty-state">Nenhuma rodada ainda.</div>';
+            this.recentRuns = [];
             return;
         }
-        // O resumo de /api/projects não traz a lista de rodadas -- busca o detalhe de cada
-        // projeto (poucos projetos esperados neste Phase 1, sem paginação) e junta tudo numa
-        // lista só, ordenada pela mais recente.
         const details = await Promise.all(this.projects.map(p =>
             fetchJSON(`/api/projects/${encodeURIComponent(p.id)}`).catch(() => null)
         ));
 
         const allRuns = [];
         details.forEach((detail, idx) => {
-            if (!detail) return;
             const project = this.projects[idx];
-            (detail.runs || []).forEach(run => allRuns.push({ ...run, projectName: project.name }));
+            const runs = (detail && detail.runs) || [];
+            runs.forEach(run => allRuns.push({ ...run, projectName: project.name }));
+            const mostRecent = runs.reduce((max, r) => (r.created_at || '') > max ? r.created_at : max, '');
+            project.lastActivity = mostRecent || project.created_at;
         });
         allRuns.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         this.recentRuns = allRuns.slice(0, 9);
-
-        if (this.recentRuns.length === 0) {
-            grid.innerHTML = '<div class="empty-state">Nenhuma rodada ainda.</div>';
-            return;
-        }
-
-        grid.innerHTML = this.recentRuns.map(r => `
-            <div class="card">
-                <h3><a href="project.html?project=${encodeURIComponent(r.project_id)}">${escapeHtml(r.projectName)}</a></h3>
-                <div class="meta">${escapeHtml(r.id)} · Criada em ${formatDate(r.created_at)}</div>
-                <div class="row">
-                    ${statusBadge(r.status)}
-                    <a class="link-btn" href="project.html?project=${encodeURIComponent(r.project_id)}">Detalhes →</a>
-                </div>
-            </div>
-        `).join('');
     }
 
-    /** Alterna entre as duas abas de origem do modal "Novo Projeto": exemplo pré-descoberto vs. upload manual. */
+    renderRecentRuns() {
+        const container = document.getElementById('runs-list-container');
+        if (this.recentRuns.length === 0) {
+            container.innerHTML = '<div class="empty-state">Nenhuma rodada ainda.</div>';
+            return;
+        }
+        const rows = this.recentRuns.map(r => `
+            <tr>
+                <td class="run-id-cell mono"><a class="link-btn" href="project.html?project=${encodeURIComponent(r.project_id)}&view=manager">${escapeHtml(r.id)}</a></td>
+                <td class="project-name-cell">${escapeHtml(r.projectName)}</td>
+                <td>${statusPill(r.status)}</td>
+                <td class="mono">${formatDate(r.created_at)}</td>
+            </tr>
+        `).join('');
+        container.innerHTML = `
+            <div class="runs-list">
+                <table class="run-table">
+                    <thead>
+                        <tr><th>Rodada</th><th>Projeto</th><th>Status</th><th>Criada</th></tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    /** Switches between the "New Project" modal's two source tabs: pre-discovered example vs. manual upload. */
     setSourceTab(tab) {
         this.sourceTab = tab;
         document.getElementById('source-tab-example').style.display = tab === 'example' ? '' : 'none';
@@ -226,7 +303,7 @@ class Dashboard {
         document.getElementById('new-project-backdrop').classList.remove('open');
     }
 
-    /** Despacha pra um dos dois fluxos de criação conforme a aba ativa do modal (ver setSourceTab). */
+    /** Dispatches to one of the two creation flows depending on the modal's active tab (see setSourceTab). */
     async submitNewProject() {
         if (this.sourceTab === 'upload') return this.submitUploadProject();
         return this.submitExampleProject();
@@ -260,8 +337,8 @@ class Dashboard {
         }
     }
 
-    /** Aba "📤 Importar arquivo": submete via FormData (multipart) pro endpoint de upload, em vez
-     * do corpo JSON usado pelo fluxo por exemplo -- ver run_server.py::api_upload_project. */
+    /** The "📤 Import file" tab: submits via FormData (multipart) to the upload endpoint, instead
+     * of the JSON body used by the example flow -- see run_server.py::api_upload_project. */
     async submitUploadProject() {
         const nameInput = document.getElementById('project-name-input');
         const errorEl = document.getElementById('new-project-error');
@@ -285,8 +362,8 @@ class Dashboard {
         confirmBtn.innerText = 'Criando…';
         errorEl.innerText = '';
         try {
-            // Sem header Content-Type explícito de propósito -- o navegador define
-            // multipart/form-data com o boundary correto sozinho a partir do FormData.
+            // No explicit Content-Type header on purpose -- the browser sets
+            // multipart/form-data with the correct boundary on its own from the FormData.
             const project = await fetchJSON('/api/projects/upload', { method: 'POST', body: formData });
             window.location.href = `project.html?project=${encodeURIComponent(project.id)}`;
         } catch (err) {
@@ -295,12 +372,6 @@ class Dashboard {
             confirmBtn.innerText = 'Criar Projeto';
         }
     }
-}
-
-function escapeHtml(str) {
-    return String(str ?? '').replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
 }
 
 window.addEventListener('DOMContentLoaded', () => {
