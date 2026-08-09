@@ -57,6 +57,12 @@ body.dark-mode {
     --status-aborted-soft: rgba(245, 169, 78, 0.16);
     --info: #38bdf8;
     --info-soft: rgba(56, 189, 248, 0.16);
+    /* Brand mark accent (orange) -- deliberately separate from --accent (violet, used
+       everywhere else in the UI). Only the header logo/wordmark uses this, see the
+       "RiserSim — proposta de marca" brand exploration; the rest of the app stays violet for
+       now, so this must NOT be reused as a general-purpose accent. */
+    --brand-accent: #ff7a1a;
+    --brand-accent-strong: #ffa64d;
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-2: 0 24px 48px -24px rgba(0, 0, 0, 0.65);
 }
@@ -88,6 +94,8 @@ body.light-mode {
     --status-aborted-soft: rgba(180, 90, 9, 0.12);
     --info: #0284c7;
     --info-soft: rgba(2, 132, 199, 0.10);
+    --brand-accent: #e35d00;
+    --brand-accent-strong: #a83e00;
     --shadow-1: 0 1px 2px rgba(23, 21, 31, 0.05);
     --shadow-2: 0 16px 32px -18px rgba(23, 21, 31, 0.22);
 }
@@ -117,7 +125,13 @@ body.dark-mode #resizer-h:hover, body.dark-mode #resizer-h.dragging,
 body.light-mode #resizer-h:hover, body.light-mode #resizer-h.dragging { background: var(--accent); }
 
 #header { padding: 12px 25px; border-bottom: 2px solid; display: flex; justify-content: space-between; align-items: center; height: 50px; box-sizing: border-box; }
-h1 { margin: 0; font-size: 20px; color: var(--accent); }
+h1 { margin: 0; font-size: 20px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+
+/* Header brand mark (the 3-riser badge, see favicon.svg for the same art as a standalone file)
+   and the "Sim" half of the wordmark -- both use --brand-accent (orange), not --accent (violet),
+   see the token comment above. */
+.brand-mark { width: 22px; height: 22px; flex-shrink: 0; border-radius: 5px; }
+.brand-sim { color: var(--brand-accent-strong); }
 
 /* Main layout: camera/zoom sidebar | 3D canvas | drag handle | tabbed data panel */
 #main-layout { display: flex; height: calc(100vh - 50px); min-height: 0; }

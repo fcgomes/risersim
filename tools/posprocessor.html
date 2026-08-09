@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>RiserSim 3D Three.js Web Visualizer</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/h5wasm@0.4.10/dist/h5wasm.js"></script>
@@ -73,7 +74,20 @@
 </head>
 <body class="dark-mode">
     <div id="header">
-        <h1>🌊 RiserSim 3D Three.js Web Visualizer</h1>
+        <h1><svg class="brand-mark" viewBox="0 0 120 120" aria-hidden="true">
+                <rect x="5" y="5" width="110" height="110" rx="26" fill="#0a0a10"/>
+                <path d="M14,22 Q20,16 26,22 T38,22 T50,22 T62,22 T74,22 T86,22 T98,22 T110,22" fill="none" stroke="#3a3a4a" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+                <path d="M64,20 C60,42 44,78 26,99" fill="none" stroke="var(--brand-accent)" stroke-width="5.5" stroke-linecap="round" opacity="0.85"/>
+                <path d="M60,22 C62,48 56,76 60,99" fill="none" stroke="var(--brand-accent-strong)" stroke-width="7" stroke-linecap="round"/>
+                <path d="M56,20 C60,42 76,78 94,99" fill="none" stroke="var(--brand-accent)" stroke-width="5.5" stroke-linecap="round" opacity="0.85"/>
+                <line x1="12" y1="99" x2="108" y2="99" stroke="#3a3a4a" stroke-width="2" stroke-linecap="round"/>
+                <path d="M18,99 l-5,7 M30,99 l-5,7 M42,99 l-5,7 M54,99 l-5,7 M66,99 l-5,7 M78,99 l-5,7 M90,99 l-5,7 M102,99 l-5,7" stroke="#3a3a4a" stroke-width="1.6" stroke-linecap="round" opacity="0.75"/>
+                <circle cx="26" cy="99" r="3.1" fill="var(--brand-accent)"/>
+                <circle cx="94" cy="99" r="3.1" fill="var(--brand-accent)"/>
+                <circle cx="60" cy="99" r="3.6" fill="var(--brand-accent-strong)"/>
+                <circle cx="60" cy="22" r="4.6" fill="var(--brand-accent-strong)"/>
+                <circle cx="60" cy="22" r="1.8" fill="#0a0a10"/>
+            </svg><span class="brand-text">Riser<span class="brand-sim">Sim</span> 3D Three.js Web Visualizer</span></h1>
         <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
     </div>
 

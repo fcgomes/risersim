@@ -102,19 +102,17 @@ class ProjectPage {
             btn.classList.toggle('active', btn.getAttribute('data-view') === view);
         });
 
-        const theme = document.body.classList.contains('light-mode') ? 'light' : 'dark';
-
         if (view === 'pre') {
             const url = run
-                ? `preprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run)}&theme=${theme}`
-                : `preprocessor.html?project=${encodeURIComponent(this.projectId)}&theme=${theme}`;
+                ? `preprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run)}`
+                : `preprocessor.html?project=${encodeURIComponent(this.projectId)}`;
             this._loadFrameIfNeeded('pre-frame', url);
         } else if (view === 'post') {
             const resolvedRun = run || this.mostRecentConvergedRunId();
             const frame = document.getElementById('post-frame');
             const emptyEl = document.getElementById('post-empty');
             if (resolvedRun) {
-                const url = `posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(resolvedRun)}&theme=${theme}`;
+                const url = `posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(resolvedRun)}`;
                 this._loadFrameIfNeeded('post-frame', url);
                 frame.style.display = '';
                 emptyEl.style.display = 'none';

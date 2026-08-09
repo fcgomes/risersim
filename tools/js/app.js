@@ -27,23 +27,21 @@ class RiserSimApp {
     }
 
     async initUI() {
+        // When embedded in project.html's <iframe> (the normal case -- see
+        // preprocessor_app.js::initUI for the same check), the parent page already shows a
+        // header with the brand mark, title, and theme toggle; showing this page's own copy too
+        // doubled it up on screen. Hidden via inline style (not a body class) so it can't
+        // collide with ThemeToggle.js's `body.className = '...'` full overwrites.
+        if (window.self !== window.top) {
+            document.getElementById('header').style.display = 'none';
+            document.getElementById('main-layout').style.height = '100vh';
+        }
+
         const canvas = document.getElementById('three-canvas');
         this.renderer3D = new Riser3DRenderer(canvas);
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
         this.zoomWindow = new ZoomWindowController(this.cameraController, this.renderer3D);
         this.chartsController = new ProfileChartsController();
-
-        // `?theme=light|dark` -- read by the parent page (project.js::switchView) when this page
-        // opens inside an <iframe> on the "Post-processing" tab, so it at least starts in the
-        // same theme (it doesn't stay live-synced afterwards -- separate documents). The same
-        // class/text/background swap that ThemeToggle.js already does on click, just applied
-        // once here before the first render.
-        if (new URLSearchParams(window.location.search).get('theme') === 'light') {
-            this.currentTheme = 'light';
-            document.body.className = 'light-mode';
-            document.getElementById('theme-toggle-btn').innerText = '🌙 Modo Escuro';
-            this.renderer3D.scene.background.setHex(0xf7f6fb);
-        }
 
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
