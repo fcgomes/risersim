@@ -3,6 +3,7 @@
  * @brief StaticIntegrator: static load vector assembly and artificial-stiffness (Tikhonov) regularization.
  */
 #include "risersim/static_integrator.hpp"
+#include "risersim/hydrostatics.hpp"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -14,23 +15,36 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
     auto* model = analysis->model;
     if (!model) return F_ext;
 
+    double water_surface_z = model->environmental.water_surface_z;
+
     for (const auto& elem : model->elements) {
         double L = elem->initial_length;
         double g = 9.81;
 
+        double z1 = elem->node1->current_coords().z();
+        double z2 = elem->node2->current_coords().z();
+
+        // Dry weight (net of internal-fluid buoyancy, which is a fixed structural property, not
+        // Z-dependent) stays exactly as before. External buoyancy now scales with how much of
+        // the element is actually below the water surface, instead of always applying the
+        // fully-submerged value regardless of Z -- see hydrostatics.hpp for why (docs/roadmap.md
+        // item 1b).
         double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
-        double w_buoyancy = analysis->water_density * elem->outer_area() * g;
-        double elem_weight_total = (w_dry - w_buoyancy) * L;
+        double zc[2] = {z1, z2};
+        Hydrostatics hydro(elem->props.D_outer, L, analysis->water_density);
+        hydro.compute(zc, water_surface_z);
 
         int eq1_z = elem->node1->eq_numbers[2];
         int eq2_z = elem->node2->eq_numbers[2];
 
-        if (eq1_z >= 0) F_ext[eq1_z] -= elem_weight_total * 0.5;
-        if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
+        // Dry weight still splits 50/50 (doesn't depend on submersion). Buoyancy uses
+        // Hydrostatics' own per-end apportionment (generally asymmetric while straddling --
+        // e.g. one end fully wet, the other still dry -- NOT a blanket 50/50 split of the
+        // element's total buoyant force).
+        if (eq1_z >= 0) F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
+        if (eq2_z >= 0) F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
 
         if (analysis->enable_current) {
-            double z1 = elem->node1->current_coords().z();
-            double z2 = elem->node2->current_coords().z();
 
             // Fraction of this element's length not buried more than 1m below the seabed --
             // mirrors real ANFLEX's element-state classification (node.cpp:set_surrounding_state,
@@ -82,6 +96,11 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
     // directly through the element/soil internal-force formulation) -- kept here as-is.
     Eigen::VectorXd F_ext_unused;
     analysis->assemble_system(K_global, F_ext_unused, F_int);
+
+    // Submersion-dependent buoyancy stiffness (see hydrostatics.hpp, docs/roadmap.md item 1b) --
+    // the matching force already lives in assemble_load_vector() above, this is its tangent
+    // contribution, same "K_global += ..." pattern as K_artificial below.
+    K_global += analysis->assemble_buoyancy_stiffness();
 
     if (!artificial_stiffness_enabled || !model || model->elements.empty()) return;
 

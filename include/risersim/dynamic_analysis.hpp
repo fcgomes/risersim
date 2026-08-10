@@ -31,15 +31,16 @@ public:
      * @brief If true, stops the time-domain loop at the first time step whose Newton-Raphson
      * doesn't converge, instead of running the full duration regardless.
      *
-     * Default false, matching the original behavior: run every time step, accepting whatever
-     * state each step's Newton-Raphson reached even if it didn't converge, and only report
-     * overall failure at the end (deliberate for time-domain dynamics, where continuing past a
-     * bad step and hoping the system recovers is common practice). But when a model is known to
-     * diverge early and stay diverged (e.g. while isolating a convergence problem), running the
-     * full duration anyway just burns the iteration budget on hundreds of hopeless steps for no
-     * new information -- this lets a caller opt into stopping immediately instead.
+     * Default true: a non-converged step's accepted state is physically meaningless (whatever
+     * the Newton loop happened to land on when it bailed out, not an equilibrium), so every
+     * later step built on top of it is meaningless too -- letting the loop run to completion
+     * anyway just produces a full timeline of numbers that look like results but aren't (see
+     * docs/roadmap.md item 1b: this was previously false, and the resulting "steps 16-20 also
+     * fail" noise from a single bad step 15 obscured, rather than clarified, where the real
+     * problem was). Set false only when deliberately characterizing how badly/far a known-bad
+     * case diverges (a diagnostic use, not a normal run).
      */
-    bool stop_on_first_non_convergence = false;
+    bool stop_on_first_non_convergence = true;
 
     /// Real RAO+JONSWAP top motion (see vessel_motion.hpp), set by Simulation::run() when the
     /// input JSON has real data for it. Empty (`std::nullopt`) falls back to the old single-Z

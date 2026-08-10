@@ -84,6 +84,21 @@ public:
      */
     virtual void assemble_system(Eigen::SparseMatrix<double>& K_global, const Eigen::VectorXd& F_ext, Eigen::VectorXd& F_int);
 
+    /**
+     * @brief Tangent stiffness contribution from submersion-dependent buoyancy (see
+     * hydrostatics.hpp, docs/roadmap.md item 1b), for the model's CURRENT node positions.
+     *
+     * Buoyancy's FORCE side lives in each caller's own F_ext assembly (weight+buoyancy have
+     * always been computed there, not in assemble_system() -- see static_integrator.cpp,
+     * static_analysis.cpp, dynamic_analysis.cpp), so this only returns the matching stiffness,
+     * meant to be added on top of assemble_system()'s K_global (`K_global += K_buoyancy`) by any
+     * caller that's actually running a Newton iteration (as opposed to e.g. a one-off reference-
+     * norm computation, which only needs the force). Diagonal-only (one triplet per node's
+     * vertical DOF, no cross term between an element's two ends) -- matches real ANFLEX's own
+     * cNL_Hidrostatics usage in beam.cpp, which does the same simplification.
+     */
+    Eigen::SparseMatrix<double> assemble_buoyancy_stiffness() const;
+
     /** @brief Runs this analysis to completion. @return true on convergence/success. */
     virtual bool solve() = 0;
 };

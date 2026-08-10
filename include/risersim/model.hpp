@@ -104,7 +104,9 @@ struct AnalysisOptionsConfig {
     double dynamic_tolerance = 1.0e-4;
     double rayleigh_alpha = 0.05;
     double rayleigh_beta = 0.01;
-    bool stop_on_first_non_convergence = false;
+    // Default true -- see the matching field's doc comment in dynamic_analysis.hpp for why (a
+    // non-converged step's state is physically meaningless, so is everything built on it).
+    bool stop_on_first_non_convergence = true;
 };
 
 /**

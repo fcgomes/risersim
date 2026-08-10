@@ -3,6 +3,7 @@
  * @brief Analysis::assemble_system(): assembles the global tangent stiffness, internal force, and seabed contact/friction contributions.
  */
 #include "risersim/analysis.hpp"
+#include "risersim/hydrostatics.hpp"
 #include <algorithm>
 #include <unordered_map>
 
@@ -172,6 +173,36 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     }
 
     K_global.setFromTriplets(triplets.begin(), triplets.end());
+}
+
+Eigen::SparseMatrix<double> Analysis::assemble_buoyancy_stiffness() const {
+    Eigen::SparseMatrix<double> K_buoyancy(num_dofs, num_dofs);
+    if (!model) return K_buoyancy;
+
+    double water_surface_z = model->environmental.water_surface_z;
+    double g = 9.81;
+    std::vector<Eigen::Triplet<double>> triplets;
+
+    for (const auto& elem : model->elements) {
+        double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
+        Hydrostatics hydro(elem->props.D_outer, elem->initial_length, water_density);
+        hydro.compute(zc, water_surface_z);
+
+        int eq1_z = elem->node1->eq_numbers[2];
+        int eq2_z = elem->node2->eq_numbers[2];
+        // d(F_int)/dz == -d(F_ext_buoyancy)/dz -- F_ext's buoyancy term REDUCES the downward
+        // weight as an end rises toward the surface, so its own Z-derivative is already the
+        // right-signed restoring stiffness for the residual (F_ext - F_int); since the caller
+        // adds this directly to K_global (which multiplies displacement corrections against the
+        // residual the same way assemble_system()'s other stiffness terms do), the sign here
+        // must match those -- verified against real ANFLEX's own (always non-negative) stiffness
+        // convention in nl_hidrostatic.cpp, ported as-is (end_stiffness() >= 0 always).
+        if (eq1_z >= 0) triplets.push_back(Eigen::Triplet<double>(eq1_z, eq1_z, hydro.end_stiffness(0) * g));
+        if (eq2_z >= 0) triplets.push_back(Eigen::Triplet<double>(eq2_z, eq2_z, hydro.end_stiffness(1) * g));
+    }
+
+    K_buoyancy.setFromTriplets(triplets.begin(), triplets.end());
+    return K_buoyancy;
 }
 
 } // namespace risersim

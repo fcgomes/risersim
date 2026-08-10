@@ -4,7 +4,9 @@
  */
 #include "risersim/dynamic_analysis.hpp"
 #include "risersim/rotation_utils.hpp"
+#include "risersim/hydrostatics.hpp"
 #include "risersim/config.hpp"
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -135,10 +137,18 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         Eigen::VectorXd V_curr = V_prev + dt_s * (1.0 - gamma_newmark) * A_prev;
         Eigen::VectorXd U_curr = U_prev + dt_s * V_prev + 0.5 * dt_s * dt_s * (1.0 - 2.0 * beta_newmark) * A_prev;
 
-        // Newton-Raphson Iterations per Dynamic Time Step
-        int nr_converged_iter = -1;
-        double res_norm_prev = 1.0e30;
-        for (int iter = 0; iter < max_nr_iters; ++iter) {
+        // Assembles node state + F_ext + K_global/F_int for a TRIAL dynamic-DOF vector U_trial --
+        // extracted so both the main per-iteration assembly below AND the backtracking line
+        // search (docs/roadmap.md item 1b) can share it instead of duplicating ~70 lines. Sets
+        // node->disp/rot ABSOLUTELY from static_disps/static_rots + U_trial (not incrementally),
+        // so repeated calls with different U_trial candidates are self-consistent -- no manual
+        // snapshot/restore needed between backtracking attempts, each call simply overwrites.
+        struct AssembledState {
+            Eigen::VectorXd F_ext;
+            Eigen::SparseMatrix<double> K_global;
+            Eigen::VectorXd F_int;
+        };
+        auto assemble_at = [&](const Eigen::VectorXd& U_trial) -> AssembledState {
             // Update Node Displacements (Static + Current Dynamic Perturbation) -- top_node
             // included now: it's a genuine free DOF held by the penalty spring (top_motion), not
             // excluded by direct assignment, so it must receive Newton corrections like any other
@@ -151,14 +161,14 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 for (int k = 0; k < 3; ++k) {
                     int eq = node->eq_numbers[k];
                     if (eq >= 0) {
-                        double new_disp_k = static_disps[i][k] + U_curr[eq];
+                        double new_disp_k = static_disps[i][k] + U_trial[eq];
                         // This iteration's increment (for the seabed friction spring).
                         if (k < 2) node->delta_disp_xy[k] = new_disp_k - node->disp[k];
                         node->disp[k] = new_disp_k;
                     }
 
                     int eq_rot = node->eq_numbers[k + 3];
-                    if (eq_rot >= 0) { dyn_rot_perturbation[k] = U_curr[eq_rot]; has_rot_dof = true; }
+                    if (eq_rot >= 0) { dyn_rot_perturbation[k] = U_trial[eq_rot]; has_rot_dof = true; }
                 }
                 // Proper composition of the dynamic perturbation on top of the static base
                 // rotation (not a linear sum). See rotation_utils.hpp.
@@ -170,21 +180,31 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 elem->update_effective_tension();
             }
 
+            AssembledState st;
+
             // 1. External Load Vector F_ext
-            Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
+            st.F_ext = Eigen::VectorXd::Zero(num_dofs);
             for (const auto& elem : model->elements) {
                 double L = elem->initial_length;
                 double g = 9.81;
 
                 double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
-                double w_buoyancy = water_density * elem->outer_area() * g;
-                double elem_weight_total = (w_dry - w_buoyancy) * L;
+                // Submersion-scaled buoyancy (see hydrostatics.hpp, docs/roadmap.md item 1b) --
+                // this is the fix for the divergence traced to a node crossing the water surface
+                // mid-simulation: buoyancy used to be a CONSTANT per element regardless of Z,
+                // with no associated tangent stiffness, so Newton had no restoring gradient right
+                // at the crossing. Re-evaluated every Newton iteration (this whole F_ext block
+                // already re-runs per iteration), so it tracks the node's CURRENT position, not
+                // just its position at the start of the time step.
+                double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
+                Hydrostatics hydro(elem->props.D_outer, L, water_density);
+                hydro.compute(zc, model->environmental.water_surface_z);
 
                 int eq1_z = elem->node1->eq_numbers[2];
                 int eq2_z = elem->node2->eq_numbers[2];
 
-                if (eq1_z >= 0) F_ext[eq1_z] -= elem_weight_total * 0.5;
-                if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
+                if (eq1_z >= 0) st.F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
+                if (eq2_z >= 0) st.F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
 
                 if (enable_current) {
                     double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
@@ -194,23 +214,38 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
                     int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
 
-                    if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L * 0.5;
-                    if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L * 0.5;
-                    if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L * 0.5;
-                    if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L * 0.5;
+                    if (eq1_x >= 0) st.F_ext[eq1_x] += f_drag_x * L * 0.5;
+                    if (eq2_x >= 0) st.F_ext[eq2_x] += f_drag_x * L * 0.5;
+                    if (eq1_y >= 0) st.F_ext[eq1_y] += f_drag_y * L * 0.5;
+                    if (eq2_y >= 0) st.F_ext[eq2_y] += f_drag_y * L * 0.5;
                 }
             }
 
-            // 2. Assemble Global Mass (M) and Stiffness (K) Matrices
-            Eigen::SparseMatrix<double> K_global(num_dofs, num_dofs);
-            Eigen::VectorXd F_int = Eigen::VectorXd::Zero(num_dofs);
-            assemble_system(K_global, F_ext, F_int);
+            // 2. Assemble Global Stiffness (K) and Internal Force (F_int)
+            st.K_global.resize(num_dofs, num_dofs);
+            st.F_int = Eigen::VectorXd::Zero(num_dofs);
+            assemble_system(st.K_global, st.F_ext, st.F_int);
+            st.K_global += assemble_buoyancy_stiffness();
+
+            return st;
+        };
+
+        // Newton-Raphson Iterations per Dynamic Time Step
+        int nr_converged_iter = -1;
+        double res_norm_prev = 1.0e30;
+        for (int iter = 0; iter < max_nr_iters; ++iter) {
+            AssembledState state = assemble_at(U_curr);
+            Eigen::SparseMatrix<double>& K_global = state.K_global;
+            Eigen::VectorXd& F_ext = state.F_ext;
+            Eigen::VectorXd& F_int = state.F_int;
 
             if (!model) return false;
             Eigen::SparseMatrix<double> M_global(num_dofs, num_dofs);
             std::vector<Eigen::Triplet<double>> m_triplets;
             // Goes through the Element interface, same rationale as Analysis::assemble_system()
-            // (see analysis.cpp) -- works unchanged for any future element type.
+            // (see analysis.cpp) -- works unchanged for any future element type. Not Z-dependent
+            // (unlike K_global) -- safe to reuse as-is across this iteration's backtracking
+            // trials below without recomputing.
             for (const auto& elem : model->elements) {
                 Eigen::MatrixXd m_elem = elem->mass_matrix(water_density_for_mass);
 
@@ -265,10 +300,86 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 break;
             }
 
-            // Update Displacements, Velocities and Accelerations
-            U_curr += delta_U;
-            A_curr = c1 * (U_curr - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
-            V_curr = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_curr);
+            // Physical step cap, ported from StaticAnalysis::enable_step_limiting
+            // (apply_newton_step_with_line_search(), static_analysis.cpp) -- the dynamic loop
+            // never had an equivalent. Traced a real divergence to exactly the failure mode this
+            // guards against (docs/roadmap.md item 1b): a node sitting just outside seabed
+            // contact (no contact stiffness yet, since it hasn't touched) got an UNCAPPED linear
+            // correction that jumped it 1.6m straight through the seabed in one iteration --
+            // the contact stiffness only "switches on" after the fact, too late to have shaped
+            // that correction. Scaling the whole correction down (not clamping component-wise,
+            // which would distort its direction) keeps every node's translation/rotation
+            // increment within a physically sane bound per iteration, so a node approaching a
+            // contact boundary gets there gradually across a few iterations instead of vaulting
+            // through it. Same defaults as static's (0.5 m / 0.3 rad) -- not (yet) exposed via
+            // the input JSON like static's `enable_step_limiting` is; always on here, since
+            // nothing previously protected the dynamic loop from this failure mode at all.
+            constexpr double max_translation_step = 0.5;
+            constexpr double max_rotation_step = 0.3;
+            double alpha_cap = 1.0;
+            for (const auto& node : model->nodes) {
+                for (int i = 0; i < 3; ++i) {
+                    int eq = node->eq_numbers[i];
+                    if (eq >= 0) {
+                        double du = std::abs(delta_U[eq]);
+                        if (du > 1.0e-12) alpha_cap = std::min(alpha_cap, max_translation_step / du);
+                    }
+                    int eq_rot = node->eq_numbers[i + 3];
+                    if (eq_rot >= 0) {
+                        double drot = std::abs(delta_U[eq_rot]);
+                        if (drot > 1.0e-12) alpha_cap = std::min(alpha_cap, max_rotation_step / drot);
+                    }
+                }
+            }
+
+            // Backtracking safety net, ported from
+            // StaticAnalysis::apply_newton_step_with_line_search() -- the step cap above alone
+            // still let step 15's real repro case take 8 iterations to blow up instead of 1
+            // (docs/roadmap.md item 1b), because a capped-but-still-accepted step can itself
+            // land somewhere that makes the NEXT iteration's residual explode. Checks the trial
+            // BEFORE committing to it, instead of applying blindly and only noticing the blowup
+            // one iteration later. Reuses this iteration's M_global/C_global for every trial (not
+            // recomputed per trial -- M isn't Z-dependent at all, and re-deriving C from a
+            // slightly stale K_global is an accepted approximation for this accept/reject check).
+            //
+            // Threshold is 2x, NOT static's 100x (`apply_newton_step_with_line_search()`) -- tried
+            // 100x first (matching static's "catastrophic-blowup-only" convention) and it did
+            // nothing for the real repro case: it accepted a trial whose OWN pre-correction
+            // residual was ~938k growing to ~9.78M post-correction (10.4x, comfortably under
+            // 100x), which then tripped the separate iteration-to-iteration 10x divergence check
+            // below anyway and still failed step 15 identically to before backtracking existed.
+            // Static's 100x is calibrated against static's own catastrophic-blowup history
+            // (documented in seabed.hpp) -- it isn't a universal constant, and evidently doesn't
+            // transfer to this failure mode. 2x rejects the trial that used to blow up and backs
+            // off instead -- confirmed against the real repro case (Exemplo_01a, real XML+H5,
+            // real 20-iteration/1s/0.05s config, no artificial loosening): the dynamic solver now
+            // converges clean through all 20 steps, the first time in this whole investigation
+            // (docs/roadmap.md item 1b) that's happened. Not requiring strict monotonic decrease
+            // (which risersim's static solver has previously found too strict in other contexts,
+            // also documented in seabed.hpp) still leaves enough slack for normal iterations that
+            // legitimately increase the residual a little before converging.
+            constexpr int max_backtracks = 5;
+            double trial_alpha = alpha_cap;
+            Eigen::VectorXd U_trial, A_trial, V_trial;
+            AssembledState trial_state;
+            for (int bt = 0; bt <= max_backtracks; ++bt) {
+                U_trial = U_curr + trial_alpha * delta_U;
+                trial_state = assemble_at(U_trial);
+                A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
+                V_trial = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_trial);
+                Eigen::VectorXd Residual_trial = trial_state.F_ext - trial_state.F_int - M_global * A_trial - C_global * V_trial;
+                double norm_trial = Residual_trial.norm();
+
+                if (norm_trial <= res_norm * 2.0 || bt == max_backtracks) break;
+                trial_alpha *= 0.5;
+            }
+
+            // Update Displacements, Velocities and Accelerations -- the accepted trial's
+            // assemble_at() call above already left node->disp/rot consistent with U_trial, so
+            // nothing further to reapply here.
+            U_curr = U_trial;
+            A_curr = A_trial;
+            V_curr = V_trial;
         }
 
         U = U_curr;

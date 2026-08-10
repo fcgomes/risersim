@@ -4,6 +4,7 @@
  */
 #include "risersim/static_analysis.hpp"
 #include "risersim/static_integrator.hpp"
+#include "risersim/hydrostatics.hpp"
 #include "risersim/rotation_utils.hpp"
 #include "risersim/convergence_test.hpp"
 #include "risersim/config.hpp"
@@ -297,18 +298,22 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     // Total reference force at 100% load, used for a strict normalization
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
+    double water_surface_z_ref = model->environmental.water_surface_z;
     for (const auto& elem : model->elements) {
         double L = elem->initial_length;
         double g = 9.81;
         double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
-        double w_buoyancy = water_density * elem->outer_area() * g;
-        double elem_weight_total = (w_dry - w_buoyancy) * L;
+        // Submersion-scaled buoyancy (see hydrostatics.hpp, docs/roadmap.md item 1b) -- only the
+        // force matters here (a reference norm for convergence checking), no stiffness needed.
+        double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
+        Hydrostatics hydro(elem->props.D_outer, L, water_density);
+        hydro.compute(zc, water_surface_z_ref);
 
         int eq1_z = elem->node1->eq_numbers[2];
         int eq2_z = elem->node2->eq_numbers[2];
 
-        if (eq1_z >= 0) F_total_ref[eq1_z] -= elem_weight_total * 0.5;
-        if (eq2_z >= 0) F_total_ref[eq2_z] -= elem_weight_total * 0.5;
+        if (eq1_z >= 0) F_total_ref[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
+        if (eq2_z >= 0) F_total_ref[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
     }
     double norm_F_ref = F_total_ref.norm() + 1.0;
 
@@ -513,20 +518,31 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                   << top_motion.target_disp.x() << " m" << std::endl;
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
+        double water_surface_z_offset = model->environmental.water_surface_z;
 
         for (const auto& elem : model->elements) {
             double L = elem->initial_length;
             double g = 9.81;
             double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
-            double w_buoyancy = water_density * elem->outer_area() * g;
-            double elem_weight_total = (w_dry - w_buoyancy) * L;
+            // Submersion-scaled buoyancy (see hydrostatics.hpp, docs/roadmap.md item 1b), same
+            // per-end apportionment as static_integrator.cpp::assemble_load_vector -- computed
+            // once per offset step (not re-evaluated per Newton iteration below), same as this
+            // function's weight has always been; the matching stiffness (also step-frozen, added
+            // fresh into K_global every iteration since assemble_system() rebuilds it from
+            // scratch each time) keeps Newton robust across an element crossing the surface
+            // mid-step even though the force itself isn't re-linearized iteration-to-iteration.
+            double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
+            Hydrostatics hydro(elem->props.D_outer, L, water_density);
+            hydro.compute(zc, water_surface_z_offset);
 
             int eq1_z = elem->node1->eq_numbers[2];
             int eq2_z = elem->node2->eq_numbers[2];
 
-            if (eq1_z >= 0) F_ext[eq1_z] -= elem_weight_total * 0.5;
-            if (eq2_z >= 0) F_ext[eq2_z] -= elem_weight_total * 0.5;
+            if (eq1_z >= 0) F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
+            if (eq2_z >= 0) F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
         }
+
+        Eigen::SparseMatrix<double> K_buoyancy = assemble_buoyancy_stiffness();
 
         bool step_converged = false;
         bool solver_failed = false;
@@ -536,6 +552,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
             Eigen::VectorXd F_int;
 
             assemble_system(K_global, F_ext, F_int);
+            K_global += K_buoyancy;
 
             Eigen::VectorXd Residual = F_ext - F_int;
             double norm_R = Residual.norm();

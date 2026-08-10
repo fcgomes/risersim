@@ -50,7 +50,7 @@ considerar, quando o Eixo 1a for revisitado, aumentar o default de `static.max_i
 assembly (ou torná-lo independente do valor do XML) em vez de manter os 40 vindos de
 `AnalysisData/Static/num_max_iter`.
 
-### 1b. Investigar a análise dinâmica — 🟡 EM PROGRESSO (achado real, ainda não fechado)
+### 1b. Investigar a análise dinâmica — ✅ RESOLVIDO (Exemplo_01a converge os 20 passos completos)
 
 Começada nesta rodada, seguindo a mesma disciplina que resolveu 1a (auditoria de dados antes de
 técnica numérica). Rodando o Exemplo_01a completo com dinâmica pela primeira vez desde que a
@@ -189,6 +189,66 @@ esgotados. Dois caminhos concretos: (a) isolar um caso mínimo com um movimento 
 falta algo tipo line search/sub-passos no Newton dinâmico (o real ANFLEX também não tem line search,
 confirmado em `newton_raphson.cpp` -- mas pode ter outra técnica de robustez, ex. redução automática
 de `dt` quando o passo não converge, que o risersim hoje não tem).
+
+**Atualização 7** (fechado -- os 20 passos completos convergem, pela primeira vez em toda essa
+investigação): segui o caminho (a) acima -- plano completo aprovado pelo usuário, comparando o
+tratamento de superfície livre do risersim contra o ANFLEX real (`trunk/src/nl_hidrostatic.{h,cpp}`,
+`trunk/src/morison.cpp`) pra achar o gatilho exato do passo 15 (t=0,75s). Achados e correções, em
+ordem:
+
+- **Empuxo constante sem rigidez tangente** (gap real, confirmado por comparação de código): o
+  risersim aplicava empuxo constante por elemento, independente de Z, em 4 lugares duplicados
+  (`static_integrator.cpp`, `static_analysis.cpp` ×2, `dynamic_analysis.cpp`) -- sem nenhuma rigidez
+  associada. Portei `cNL_Hidrostatics` quase 1:1 como `hydrostatics.hpp` (força + rigidez tangente
+  por extremidade, 5 regimes de submersão) e pluguei em todos os 4 call-sites de força mais um novo
+  `Analysis::assemble_buoyancy_stiffness()` (rigidez, somada em `K_global` nos loops de Newton
+  estático e dinâmico, mesmo padrão do `C_global = alpha*M + beta*K`). Simplificação assumida (fase
+  1 do plano, documentada no header): superfície plana (`water_surface_z` único, não por-extremidade
+  variando com a onda) e clearance vertical de centro-de-linha em vez da distância perpendicular ao
+  eixo inclinado que o ANFLEX real usa. Melhoria real e validada (zero regressão, 361 asserts), mas
+  **não era a causa da divergência do passo 15** -- ver próximo item.
+- **Erro meu de diagnóstico, corrigido antes de seguir**: assumi a convenção Z do risersim sintético
+  (superfície em Z=0) pra interpretar a trajetória do nó 274. Depois de implementar e testar o fix de
+  empuxo acima e ver resíduo bit-a-bit idêntico ao baseline, chequei os dados reais do modelo:
+  `water_surface_z≈265`, `seabed_depth≈0` -- convenção oposta (a nativa do ANFLEX, que é a real pra
+  qualquer modelo vindo de XML/H5). O nó 274 estava cruzando o **leito**, não a superfície. Reportei
+  o erro ao usuário antes de continuar; o fix de empuxo foi mantido (correto e validado por conta
+  própria), só reclassificado como não sendo a causa deste bug específico.
+- **Causa raiz real** (isolada com instrumentação de debug temporária, depois removida): no passo 15,
+  uma correção de Newton sem limite algum, calculada enquanto um nó ainda estava ~1,75cm FORA do
+  contato com o leito (`k_seabed=0` ali -- sem resistência local nenhuma pro Newton), empurrou esse nó
+  1,6m através do leito numa única iteração. A resposta de força interna elementar/estrutural
+  resultante (não a mola do leito em si) explode o resíduo. É um problema de globalização/tamanho de
+  passo do Newton, comum a qualquer modelo simples de contato unilateral -- o próprio ANFLEX real tem
+  a mesma descontinuidade de rigidez de contato na mola linear dele (confirmado via
+  `newton_raphson.cpp`: sem adaptação de `dt`/retry nenhuma) -- ou seja, **não é um gap de física
+  faltando em relação ao ANFLEX**, é um problema numérico do solver.
+- **Correção**: portei pro loop dinâmico o mesmo mecanismo já existente no estático
+  (`StaticAnalysis::enable_step_limiting`/`apply_newton_step_with_line_search`) -- (1) limitador de
+  passo (`max_translation_step_m=0.5`, `max_rotation_step_rad=0.3`) e (2) busca de linha por
+  backtracking residual, até 5 cortes pela metade. A tolerância do backtracking teve que ser mais
+  apertada que a do estático: `norm_trial <= res_norm*100.0` (a mesma do estático) testada e
+  confirmada **ineficaz** aqui -- deixava passar exatamente o passo que explode; `norm_trial <=
+  res_norm*2.0` testado e confirmado suficiente. Refatorei o loop de Newton dinâmico em torno de uma
+  lambda `assemble_at(U_trial)` reutilizável (monta F_ext/K_global/F_int a partir de um vetor de
+  estado absoluto, não incremental -- diferente do estático, não precisa snapshot/restore entre
+  tentativas de backtracking).
+- **Instrução explícita do usuário, implementada**: "não faz sentido progredir a simulação se temos
+  um passo que falha" -- `stop_on_first_non_convergence` (`DynamicAnalysis`/`AnalysisOptionsConfig`)
+  mudou o default de `false` pra `true`: um passo não-convergido pára o laço de tempo inteiro em vez
+  de continuar rodando passos seguintes sobre um estado fisicamente sem sentido.
+
+**Resultado final**: rodando o `Exemplo_01a` completo e real (XML+H5 reais, config real do ANFLEX --
+20 iterações, 1s de duração, dt=0,05s, tolerância 1e-3, sem nenhum afrouxamento artificial), estática
+E dinâmica convergem os 20 passos completos pela primeira vez em toda essa investigação. Catch2 361
+asserts / 15 casos, zero regressão, verificado a cada incremento.
+
+**Em aberto, não decidido ainda**: as fases 4 (força de Morison, já escrita em `hydrodynamics.hpp`
+mas nunca instanciada) e 5 (massa adicionada escalando com comprimento molhado) do plano original
+ficaram pendentes -- eram contingentes no checkpoint da fase 3, que seguiu por outro caminho (leito/
+limitador de passo/backtracking) em vez do previsto. Como a divergência que motivou o plano já está
+resolvida, vale decidir com o usuário se ainda compensa perseguir Morison/massa molhada agora (physics
+gap real, mas não bloqueante) ou se o Eixo 1b deve ser considerado fechado por ora.
 
 ## Eixo 2 — Pipeline de dados (desbloqueia mais casos de teste reais, baixo risco)
 
