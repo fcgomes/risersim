@@ -56,6 +56,10 @@ def main():
     )
     parser.add_argument('aml_file', help='Caminho para o arquivo .aml do ANFLEX')
     parser.add_argument('--line-index', type=int, default=0, help='Índice da linha a simular')
+    parser.add_argument('--load-case-id', type=int, default=None,
+                         help='ID real do %%LOAD_CASE a usar (só caminho .aml puro -- '
+                              'um .aml pode ter vários, ex. "Near"/"Far"; sem isso, usa o primeiro '
+                              'do arquivo). Ignorado no caminho XML+H5, que já corresponde a um só.')
     parser.add_argument('--num-elements', type=int, default=None, help='Sobrescreve o número de elementos')
     parser.add_argument('--static-only', action='store_true', help='Executa apenas análise estática')
     parser.add_argument('--offset-near', action='store_true', help='Usa offset Near em vez de Far')
@@ -123,41 +127,34 @@ def main():
         reader = ANFLEXAMLReader(str(aml_path))
         reader.summary()
 
-        config = reader.to_risersim_config(line_index=args.line_index)
+        # reader.to_risersim_json() (not the older to_risersim_config()) is what actually
+        # produces the schema ModelBuilder::load_from_json reads -- see docs/roadmap.md item 2a
+        # and aml_reader.py's own docstring for the two methods. --num-elements is threaded
+        # straight into mesh synthesis (there's no separate 'geometry' dict to patch after the
+        # fact anymore, the mesh is already built by the time this call returns). --load-case-id
+        # picks which %LOAD_CASE (current+wave pairing) to resolve from when the .aml defines
+        # more than one (e.g. 'Near'/'Far') -- defaults to the first in the file, same as before
+        # this flag existed, when not given.
+        config = reader.to_risersim_json(
+            line_index=args.line_index, num_elements_override=args.num_elements,
+            load_case_id=args.load_case_id,
+        )
 
-        if args.num_elements:
-            config['geometry']['num_elements'] = args.num_elements
+        # Same override semantics as the XML+H5 branch above (build_config_from_xml_h5): only
+        # overrides duration/dt/dynamic-enabled when the user actually passed the corresponding
+        # flag, so as not to mask the AML's own real values with the CLI's fixed defaults.
+        if '--duration' in sys.argv:
+            config['analysis_options']['dynamic']['duration_s'] = args.duration
+        if '--dt' in sys.argv:
+            config['analysis_options']['dynamic']['dt_s'] = args.dt
+        if args.static_only:
+            config['analysis_options']['dynamic']['enabled'] = False
 
-        # Offsets stay nominally at 0.0 at equilibrium.
-        config['offsets'] = {
-            'near_m': 0.0,
-            'far_m':  0.0
-        }
-
-        # Adds a safety Rayleigh damping if it's 0 in the AML, to avoid divergence
-        ray = config.get('rayleigh', {})
-        config['rayleigh'] = {
-            'alpha': max(ray.get('alpha', 0.0), 0.05),
-            'beta': max(ray.get('beta', 0.0), 0.005)
-        }
-
-        # 2. Merge simulation options (priority: command-line arguments > AML > default)
-        sim_opts = config.get('simulation_options', {})
-
-        # If the user didn't change --duration on the command line, uses the AML's value (if any) or falls back to 20.0
-        duration = args.duration if '--duration' in sys.argv else sim_opts.get('duration_s', 20.0)
-        dt = args.dt if '--dt' in sys.argv else sim_opts.get('dt_s', 0.05)
-
-        config['simulation_options'] = {
-            'static_only': args.static_only,
-            'static_steps': sim_opts.get('static_steps', 20),
-            'static_max_iter': sim_opts.get('static_max_iter', 300),
-            'static_tolerance': sim_opts.get('static_tolerance', 0.01),
-            'duration_s': duration,
-            'dt_s': dt,
-            'dynamic_max_iter': sim_opts.get('dynamic_max_iter', 20),
-            'dynamic_tolerance': sim_opts.get('dynamic_tolerance', 1.0e-3),
-        }
+        # Safety-net Rayleigh damping if the AML computed zero (avoids divergence in the dynamic
+        # phase) -- same floor as before this change, just applied to the new schema's location.
+        ray = config['analysis_options']['dynamic']['rayleigh_damping']
+        ray['alpha'] = max(ray.get('alpha', 0.0), 0.05)
+        ray['beta'] = max(ray.get('beta', 0.0), 0.005)
 
     # 2. Create the output directory and save the input JSON
     out_dir = Path(args.out_dir).resolve()
