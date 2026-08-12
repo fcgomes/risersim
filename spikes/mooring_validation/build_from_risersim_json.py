@@ -79,19 +79,26 @@ def build_system_from_json(json_path, rho_water_override=None, g=9.81, top_xyz_o
     d_vol = avg(d_out_list)
     rho_water = rho_water_override if rho_water_override is not None else avg(rho_fluid_list)
 
-    # 3. Comprimento nao-esticado: soma das distancias no->no ao longo da
-    #    linha, na mesma ordem dos elementos (mesma logica que
-    #    ModelBuilder usa por elemento, so que somada para a linha toda).
-    #    As coordenadas do JSON ja sao a geometria "instalada" (lida do H5),
-    #    entao essa soma e uma boa aproximacao do comprimento real da linha.
-    L_unstretched = 0.0
-    for e in elements_json:
-        c1 = coords_by_id[e["node1_id"]]
-        c2 = coords_by_id[e["node2_id"]]
-        dx = c2[0] - c1[0]
-        dy = c2[1] - c1[1]
-        dz = c2[2] - c1[2]
-        L_unstretched += math.sqrt(dx * dx + dy * dy + dz * dz)
+    # 3. Comprimento nao-esticado. Prefere o campo real declarado
+    #    `model.total_length_m` (aml_reader.py) quando presente -- a soma das distancias
+    #    no->no (usada como unico fallback abaixo) so e uma boa aproximacao do comprimento
+    #    real quando os nos de entrada ja estao na geometria "instalada" real (o caso do
+    #    H5, onde essa suposicao motivou originalmente esta conta) -- para uma malha
+    #    sintetizada em linha reta entre o topo e a ancora (aml_reader.py's
+    #    `_synthesize_mesh()`, caminho `.aml` puro), a corda reta e sempre mais curta que o
+    #    cabo real (que tem catenaria/sag), e essa soma subestimava o comprimento real em
+    #    ~22% no Exemplo_01a/Cross -- levando o MoorPy a resolver o equilibrio de um cabo
+    #    fisicamente mais curto (menos sag) que o real, com tracao de topo bem maior.
+    L_unstretched = data.get("model", {}).get("total_length_m")
+    if not L_unstretched or L_unstretched <= 0:
+        L_unstretched = 0.0
+        for e in elements_json:
+            c1 = coords_by_id[e["node1_id"]]
+            c2 = coords_by_id[e["node2_id"]]
+            dx = c2[0] - c1[0]
+            dy = c2[1] - c1[1]
+            dz = c2[2] - c1[2]
+            L_unstretched += math.sqrt(dx * dx + dy * dy + dz * dz)
 
     # 4. Profundidade / seabed. environmental.seabed.depth_m documenta a
     #    lamina d'agua; a convencao de Z dos nos (seabed em Z=0) e a fonte

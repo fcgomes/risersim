@@ -277,13 +277,22 @@ class ANFLEXAMLReader:
         area_outer = math.pi * do**2 / 4.0
         area_inner = math.pi * di**2 / 4.0
         area_struct = area_outer - area_inner   # annular area (m²)
-        I_y = math.pi * (do**4 - di**4) / 64.0
         J_tors = math.pi * (do**4 - di**4) / 32.0
 
         E = ea_N / area_struct if area_struct > 0 else 2.1e11
-        # EI / I => E; cross check
-        E_from_EI = ei_Nm2 / I_y if I_y > 0 else E
-        # Use E from EA (primary structural stiffness)
+        # I_y NÃO pode vir da fórmula geométrica de tubo homogêneo (pi*(do^4-di^4)/64) -- um
+        # riser/umbilical flexível real tem rigidez à flexão MUITO menor que um tubo de aço
+        # sólido do mesmo OD/ID (é multi-camada), e isso já é o que `%MATERIAL.STIFFNESS.BENDING`
+        # (`ei_kNm2`) informa diretamente. Usar a fórmula geométrica aqui (como uma versão
+        # anterior deste código fazia) dava um I_y ~123x maior que o real pro Exemplo_01a, e
+        # inconsistente com o próprio E/EI do JSON (E*I_y != EI) -- mesmo sintoma, mesma causa
+        # raiz que motivou o `T_eff` do Cross via `.aml` puro sair ~994 kN em vez dos 217 kN reais
+        # (ver roadmap.md, Eixo 2a) mesmo com a malha inicial já batendo no centímetro contra o
+        # MoorPy. Back-derivar de EI/E (mesmo fallback que `xml_h5_reader.py:641-642` usa quando
+        # o XML real não tem `IY_m4`/`IZ_m4` explícito) garante E*I_y=EI por construção, o mesmo
+        # jeito que `G` abaixo já era back-derivado de GJ/J_tors (só I_y que ficava de fora dessa
+        # mesma disciplina).
+        I_y = ei_Nm2 / E if E > 0 else 5.0e-5
         G = gj_Nm2 / J_tors if J_tors > 0 else 8.0e10
 
         # Dry linear mass (kg/m)
@@ -1579,7 +1588,15 @@ class ANFLEXAMLReader:
         return {
             "title": self.model_data['title'],
             "schema_version": SCHEMA_VERSION,
-            "model": {"nodes": nodes, "elements": elements},
+            # `total_length_m` (real, declared segment-sum length -- NOT re-derivable from
+            # `nodes`' own coordinates when the initial mesh is a straight chord between top and
+            # anchor, always shorter than the real sagging cable it approximates) -- consumed by
+            # `moorpy_warm_start.py`/`build_from_risersim_json.py` so MoorPy solves the real
+            # cable length instead of silently inferring a too-short one from the chord. Extra,
+            # harmless field for anything else reading this JSON (ModelBuilder only reads
+            # "nodes"/"elements" here, ignores unknown keys, same as every other optional field
+            # in this schema).
+            "model": {"nodes": nodes, "elements": elements, "total_length_m": line.get('total_length_m', 500.0)},
             "boundary_conditions": {
                 "prescribed_dofs": prescribed_nodes,
                 "restrained_dofs": restrained_nodes,

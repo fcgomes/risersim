@@ -434,13 +434,39 @@ implica "o binário usado pelo restante do sistema já reflete o fix".
   trapézio, e por isso o "/2" de `STDPM=sqrt(AREAMOV/2)` não se aplica do mesmo jeito aqui. Não
   investigado mais a fundo -- próxima tentativa, se valer a pena, deveria ler `movgharfloa.f`
   primeiro pra confirmar a definição exata de `AREAMOV` antes de mexer na fórmula de novo.
-- **T_eff estático do "Cross" via `.aml` puro continua ~994 kN vs. 217 kN real**, mesmo com a âncora
-  agora batendo no centímetro -- sugere que o *formato* do chute inicial (reta entre os pontos, não
-  uma catenária real com a curvatura certa) ainda importa pro resultado final, provavelmente via
-  atrito solo-linha dependente de histórico (elástico-plástico, não instantâneo). `moorpy_warm_start.py`
-  (já existente, já validado, resolve a FORMA completa via `ms.solveEquilibrium()`, não só os
-  extremos) é o caminho natural pra isso, mas ainda não está plugado no pipeline `.aml` (hoje é um
-  script separado, rodado manualmente sobre um `input_simulation.json` já gerado).
+**Atualização 5** (causa raiz do `T_eff` estático do "Cross" via `.aml` puro, ~994 kN vs. 217 kN
+real, achada e corrigida -- ✅ **RESOLVIDO**): não era o formato do chute inicial por si só (testado
+diretamente: rodar com o `warm_start` já existente, aplicado como `disp` por cima da malha reta
+-- `model_builder.cpp:200-221` -- deu o MESMO `T_eff`, 994,2 kN, provando que a forma inicial não
+era a causa). A causa real: `model_builder.cpp:149` deriva `L_unstretched` (comprimento natural/
+não-esticado de cada elemento, usado no cálculo de deformação axial) da distância EUCLIDIANA entre
+as coordenadas de entrada dos nós -- correto quando a malha de entrada já é a geometria real
+instalada (caminho XML+H5), mas `_synthesize_mesh()` (caminho `.aml` puro) coloca os nós numa
+RETA entre o topo e a âncora reais, e uma corda reta é sempre mais curta que o cabo real (que tem
+sag) -- medido: corda de 392,3m pra um cabo real de 500m (~22% mais curto). Cada elemento achava
+que seu comprimento natural era ~0,785m em vez de ~1,0m -- esticar o espaçamento real disso gerava
+uma deformação axial artificial enorme e, com EA=360 MN, uma tração muitas vezes maior que a real.
+`moorpy_warm_start.py`/`build_from_risersim_json.py` (o spike MoorPy já validado) tinham o MESMO
+bug, por sinal: também inferiam o comprimento da linha somando distâncias nó-a-nó da malha reta de
+entrada (documentado no próprio spike como assumindo "geometria já instalada", nunca validado pro
+caminho `.aml`) -- por isso corrigir só a malha inicial (sem consertar o spike) não bastava. Duas
+correções: (1) `aml_reader.py::to_risersim_json()` agora inclui um campo `model.total_length_m`
+real (soma dos segmentos declarados, não re-derivável de coordenadas de uma corda reta); (2)
+`build_from_risersim_json.py` usa esse campo quando presente, em vez de sempre somar distâncias
+nó-a-nó; (3) `run_from_aml.py` agora aplica a correção MoorPy automaticamente no caminho `.aml`
+puro (antes: só disponível como script manual separado) -- e, diferente do `warm_start` (que só
+sobrepõe `disp`), sobrescreve as PRÓPRIAS coordenadas dos nós antes de `model_builder.cpp` calcular
+`L_unstretched`, corrigindo o comprimento na raiz. **Resultado**: malha corrigida soma ~499,9m
+(era 392,3m); `T_eff` do Cross = **217,5 kN** (real: 217,3 kN, ~0,1% de erro) -- Near/Far/
+Transverse também convergem pra `T_eff`~218-220 kN cada (antes: ~950-1050 kN, bem mais dispersos
+entre si, outro sinal de que eram artefato de malha, não física real). Zero mudança em C++.
+
+**Achado novo, em aberto**: com o `T_eff` estático agora correto (bem mais baixo, ~218 kN em vez de
+~1000 kN), a dinâmica do Near e do Far pararam de convergir (Far: não converge no passo 79/t=3,95s,
+`res_norm=430`; antes desta correção, ambos convergiam completos) -- só o Transverse continua
+convergindo limpo. Não investigado ainda -- pode ser sensibilidade do Newton dinâmico a uma
+mudança real e substancial na configuração de equilíbrio (mesma família de problema do Eixo 1b,
+robustez do solver dinâmico), não necessariamente um bug novo introduzido por esta correção.
 
 **Verificação de regressão feita nesta rodada** (todos os 4 load cases do `Exemplo_01a`, binário
 `risersim_test_main.exe` recompilado a cada mudança): Near/Far/Transverse (`--force-aml-path`,

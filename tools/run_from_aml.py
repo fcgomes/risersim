@@ -171,6 +171,46 @@ def main():
     input_json_path = out_dir / 'input_simulation.json'
     with open(input_json_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+    if not use_xml_h5:
+        # `_synthesize_mesh()` (aml_reader.py) places the initial nodes on the STRAIGHT LINE
+        # (chord) between the real top/anchor points -- fine as a Newton-Raphson starting guess,
+        # but `model_builder.cpp:149` derives each element's `L_unstretched` (its unstressed
+        # reference length, used for axial strain) from the EUCLIDEAN distance between a pair of
+        # input node coordinates, not from the line's real declared segment length. A chord is
+        # always shorter than the real (sagging) catenary arc length it connects -- confirmed for
+        # Exemplo_01a/Cross: chord ≈392m vs the real 500m of pipe -- so every element's assumed
+        # rest length came out ~21% too short, and stretching real per-element spacing (needed to
+        # span the real geometry) out of that too-short a rest length produced a large spurious
+        # axial strain -- and with EA=360 MN, several times too much static top tension (994 kN
+        # vs the real, XML+H5-validated 217 kN, T_eff otherwise correct: same converged anchor
+        # position to the centimeter, same T_eff whether starting the Newton solve from this
+        # straight chord or from the (already existing, previously used only as a displacement
+        # overlay, see `model_builder.cpp:200-205`) MoorPy-solved real shape -- ruling out the
+        # *initial guess* and pointing at the *reference geometry* itself).
+        # Fix: replace the straight-line node coordinates with MoorPy's own equilibrium shape
+        # (`moorpy_warm_start.py`, already used/validated elsewhere in this pipeline) BEFORE
+        # `model_builder.cpp` ever computes `L_unstretched` from them -- MoorPy resamples by
+        # normalized arc length using the line's real segment lengths, so consecutive nodes end
+        # up correctly ~1m apart (not ~0.785m), matching the real material. Best-effort: only the
+        # `.aml` pure path needs this (the XML+H5 path's nodes already come from ANFLEX's own
+        # real, arc-length-consistent solved geometry); falls back to the original straight-line
+        # mesh (today's unchanged behavior) if MoorPy can't solve this particular model.
+        try:
+            from moorpy_warm_start import compute_warm_start_positions
+            node_positions, _meta = compute_warm_start_positions(str(input_json_path))
+            coords_by_id = {p['node_id']: p['coords'] for p in node_positions}
+            for n in config['model']['nodes']:
+                if n['id'] in coords_by_id:
+                    n['coords'] = coords_by_id[n['id']]
+            with open(input_json_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            print("⚓ Malha inicial corrigida via MoorPy: comprimento real do cabo preservado "
+                  "(evita o encurtamento artificial da corda reta topo-âncora).")
+        except Exception as exc:
+            print(f"⚠️ Não foi possível corrigir a malha inicial via MoorPy ({exc}) -- "
+                  f"usando a malha reta original (comprimento pode ficar incorreto).")
+
     print(f"✅ Arquivo de entrada JSON gerado com sucesso: {input_json_path}")
 
     # 3. Locate and run the C++ binary
