@@ -543,6 +543,33 @@ Transverse e Cross seguem convergindo limpo (sem regressão); Far avança do pas
 relacionado aos bugs de chattering corrigidos). Catch2: 361/361, sem regressão. Instrumentação de
 debug (`RISERSIM_DYN_DEBUG`) foi removida antes do commit -- só ficaram os três fixes em si.
 
+**Atualização 7** (item 3 acima, tentativa feita e revertida): antes de tentar qualquer fix,
+pesquisei o Fortran real (`anf_analysis/fortran/ANFLEX_COMUNS/bpngkn.f`, `bpngknl.f`, `bpmatg.f` --
+a rotina real de rigidez geométrica de viga) pra confirmar se o ANFLEX real trata compressão/tração
+negativa de algum jeito especial antes de portar qualquer coisa às cegas. **Achado**: não trata --
+`bpngkn.f` usa a força axial (`P1`) igual ao risersim, sem piso, sem `IF (P1.LT.0)`, sem trocar de
+formulação -- ou seja, esta instabilidade não é uma lacuna do risersim vs. o real, é uma
+característica da própria formulação de viga que o ANFLEX real também tem (só o elemento "cabo"
+puro, sem rigidez a flexão, tem uma checagem -- e essa checagem é um `STOP` fatal quando a rigidez
+axial some, `arigm3.f:223-228`, não uma correção graciosa). O único mecanismo genérico de ajuda ao
+Newton que o real tem é uma "rigidez artificial" (`bpflex.f:852-909`): decai exponencialmente com o
+número da iteração dentro de cada passo, não é disparada por tração negativa especificamente -- e o
+risersim já porta uma versão disso pro solver ESTÁTICO (`StaticIntegrator`,
+`static_integrator.cpp:107-142`, mesma forma: `k = avg(EA/L) * exp(-iter/1.25)`), mas o DINÂMICO
+nunca teve. Portei a mesma técnica pro loop dinâmico (rigidez artificial adicionada em
+`assemble_at()`, decaindo por iteração) e testei no Far -- **piorou**: passou a falhar no passo 104
+em vez do 109 (antes desta tentativa). Revertido (`git checkout`). Diferente da tentativa
+documentada na Atualização 4 (que tinha um motivo claro pro erro, 1/√2 uniforme), aqui não ficou
+óbvio por que piorou -- possivelmente a rigidez artificial, adicionada em TODA iteração de TODO
+passo (não só nos que precisam), muda a trajetória de convergência dos passos anteriores ao 109 o
+suficiente pra deixar o passo 109 numa condição inicial pior, já que cada passo dinâmico herda o
+estado exato do anterior (diferente do estático, onde artificial stiffness só é usada na fase de
+"assembly" isolada, nunca na fase "real" limpa -- `ArtificialStiffnessMode::Never`). Não investigado
+mais a fundo. Próxima tentativa, se valer a pena, deveria escopar a rigidez artificial SÓ aos passos/
+elementos com tração já negativa (não global/sempre-ligada como o port direto fez), ou considerar
+alguma das outras técnicas já listadas no item 3 (piso mínimo de tração, formulação de cabo com
+afrouxamento explícito).
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio
