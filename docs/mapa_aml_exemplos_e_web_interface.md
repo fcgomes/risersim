@@ -569,6 +569,49 @@ fidelidade da física aumentou, mas o Eixo 1b continua em aberto, agora com uma 
    `unordered_map<_, Eigen::Vector/Matrix>` no código (`grep` em `src/`/`include/` -- só essa
    ocorrência).
 
+7. **Correção do valor "30,17m" citado nos achados 3-6 acima -- não era física real, era um bug de
+   unidade** (ver roadmap.md, Eixo 2a, "Atualização 3", para o achado completo). Investigando por
+   que o load case "Far" (T=15,35s) do `Exemplo_01a`/`Exemplo_01c` produzia amplitudes muito piores
+   ainda que "Cross" (T≈10s) -- e desconfiando, a pedido do usuário ("acho estranho isso acontecer
+   na anf_movements, esse exemplo é bem básico"), que não podia ser física real -- montei um
+   ambiente WSL rodando os binários Linux reais do Fortran legado (`anf_analysis/fortran/bin/`,
+   `anf_i`/`anf_s`/`anf_d`) contra o `.DAT`/`.iwv`/`FPSO.RAO` reais do `Exemplo_01c`, gerando um
+   `.SAI` real com a tabela "RESPONSE AMPLITUDE OPERATOR (TRANSFERRED)" -- explicitamente em
+   unidades **"(M/M, RAD/M)"**, com valores pequenos (~0,049 rad/m a ω=0,40) muito diferentes do
+   valor bruto do arquivo `FPSO.RAO` (graus/m, ~6,77 no mesmo ponto). Confirmado em
+   `model_builder_dat.cpp:242-250`: o ANFLEX real converte a **amplitude** (não só a fase, que
+   `vessel_motion.cpp` já convertia) dos GDL rotacionais (roll/pitch/yaw) de graus/m pra radiano/m
+   antes de usar -- conversão que nunca existia em `vessel_motion.cpp`. Como os momentos espectrais
+   envolvem amplitude², o erro (~57x, `180/π`) composto quadraticamente inflava tudo que passava
+   pela transferência geométrica (heave "vazado" de pitch/roll, achados 2-6 acima) em até ~150x --
+   e o efeito é pior quando o pico do espectro de onda coincide com um pico de RAO rotacional
+   (quase exato pro caso "Far", ambos perto de ω≈0,40 rad/s), o que também explica por que "Cross"
+   (menos overlap) parecia menos afetado sem deixar de estar errado. **Corrigido** em
+   `interpolate_heading()` (`vessel_motion.cpp`): amplitude dos GDL `dof>=3` escalada por `π/180`.
+   Suíte 361/361 sem regressão (um teste com RAO sintético precisou reescalar sua amplitude de
+   pitch=1,0 pra `180/π`, já que antes assumia "1,0 = 1 rad" direto).
+
+   **O valor "30,17m" citado nos achados 3-6 acima estava sob esse mesmo bug** -- rodando o Cross
+   real de novo depois do fix (mesmo XML+H5, mesmo `Exemplo_01a_analysis`): heave real =
+   **0,43m**, muito mais perto do valor medido no `.MOV` real do Fortran legado (~0,6m -- já citado
+   em outras partes desta investigação) do que dos 30m antigos. Ou seja, os achados 3-6 (referencial
+   de `movement_center`/`offset`, composição de rotação, acoplamento inercial, memória não-
+   inicializada) continuam válidos como correções reais e distintas -- só o número de referência que
+   os acompanhava (30,17m) nunca foi física real, e a divergência dinâmica catastrófica que motivou
+   boa parte do Eixo 1b (achados 4-6) provavelmente tinha esse número inflado como fator agravante
+   (não a única causa -- achado 5/6 mostram causas estruturais reais e independentes da magnitude).
+
+   **Achado de processo, à parte**: depois do fix + suíte verde, rodar o pipeline real
+   (`run_from_aml.py`) continuou mostrando os números antigos até eu notar que
+   `risersim_test_main.exe` (o binário que o pipeline de fato invoca) não tinha sido recompilado
+   depois da mudança em `vessel_motion.cpp` -- só a suíte (`risersim_tests.exe`) tinha sido
+   reconstruída. Suíte verde não implica binário de produção atualizado; vale sempre conferir a data
+   de modificação do binário específico invocado ao validar um fix via pipeline real.
+
+   **Ainda em aberto**: mesmo corrigido, o heave calculado do "Far" (26,9m) permanece ~3x acima do
+   valor real do Fortran legado (9,29m, do `.SAI`) -- gap residual não uniforme entre GDL (não
+   parece ser um segundo bug de escala), não investigado a fundo ainda (ver roadmap.md, Eixo 2a).
+
 ## Nota (2026-08-08): `to_risersim_json()` ganhou `schema_version`
 
 Complemento pequeno, do lado do "gerenciador de rodadas" (`docs/roadmap.md` Eixo 3b, Fase 2 —

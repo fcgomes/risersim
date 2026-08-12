@@ -51,15 +51,27 @@ void interpolate_heading(const VesselMotionConfig& cfg, double heading_deg,
     for (int dof = 0; dof < 6; ++dof) {
         re[dof].resize(n_f);
         im[dof].resize(n_f);
+        // Rotational DOFs (roll/pitch/yaw, dof>=3) store amplitude as deg/m in the raw RAO table
+        // (same convention as the phase columns), same as every other reader of this file format
+        // (real ANFLEX's own `model_builder_dat.cpp:242-250`: "Converte as amplitudes dos graus
+        // de liberdade de rotacao para radiano"). Translational DOFs (surge/sway/heave) are
+        // already m/m, no conversion. Without this, the rotational amplitude feeding the
+        // point-transfer and spectral-moment math below is ~57x too large (deg instead of rad),
+        // which -- squared inside the spectral moments -- inflated the "equivalent harmonic"
+        // amplitude by up to ~150x for cases where the wave spectrum peak coincides with a roll
+        // RAO peak (see docs/mapa_aml_exemplos_e_web_interface.md, Far load case investigation).
+        double amp_scale = (dof >= 3) ? std::numbers::pi / 180.0 : 1.0;
         const auto& amp0 = cfg.amplitude[dof][h0];
         const auto& amp1 = cfg.amplitude[dof][h1];
         const auto& ph0 = cfg.phase_deg[dof][h0];
         const auto& ph1 = cfg.phase_deg[dof][h1];
         for (size_t j = 0; j < n_f; ++j) {
-            double re0 = amp0[j] * std::cos(deg2rad(ph0[j]));
-            double im0 = amp0[j] * std::sin(deg2rad(ph0[j]));
-            double re1 = amp1[j] * std::cos(deg2rad(ph1[j]));
-            double im1 = amp1[j] * std::sin(deg2rad(ph1[j]));
+            double a0 = amp0[j] * amp_scale;
+            double a1 = amp1[j] * amp_scale;
+            double re0 = a0 * std::cos(deg2rad(ph0[j]));
+            double im0 = a0 * std::sin(deg2rad(ph0[j]));
+            double re1 = a1 * std::cos(deg2rad(ph1[j]));
+            double im1 = a1 * std::sin(deg2rad(ph1[j]));
             re[dof][j] = re0 + frac * (re1 - re0);
             im[dof][j] = im0 + frac * (im1 - im0);
         }

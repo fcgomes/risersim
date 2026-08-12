@@ -59,7 +59,15 @@ def main():
     parser.add_argument('--load-case-id', type=int, default=None,
                          help='ID real do %%LOAD_CASE a usar (só caminho .aml puro -- '
                               'um .aml pode ter vários, ex. "Near"/"Far"; sem isso, usa o primeiro '
-                              'do arquivo). Ignorado no caminho XML+H5, que já corresponde a um só.')
+                              'do arquivo). Ignorado no caminho XML+H5 (ver --force-aml-path), que já '
+                              'corresponde a um só load case (o que foi de fato exportado/rodado no '
+                              'ANFLEX real).')
+    parser.add_argument('--force-aml-path', action='store_true',
+                         help='Força o caminho .aml puro (malha sintética, reader.to_risersim_json) '
+                              'mesmo quando existe uma pasta "<nome>_analysis" com XML+H5 exportado. '
+                              'Necessário pra rodar com --load-case-id um %%LOAD_CASE que não foi o '
+                              'exportado (o XML+H5 real corresponde só a um %%LOAD_CASE por vez -- '
+                              'ver docs/roadmap.md, eixo 2a).')
     parser.add_argument('--num-elements', type=int, default=None, help='Sobrescreve o número de elementos')
     parser.add_argument('--static-only', action='store_true', help='Executa apenas análise estática')
     parser.add_argument('--offset-near', action='store_true', help='Usa offset Near em vez de Far')
@@ -84,7 +92,7 @@ def main():
     xml_file = analysis_dir / f"{base_name}_A1.xml"
     h5_file = analysis_dir / f"{base_name}_A1.h5"
 
-    use_xml_h5 = xml_file.is_file() and h5_file.is_file()
+    use_xml_h5 = xml_file.is_file() and h5_file.is_file() and not args.force_aml_path
     config = {}
 
     if use_xml_h5:

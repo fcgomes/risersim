@@ -138,6 +138,12 @@ TEST_CASE("VesselMotion's geometric transfer couples pitch into heave with the r
     VesselMotion vm_baseline(cfg_baseline, 0.0, 10800.0, Eigen::Vector3d::Zero());
 
     auto cfg_pitch = build_synthetic_config(wini, wfin, nwave, alpha, gamma, period_s, VesselDof::Pitch);
+    // VesselMotion now converts rotational-DOF RAO amplitude from deg/m (the raw table's real
+    // convention, matching model_builder_dat.cpp:242-250) to rad/m before using it -- rescale the
+    // synthetic "1.0" here to 1 rad (=180/pi deg) so it still means exactly "1 rad of pitch" and
+    // the hand-derived expected value below (10x) stays exact.
+    for (auto& row : cfg_pitch.amplitude[static_cast<int>(VesselDof::Pitch)])
+        for (double& v : row) v *= 180.0 / std::numbers::pi;
     VesselMotion vm_transferred(cfg_pitch, 0.0, 10800.0, Eigen::Vector3d(-10.0, 0.0, 0.0));
 
     REQUIRE(vm_transferred.amplitude(VesselDof::Heave) == Approx(10.0 * vm_baseline.amplitude(VesselDof::Heave)).epsilon(1e-6));

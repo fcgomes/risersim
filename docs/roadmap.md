@@ -252,7 +252,7 @@ gap real, mas não bloqueante) ou se o Eixo 1b deve ser considerado fechado por 
 
 ## Eixo 2 — Pipeline de dados (desbloqueia mais casos de teste reais, baixo risco)
 
-### 2a. Religar `aml_reader.py` ao schema real do `ModelBuilder`
+### 2a. Religar `aml_reader.py` ao schema real do `ModelBuilder` — 🟡 EM PROGRESSO
 
 Achado em [`mapa_aml_exemplos_e_web_interface.md`](mapa_aml_exemplos_e_web_interface.md): hoje, 23
 dos 30 exemplos disponíveis (todos sem pasta `_analysis/` com XML/H5 pré-exportado) rodam
@@ -262,6 +262,110 @@ segmentos já extraídos, resolver corrente/solo por ID como `xml_h5_reader.py` 
 bem-escopado e de baixo risco (não toca o C++, só o parser Python), e destrava candidatos reais
 novos ao bug solo+corrente — em especial `DNV_Check.aml` (solo e corrente confirmados casando por
 ID, caminho estático).
+
+**✅ Resolvido**: `to_risersim_json()` agora gera o schema real (nós/elementos/seção sintetizados a
+partir dos segmentos), com corrente/solo/onda resolvidos por ID real (não mais "primeiro do
+arquivo"). Um AML pode ter vários `%LOAD_CASE` (ex. Near/Far/Transverse/Cross do `Exemplo_01a`),
+cada um com sua própria corrente+onda — `_resolve_load_case(load_case_id)` seleciona pelo ID real
+(`--load-case-id` no `run_from_aml.py`), com transparência (nome/ID resolvido impresso). Como só
+"Cross" tem XML+H5 real exportado neste exemplo, `--force-aml-path` força o caminho `.aml` puro
+(malha sintética) mesmo quando existe uma pasta `_analysis/`, necessário pra rodar os outros load
+cases (antes disso, `--load-case-id` era silenciosamente ignorado sempre que havia XML+H5 --
+descoberto rodando Near/Far/Transverse pela primeira vez).
+
+**Atualização 1** (movimento real de topo RAO+JONSWAP, ligado no caminho `.aml` puro): até aqui,
+`vessel_motion` (o mecanismo real de topo já portado e validado pro caminho XML+H5,
+`vessel_motion.hpp`) nunca era populado por `aml_reader.py` -- fallback sempre em onda regular só
+em Z. Pesquisei o pré-processador real (`trunk/interfaces/src`, não `trunk/src`/`trunk/libs` --
+esses só consomem o `.dat`/XML já traduzido, o parser de texto `%KEYWORD` só existe no
+pré-processador) pra portar: posição global do ponto de conexão (`%CONNECTION.LOCAL_COORDINATES` +
+`%FLOATING.SHIP`, rotação `90-azimute` + translação pela origem do FPSO --
+`connection.cpp:189-281`), offset estático real (`%FLOATING.LOADS.STATIC`'s `%TIME_SERIES_LOAD`,
+avaliado num parser genérico de tabela de função no tempo real da análise estática), e a tabela RAO
+**embutida** no próprio `.aml` (não é arquivo externo -- `%RAO 'FPSO.RAO'` é só um rótulo, a tabela
+inteira vem inline, formato confirmado contra `interfaces/src/rao.cpp`). Validação forte: a fórmula
+da posição da conexão, calculada à mão antes de escrever código, bateu **exatamente** com o
+`[TOP] X=-47.73 m, Z=257 m` já observado no caso real "Cross" (XML+H5).
+
+**Atualização 2** (malha inicial via catenária real, usando MoorPy): o `.aml` não tem coordenadas de
+nó, mas tem os parâmetros de um problema de contorno de catenária real
+(`%LINE.CATENARY.ANGLE`+`%LINE.AZIMUTH`+comprimento+profundidade) -- o pré-processador real resolve
+isso com uma biblioteca externa fechada (`tec_line`, não está neste repo). `moorpy.Catenary.catenary(
+XF,ZF,L,EA,W)` (já usado e validado em `spikes/mooring_validation/`, ~1% de erro vs. ANFLEX real) só
+resolve "dado o vão, qual a tração" -- não tem modo "dado o ângulo, ache o vão". Implementei
+`_solve_catenary_geometry()`: usa `catenary()` como solver interno de uma busca (bisseção) no vão
+horizontal até bater o ângulo real no topo. **Validação forte**: a âncora prevista bateu com a âncora
+real exportada (XML+H5, caso "Cross") a nível de **centímetro** num vão de ~296m
+(`(-271.44,-248.97,0.00)` previsto vs. `(-271.40,-248.94,~0)` real).
+
+**Bug real achado e corrigido durante a validação**: a fórmula de `movement_center` (Atualização 1)
+subtraía a posição do nó de topo direto; o certo é subtrair o **gap** entre a posição real da conexão
+e onde o nó 1 efetivamente está (`connection_global - top_node_position`), não `top_node_position`
+isolado -- sem isso, ao mudar o nó de topo pra posição real (Atualização 2), o braço de alavanca
+dobrava em vez de cancelar. Pego checando os amplitudes impressos (100-762m de heave, fisicamente
+absurdo), não só "convergiu com sucesso" -- convergência sozinha não bastava pra pegar esse bug.
+
+**Atualização 3** (causa raiz do "Far mostra amplitude muito maior" da lista acima, achada e
+corrigida): não era ressonância real nem bug de busca de frequência -- era falta de conversão de
+unidade. O ANFLEX real (`model_builder_dat.cpp:242-250`) converte a **amplitude** (não só a fase)
+dos GDL rotacionais da RAO (roll/pitch/yaw) de graus/m pra radiano/m antes de usar; `vessel_motion.cpp`
+convertia a fase mas nunca a amplitude. Como os momentos espectrais (`m0` etc.) envolvem
+amplitude², o erro (~57x, `180/π`) compõe quadraticamente -- e é pior justamente quando o pico do
+espectro de onda coincide com um pico de RAO rotacional, o que acontece quase exatamente para "Far"
+(ambos perto de ω≈0,40 rad/s), explicando por que só esse caso mostrava números absurdos. Confirmado
+comparando contra o `.SAI` real gerado rodando o Fortran legado via WSL (`anf_i`/`anf_s`/`anf_d`,
+binários Linux em `anf_analysis/fortran/bin/`) para o caso Far do `Exemplo_01c`: a tabela real
+"RESPONSE AMPLITUDE OPERATOR (TRANSFERRED)" do `.SAI` está explicitamente em unidades **"(M/M,
+RAD/M)"**, com valores pequenos (~0,049 rad/m) muito diferentes do valor bruto do arquivo `.RAO`
+(graus/m, ~6,77). Corrigido em `interpolate_heading()` (`vessel_motion.cpp`): amplitude dos GDL
+rotacionais (`dof>=3`) agora escalada por `π/180` antes de montar a curva complexa usada na
+transferência de ponto e nos momentos espectrais. Um teste (`test_vessel_motion.cpp`, o caso do
+braço de alavanca pitch→heave) precisou de ajuste porque seu RAO sintético assumia amplitude=1.0
+como "1 rad" direto -- reescalado por `180/π` no próprio teste pra preservar a mesma intenção.
+Suíte: 361/361 sem regressão.
+
+**Achado de processo, sem relação com o bug acima** (pego só ao rodar o pipeline real de ponta a
+ponta, não pela suíte Catch2): depois do fix e da suíte passando, rodar `run_from_aml.py` no caso
+Far pela linha de comando continuava mostrando o heave de ~1400m antigo. Causa: `risersim_test_main.exe`
+(o binário que `run_from_aml.py` de fato invoca) não tinha sido recompilado depois do fix em
+`vessel_motion.cpp` -- só `risersim_tests.exe` (a suíte) tinha sido reconstruído nesta sessão. Ou
+seja, a suíte verde mascarava um binário de produção desatualizado. Recompilado via `MSBuild` da
+instalação "Visual Studio 18" (não a "2022" -- o projeto usa toolset `v145`, que só a instalação 18
+tem). Depois do rebuild, Far real: heave 1381m → **26,9m**, roll 19,1 rad (absurdo, >2π) → **0,33
+rad**, surge → **3,49m** -- ordem de grandeza correta, ~51x de melhora, batendo com o que o harness
+Python standalone já tinha indicado antes do fix chegar no binário real. **Lição**: ao validar um
+fix de C++ pelo pipeline real (não só pela suíte de testes), confirmar a data de modificação do
+binário específico invocado, não assumir que "a suíte passou" implica "o binário usado pelo restante
+do sistema já reflete o fix".
+
+**Em aberto, não resolvido ainda**:
+- **Transverse (load case 135) diverge na dinâmica** (passo 4/t=0,2s) mesmo com o step-limiting +
+  backtracking do Eixo 1b já ativos -- não investigado a fundo ainda.
+- **Gap residual de ~3x no heave do Far permanece**: mesmo com o fix de graus→radianos, o heave
+  calculado (26,9m) ainda é ~3x maior que o valor real do Fortran legado (`.SAI`: 9,29m) -- não é um
+  fator de escala uniforme entre GDL (surge bate mais perto, ~1,36x), então não parece ser um
+  segundo bug de conversão de unidade -- possivelmente ruído de discretização (`nwave`), diferença
+  fina na interpolação de heading, ou outra coisa ainda não identificada. Não investigado a fundo.
+- **Novo, achado ao testar esta rodada**: mesmo com a amplitude já corrigida (26,9m, não mais
+  absurda), a dinâmica do Far ainda não converge -- para em t≈9,65s (`res_norm=16,37`) com
+  `stop_on_first_non_convergence`. Pode ser o gap residual acima (26,9m ainda maior que os 9,29m
+  reais) tornando o movimento agressivo demais pro passo de tempo, ou uma questão numérica separada
+  (mesma família de problema do Eixo 1b) -- não investigado ainda.
+- **T_eff estático do "Cross" via `.aml` puro continua ~994 kN vs. 217 kN real**, mesmo com a âncora
+  agora batendo no centímetro -- sugere que o *formato* do chute inicial (reta entre os pontos, não
+  uma catenária real com a curvatura certa) ainda importa pro resultado final, provavelmente via
+  atrito solo-linha dependente de histórico (elástico-plástico, não instantâneo). `moorpy_warm_start.py`
+  (já existente, já validado, resolve a FORMA completa via `ms.solveEquilibrium()`, não só os
+  extremos) é o caminho natural pra isso, mas ainda não está plugado no pipeline `.aml` (hoje é um
+  script separado, rodado manualmente sobre um `input_simulation.json` já gerado).
+
+**Verificação de regressão feita nesta rodada** (todos os 4 load cases do `Exemplo_01a`, binário
+`risersim_test_main.exe` recompilado): Near/Far/Transverse (`--force-aml-path`, estática) convergem,
+com posição global da conexão consistente `(-47,73, -54,50, 257,00)` m e `refsys=105,0°` nos três
+(offsets com sinal correto por caso). Cross (caminho real XML+H5, sem `--force-aml-path`, que na
+verdade está em `Exemplo_01a_analysis/Exemplo_01a_A1.{xml,h5}`, não em `Exemplo_01c_analysis` como
+uma tentativa inicial supôs por engano) segue sem regressão: T_eff estático convergido = **217,3
+kN**, batendo o valor real já documentado. Catch2: 361/361.
 
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
