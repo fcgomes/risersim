@@ -144,7 +144,21 @@ double VesselMotion::jonswap_spectrum(double omega, double alpha, double gamma, 
 
 VesselMotion::VesselMotion(const VesselMotionConfig& config, double wave_heading_deg, double storm_duration_s,
                             const Eigen::Vector3d& attachment_point_global) {
-    refsys_angle_rad_ = deg2rad(config.refsys_angle_deg);
+    // `config.refsys_angle_deg` (105° pro Exemplo_01a) é o valor já validado contra o campo
+    // `refsys_angle` exportado no XML real -- mas o `m_ref_sys_angle` que `cAnfMovements`/
+    // `cHybridMovement` de fato usam internamente (`anf_movements.cpp:66-84`,
+    // `hybrid_movement.cpp:59`) tem o SINAL OPOSTO a esse valor exportado (confirmado
+    // numericamente: só `floating_angle=-105°` reproduz a "LOCAL DISTANCE (USED FOR
+    // TRANSFERENCE)" real de um `.SAI` gerado pelo Fortran legado -- (65,-32,-8), idêntica às
+    // `%CONNECTION.LOCAL_COORDINATES` cruas do `.aml` -- via `cMatrixTransform::inv_transform`
+    // = R(-theta); com theta=+105° isso dá um braço de alavanca totalmente diferente). Como
+    // `cEquivalentHarmonic` usa essa MESMA variável (`floating_angle`) tanto pra escolher a
+    // direção da RAO quanto pra girar o braço de alavanca (`equivalent_harmonic.cpp:45-54`
+    // repassa sem modificar pro construtor da mãe), a negação precisa valer nos dois lugares --
+    // daqui pra baixo, `refsys_angle_rad_` já é esse `floating_angle` real (negado), não o valor
+    // de display validado contra o XML.
+    double floating_angle_deg = -config.refsys_angle_deg;
+    refsys_angle_rad_ = deg2rad(floating_angle_deg);
 
     if (config.headings_deg.empty() || config.frequencies_rad_s.empty()) {
         return; // Sem tabela RAO real -- omega_eq_/amplitude_/phase_rad_ ficam nos defaults (zero).
@@ -154,26 +168,35 @@ VesselMotion::VesselMotion(const VesselMotionConfig& config, double wave_heading
     // hybrid_movement.cpp (`rao_dir = wave_angle - floating_angle`); a tabela real já cobre o
     // círculo completo, então não precisa de wraparound na interpolação em si, só aqui na
     // entrada.
-    double rao_dir_deg = std::fmod(wave_heading_deg - config.refsys_angle_deg, 360.0);
+    double rao_dir_deg = std::fmod(wave_heading_deg - floating_angle_deg, 360.0);
     if (rao_dir_deg < 0.0) rao_dir_deg += 360.0;
 
     std::array<std::vector<double>, 6> re, im;
     interpolate_heading(config, rao_dir_deg, re, im);
 
-    // Transferência geométrica CM->ponto de fixação, confirmada linha a linha contra o ANFLEX
-    // real (`model_builder_dat.cpp:4373-4386`, `anf_movements.cpp:66-84`, `save-dat.cpp`):
-    // cm_position (posição global do CM) = movement_center + offset (somados -- `offset` é a
-    // mesma grandeza que o loader real chama de `static_offset`); a posição local do ponto de
-    // fixação, alimentada em `transfer_local`, é `(posição global real do nó pós-estática) -
-    // cm_position`, rotacionada pela inversa de `refsys_angle` (`cMatrixTransform::inv_transform`
-    // = R_z(-theta), verificado em matrix_transform.cpp). Ver VesselMotionConfig::offset_m e
-    // docs/mapa_aml_exemplos_e_web_interface.md para o histórico da investigação (uma versão
-    // anterior deste módulo interpretou `offset` como já sendo esse delta local pronto, o que
-    // subestimava o braço de alavanca e levou a desligar a transferência temporariamente antes
-    // dessa confirmação).
-    Eigen::Vector3d cm_global(config.cm_position_m[0] + config.offset_m[0],
-                               config.cm_position_m[1] + config.offset_m[1],
-                               config.cm_position_m[2] + config.offset_m[2]);
+    // Transferência geométrica CM->ponto de fixação. Duas correções feitas nesta rodada,
+    // ambas verificadas byte-a-byte contra a tabela real "RESPONSE AMPLITUDE OPERATOR
+    // (TRANSFERRED)" / "LOCAL DISTANCE (USED FOR TRANSFERENCE)" de um `.SAI` real gerado pelo
+    // Fortran legado (Exemplo_01c, casos Far E Cross): o valor real de LOCAL DISTANCE é
+    // (65.0000, -32.0000, -8.0000) -- EXATAMENTE as `%CONNECTION.LOCAL_COORDINATES` cruas do
+    // `.aml`, idêntico nos dois load cases mesmo eles tendo offsets estáticos bem diferentes.
+    // 1) `offset` NÃO entra nesta conta. Uma versão anterior deste código somava
+    // `config.offset_m` a `cm_position_m` (por analogia direta com
+    // `model_builder_dat.cpp:4373-4386`, que de fato soma `cm_offset` a `cm_position`) -- mas
+    // essa leitura ignorava que, no MESMO trecho real (`model_builder_dat.cpp:4335-4359`), o
+    // `node_position` usado do OUTRO lado da subtração recebe o EXATO MESMO offset somado
+    // (`node_position[i] += offset_coord[i] + offset_coord_assembly[i]`) antes de entrar na
+    // mesma conta -- ou seja, no real, o offset é somado nos dois lados do delta e cancela.
+    // `attachment_point_global` aqui (a posição real pós-estática do nó de topo) já não carrega
+    // esse offset da mesma forma (é a mesma em todos os load cases neste pipeline), então somar
+    // offset só do lado do CM introduzia um desbalanceamento que o real nunca tem -- líquido:
+    // não somar em nenhum dos dois lados reproduz o mesmo delta final.
+    // 2) A rotação usada era a errada -- não a fórmula em si (que já batia com
+    // `cMatrixTransform::inv_transform`, `matrix_transform.cpp:248-259`, R(-theta) = transposta
+    // de `set_z_matrix`), mas o ÂNGULO: usar o `floating_angle` já negado acima
+    // (`refsys_angle_rad_`), não `refsys_angle_deg` direto, é o que faz `inv_transform` bater
+    // com o LOCAL DISTANCE real.
+    Eigen::Vector3d cm_global(config.cm_position_m[0], config.cm_position_m[1], config.cm_position_m[2]);
     Eigen::Vector3d delta = attachment_point_global - cm_global;
     double cz = std::cos(refsys_angle_rad_), sz = std::sin(refsys_angle_rad_);
     double x_local = cz * delta.x() + sz * delta.y();

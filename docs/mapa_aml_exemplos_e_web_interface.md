@@ -612,6 +612,33 @@ fidelidade da física aumentou, mas o Eixo 1b continua em aberto, agora com uma 
    valor real do Fortran legado (9,29m, do `.SAI`) -- gap residual não uniforme entre GDL (não
    parece ser um segundo bug de escala), não investigado a fundo ainda (ver roadmap.md, Eixo 2a).
 
+8. **Os dois bugs que causavam o gap residual do achado 7, achados e corrigidos** (ver roadmap.md,
+   Eixo 2a, "Atualização 4", para a tabela completa de comparação por GDL). Comparando `x_local`/
+   `y_local` (o braço de alavanca calculado) contra a tabela real "LOCAL DISTANCE (USED FOR
+   TRANSFERENCE)" de um `.SAI` real (gerado via WSL, Fortran legado, tanto pro Far quanto pro
+   Cross): o valor real é **idêntico nos dois load cases** -- `(65.0000, -32.0000, -8.0000)`,
+   batendo byte-a-byte com as `%CONNECTION.LOCAL_COORDINATES` cruas do `.aml` -- enquanto o
+   calculado variava por caso e não batia com nada reconhecível. Dois bugs, achados juntos:
+   - `offset` não deveria entrar no cálculo do braço de alavanca. `model_builder_dat.cpp:4373-4386`
+     de fato soma `cm_offset` a `cm_position` -- mas o MESMO trecho real
+     (`model_builder_dat.cpp:4335-4359`) também soma o offset ao `node_position` do OUTRO lado da
+     subtração; no real, o offset cancela porque entra dos dois lados. `attachment_point_global`
+     (a posição real pós-estática do nó de topo, no pipeline do risersim) não carrega esse offset
+     da mesma forma -- somar só do lado do CM introduzia um desbalanceamento inexistente no real.
+   - A rotação usava o ângulo com o sinal trocado. A fórmula já batia com
+     `cMatrixTransform::inv_transform` (R(-theta)) -- o problema era que `refsys_angle_deg` (105°,
+     já validado contra o XML exportado) tem o sinal OPOSTO ao `m_ref_sys_angle`/`floating_angle`
+     que `cAnfMovements`/`cHybridMovement` de fato usam internamente. Como esse mesmo ângulo
+     também escolhe a direção da tabela RAO (`rao_dir = wave_angle - floating_angle`,
+     `hybrid_movement.cpp:59`), a correção precisou negar o ângulo nos dois lugares de uma vez.
+
+   **Resultado**: Cross agora bate a real em todos os 6 GDL dentro de ~3-6% (surge/sway/heave/roll/
+   pitch/yaw); Far bate muito melhor em surge/sway/pitch/yaw (~1-2%), com heave/roll ainda ~15-20%
+   subestimados (gap bem menor que o ~3x anterior). Efeito colateral direto, sem nenhuma mudança no
+   solver: a dinâmica do Far (que parava de convergir em t≈9,65s mesmo já com a amplitude saneada
+   pelo achado 7) agora converge os 60s/1200 passos completos; o Transverse, que divergia no passo
+   4, também converge limpo. Suíte 361/361 sem regressão.
+
 ## Nota (2026-08-08): `to_risersim_json()` ganhou `schema_version`
 
 Complemento pequeno, do lado do "gerenciador de rodadas" (`docs/roadmap.md` Eixo 3b, Fase 2 —

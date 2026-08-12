@@ -33,11 +33,13 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
 
     if (vessel_motion.has_value()) {
         std::cout << "  Vessel motion (RAO+JONSWAP equivalent harmonic): freq=" << vessel_motion->frequency_rad_s()
-                  << " rad/s (T=" << (2.0 * std::numbers::pi / vessel_motion->frequency_rad_s()) << " s)"
-                  << " | heave amp=" << vessel_motion->amplitude(VesselDof::Heave) << " m, phase="
-                  << vessel_motion->phase_rad(VesselDof::Heave) << " rad"
-                  << " | surge amp=" << vessel_motion->amplitude(VesselDof::Surge) << " m"
-                  << " | roll amp=" << vessel_motion->amplitude(VesselDof::Roll) << " rad" << std::endl;
+                  << " rad/s (T=" << (2.0 * std::numbers::pi / vessel_motion->frequency_rad_s()) << " s)" << std::endl;
+        std::cout << "    surge=" << vessel_motion->amplitude(VesselDof::Surge) << " m"
+                  << " sway=" << vessel_motion->amplitude(VesselDof::Sway) << " m"
+                  << " heave=" << vessel_motion->amplitude(VesselDof::Heave) << " m"
+                  << " roll=" << vessel_motion->amplitude(VesselDof::Roll) << " rad"
+                  << " pitch=" << vessel_motion->amplitude(VesselDof::Pitch) << " rad"
+                  << " yaw=" << vessel_motion->amplitude(VesselDof::Yaw) << " rad" << std::endl;
     }
 
     if (!model || model->nodes.empty()) return false;

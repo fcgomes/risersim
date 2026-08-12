@@ -338,19 +338,88 @@ fix de C++ pelo pipeline real (não só pela suíte de testes), confirmar a data
 binário específico invocado, não assumir que "a suíte passou" implica "o binário usado pelo restante
 do sistema já reflete o fix".
 
+**Atualização 4** (causa raiz do gap residual de ~3x e da não-convergência dinâmica do Far, ambos
+achados e corrigidos -- investigação por comparação direta, ponto a ponto, contra as tabelas reais
+"RESPONSE AMPLITUDE OPERATOR (TRANSFERRED)" e "LOCAL DISTANCE (USED FOR TRANSFERENCE)" de um `.SAI`
+real, geradas rodando o Fortran legado via WSL tanto pro Far quanto pro Cross do `Exemplo_01c`):
+dois bugs genuínos e independentes na transferência geométrica CM→ponto de fixação de
+`interpolate_heading()`/construtor de `VesselMotion`, nenhum dos dois relacionado ao bug de
+graus→radianos da Atualização 3.
+
+1. **`offset` não deveria entrar nesta conta.** O código somava `config.offset_m` a
+   `cm_position_m` antes de calcular o braço de alavanca, por analogia direta com
+   `model_builder_dat.cpp:4373-4386` (que de fato faz `cm_position[i] += cm_offset[i]`) -- mas essa
+   leitura ignorava que, no MESMO trecho real (`model_builder_dat.cpp:4335-4359`), o
+   `node_position` do OUTRO lado da subtração recebe o EXATO MESMO offset somado
+   (`node_position[i] += offset_coord[i] + offset_coord_assembly[i]`) antes de entrar na mesma
+   conta -- no real, o offset é somado nos dois lados do delta e cancela. No pipeline do risersim,
+   `attachment_point_global` (a posição real pós-estática do nó de topo) não carrega esse offset da
+   mesma forma (é idêntica em todos os load cases), então somar offset só do lado do CM introduzia
+   um desbalanceamento que o real nunca tem.
+2. **A rotação usava o ângulo com o sinal trocado.** A fórmula em si já batia com
+   `cMatrixTransform::inv_transform` (`matrix_transform.cpp:248-259`, aplica R(-theta), a
+   transposta de `set_z_matrix`) -- o problema era o `theta` usado: `refsys_angle_deg` (105° pro
+   Exemplo_01a) é o valor já validado contra o campo `refsys_angle` exportado no XML real, mas o
+   `m_ref_sys_angle`/`floating_angle` que `cAnfMovements`/`cHybridMovement` de fato passam pra
+   `inv_transform` internamente (`anf_movements.cpp:66-84`, `hybrid_movement.cpp:59`) tem o sinal
+   OPOSTO a esse valor exportado. Como `cEquivalentHarmonic` repassa esse mesmo `floating_angle`
+   sem modificar tanto pra escolher a direção da RAO quanto pra girar o braço de alavanca
+   (`equivalent_harmonic.cpp:45-54`), a correção precisou negar o ângulo nos dois lugares de uma
+   vez (não só na rotação).
+
+Os dois bugs juntos foram achados comparando `x_local`/`y_local` calculados (antes: variavam por
+load case, sem bater com nada reconhecível) contra a "LOCAL DISTANCE" real, que é **idêntica nos
+dois load cases** (Far e Cross) e bate byte-a-byte com as `%CONNECTION.LOCAL_COORDINATES` cruas do
+próprio `.aml`: `(65.0000, -32.0000, -8.0000)`. Corrigido: `cm_global` não soma mais `offset_m`;
+`refsys_angle_rad_` agora guarda o `floating_angle` já negado (`-config.refsys_angle_deg`), usado
+consistentemente nos três pontos do arquivo que giram entre o referencial local da RAO e o global
+(seleção de heading, braço de alavanca no construtor, e a rotação final local→global em
+`get_motion()`). Suíte: 361/361 sem regressão (o teste do braço de alavanca usa `refsys_angle_deg
+=0`, insensível ao sinal).
+
+**Resultado, comparando contra as tabelas reais "JOINT MOVEMENTS" (STD final por GDL) do `.SAI`**:
+
+| GDL (unidade) | Cross real | Cross calculado (razão) | Far real | Far calculado (razão) |
+|---|---|---|---|---|
+| surge (m) | 0,3139 | 0,3149 (1,00x) | 2,567 | 2,57 (1,00x) |
+| sway (m) | 0,19502 | 0,1879 (0,96x) | 1,8743 | 1,867 (1,00x) |
+| heave (m) | 0,97067 | 0,9458 (0,97x) | 9,2905 | 7,96 (0,86x) |
+| roll (°) | 0,37943 | 0,3584 (0,94x) | 9,7258 | 7,821 (0,80x) |
+| pitch (°) | 1,0613 | 1,0307 (0,97x) | 3,2506 | 3,210 (0,99x) |
+| yaw (°) | 0,1270 | 0,1233 (0,97x) | 1,1368 | 1,111 (0,98x) |
+
+Cross agora bate em todos os 6 GDL dentro de ~3-6%; Far bate muito melhor que antes em surge/sway/
+pitch/yaw (~1-2%), com heave/roll ainda ~15-20% subestimados (razão não uniforme entre GDL, gap bem
+menor que o ~3x/~2x anterior, causa não identificada). **Efeito colateral direto**: a dinâmica do
+Far, que antes parava de convergir em t≈9,65s mesmo com a amplitude já saneada pela Atualização 3,
+agora **converge os 60s/1200 passos completos** sem nenhuma mudança no solver -- confirma que o
+gap residual (heave ~27m, ~3x acima do real) era agressivo o bastante pra ainda quebrar o Newton
+dinâmico. **Transverse (load case 135), que divergia na dinâmica (passo 4/t=0,2s) segundo o achado
+anterior desta seção, também converge limpo agora** -- mesmo efeito colateral, sem investigação
+separada necessária.
+
+**Achado de processo, sem relação com os bugs acima** (pego só ao rodar o pipeline real de ponta a
+ponta, não pela suíte Catch2): depois do fix da Atualização 3 e da suíte passando, rodar
+`run_from_aml.py` no caso Far pela linha de comando continuava mostrando o heave de ~1400m antigo.
+Causa: `risersim_test_main.exe` (o binário que `run_from_aml.py` de fato invoca) não tinha sido
+recompilado depois do fix em `vessel_motion.cpp` -- só `risersim_tests.exe` (a suíte) tinha sido
+reconstruído nesta sessão. Ou seja, a suíte verde mascarava um binário de produção desatualizado.
+Recompilado via `MSBuild` da instalação "Visual Studio 18" (não a "2022" -- o projeto usa toolset
+`v145`, que só a instalação 18 tem). Depois do rebuild, Far real: heave 1381m → **26,9m**, roll
+19,1 rad (absurdo, >2π) → **0,33 rad**, surge → **3,49m** -- ordem de grandeza correta, ~51x de
+melhora, batendo com o que o harness Python standalone já tinha indicado antes do fix chegar no
+binário real. **Lição**: ao validar um fix de C++ pelo pipeline real (não só pela suíte de testes),
+confirmar a data de modificação do binário específico invocado, não assumir que "a suíte passou"
+implica "o binário usado pelo restante do sistema já reflete o fix".
+
 **Em aberto, não resolvido ainda**:
-- **Transverse (load case 135) diverge na dinâmica** (passo 4/t=0,2s) mesmo com o step-limiting +
-  backtracking do Eixo 1b já ativos -- não investigado a fundo ainda.
-- **Gap residual de ~3x no heave do Far permanece**: mesmo com o fix de graus→radianos, o heave
-  calculado (26,9m) ainda é ~3x maior que o valor real do Fortran legado (`.SAI`: 9,29m) -- não é um
-  fator de escala uniforme entre GDL (surge bate mais perto, ~1,36x), então não parece ser um
-  segundo bug de conversão de unidade -- possivelmente ruído de discretização (`nwave`), diferença
-  fina na interpolação de heading, ou outra coisa ainda não identificada. Não investigado a fundo.
-- **Novo, achado ao testar esta rodada**: mesmo com a amplitude já corrigida (26,9m, não mais
-  absurda), a dinâmica do Far ainda não converge -- para em t≈9,65s (`res_norm=16,37`) com
-  `stop_on_first_non_convergence`. Pode ser o gap residual acima (26,9m ainda maior que os 9,29m
-  reais) tornando o movimento agressivo demais pro passo de tempo, ou uma questão numérica separada
-  (mesma família de problema do Eixo 1b) -- não investigado ainda.
+- **Gap residual de ~15-20% no heave/roll do Far** (ver tabela acima) -- razão não uniforme entre
+  GDL (surge/sway/pitch/yaw batem em ~1-2%), então não parece ser um terceiro bug de escala; pode
+  ser o mesmo ~1% de diferença de grid já documentado (`dw=(wf-wi)/n` vs `/(n-1)`) composto de
+  forma não-linear onde a RAO tem um pico mais agudo (roll do Far, ver
+  `mapa_aml_exemplos_e_web_interface.md`), ou outra coisa ainda não identificada. Testado
+  convergência de `nwave` (100→20000): resultado já está convergido em ~100, então NÃO é falta de
+  resolução do grid JONSWAP -- descarta essa hipótese especificamente. Não investigado mais a fundo.
 - **T_eff estático do "Cross" via `.aml` puro continua ~994 kN vs. 217 kN real**, mesmo com a âncora
   agora batendo no centímetro -- sugere que o *formato* do chute inicial (reta entre os pontos, não
   uma catenária real com a curvatura certa) ainda importa pro resultado final, provavelmente via
@@ -360,12 +429,14 @@ do sistema já reflete o fix".
   script separado, rodado manualmente sobre um `input_simulation.json` já gerado).
 
 **Verificação de regressão feita nesta rodada** (todos os 4 load cases do `Exemplo_01a`, binário
-`risersim_test_main.exe` recompilado): Near/Far/Transverse (`--force-aml-path`, estática) convergem,
-com posição global da conexão consistente `(-47,73, -54,50, 257,00)` m e `refsys=105,0°` nos três
-(offsets com sinal correto por caso). Cross (caminho real XML+H5, sem `--force-aml-path`, que na
-verdade está em `Exemplo_01a_analysis/Exemplo_01a_A1.{xml,h5}`, não em `Exemplo_01c_analysis` como
-uma tentativa inicial supôs por engano) segue sem regressão: T_eff estático convergido = **217,3
-kN**, batendo o valor real já documentado. Catch2: 361/361.
+`risersim_test_main.exe` recompilado a cada mudança): Near/Far/Transverse (`--force-aml-path`,
+estática) convergem, com posição global da conexão consistente `(-47,73, -54,50, 257,00)` m e
+`refsys=105,0°` nos três (offsets com sinal correto por caso). Cross (caminho real XML+H5, sem
+`--force-aml-path`, que na verdade está em `Exemplo_01a_analysis/Exemplo_01a_A1.{xml,h5}`, não em
+`Exemplo_01c_analysis` como uma tentativa inicial supôs por engano) segue sem regressão: T_eff
+estático convergido = **217,3 kN**, batendo o valor real já documentado. Dinâmica: Near/Far/
+Transverse/Cross convergem os passos completos (Far: 60s/1200 passos; antes da Atualização 4, Far
+parava em t≈9,65s e Transverse divergia no passo 4). Catch2: 361/361.
 
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
