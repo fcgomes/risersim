@@ -418,8 +418,22 @@ implica "o binário usado pelo restante do sistema já reflete o fix".
   ser o mesmo ~1% de diferença de grid já documentado (`dw=(wf-wi)/n` vs `/(n-1)`) composto de
   forma não-linear onde a RAO tem um pico mais agudo (roll do Far, ver
   `mapa_aml_exemplos_e_web_interface.md`), ou outra coisa ainda não identificada. Testado
-  convergência de `nwave` (100→20000): resultado já está convergido em ~100, então NÃO é falta de
-  resolução do grid JONSWAP -- descarta essa hipótese especificamente. Não investigado mais a fundo.
+  convergência de `nwave` (100→20000, já usando o código corrigido desta rodada): resultado já
+  está convergido em ~500, então NÃO é falta de resolução do grid JONSWAP -- descarta essa
+  hipótese especificamente.
+  **Tentativa feita e revertida**: reli `movext.f:159-198` (a fórmula real do extremo de
+  Rayleigh) esperando achar um terceiro bug de escala -- `STDPM=sqrt(AREAMOV/2)` (não
+  `sqrt(AREAMOV)` puro) e `FMAX=sqrt(2*ln(TINTV*XFZ))` com `XFZ` baseado em m0/m2 (não m2/m4).
+  Reescrevi `vessel_motion.cpp` pra bater literalmente com isso -- resultado **piorou**: as
+  razões (antes 0,76-1,25 no Far, 0,94-1,00 no Cross) viraram uniformemente ~0,68-0,71 nos dois
+  casos (~1/√2, todos os 6 GDL igualmente subestimados). Como a versão anterior já estava muito
+  mais perto do real (principalmente no Cross), revertido (`git checkout`). A uniformidade exata
+  do erro introduzido (1/√2 em todos os GDL) sugere que a leitura de `movext.f` tem um fator de 2
+  errado em algum lugar -- provavelmente `AREAMOV`/`XM0` (o "m0" do Fortran, de `movgharfloa.f`,
+  ainda não lido nesta rodada) não é a mesma grandeza que o `m0` deste código calcula por
+  trapézio, e por isso o "/2" de `STDPM=sqrt(AREAMOV/2)` não se aplica do mesmo jeito aqui. Não
+  investigado mais a fundo -- próxima tentativa, se valer a pena, deveria ler `movgharfloa.f`
+  primeiro pra confirmar a definição exata de `AREAMOV` antes de mexer na fórmula de novo.
 - **T_eff estático do "Cross" via `.aml` puro continua ~994 kN vs. 217 kN real**, mesmo com a âncora
   agora batendo no centímetro -- sugere que o *formato* do chute inicial (reta entre os pontos, não
   uma catenária real com a curvatura certa) ainda importa pro resultado final, provavelmente via
