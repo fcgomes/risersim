@@ -478,6 +478,71 @@ estático convergido = **217,3 kN**, batendo o valor real já documentado. Dinâ
 Transverse/Cross convergem os passos completos (Far: 60s/1200 passos; antes da Atualização 4, Far
 parava em t≈9,65s e Transverse divergia no passo 4). Catch2: 361/361.
 
+**Atualização 6** (investigação da não-convergência dinâmica do Near/Far achada na Atualização 5 --
+dois bugs reais de robustez do Newton dinâmico achados e corrigidos, um terceiro achado documentado
+e deixado em aberto por ser física, não bug de solver): reproduzi o caso Far (`--duration 30
+--dt 0.05`, 600 passos) e instrumentei o loop (`RISERSIM_DYN_DEBUG`, removido antes do commit final)
+pra imprimir, por iteração de Newton, o DOF de maior resíduo e a posição/atrito do nó dono dele --
+mesma técnica já usada pro solver estático (`RISERSIM_DEBUG_RESIDUAL`, `static_analysis.cpp:401`).
+
+1. **Passo 79 (t=3,95s): "chattering" de contato, não divergência.** O resíduo ficava preso num
+   ciclo de período 2 EXATO (430,229 ↔ 179,177, repetindo indefinidamente até estourar o
+   orçamento de 20 iterações) -- o Z do nó 300 cruzava o leito marinho por frações de milímetro a
+   cada iteração (contato liga/desliga), exatamente o mesmo padrão "chattering" já documentado pro
+   solver ESTÁTICO (`seabed.hpp:106`, `static_analysis.hpp:33-48`) mas nunca replicado no
+   dinâmico. Causa raiz específica do dinâmico: o *line search* de backtracking (`docs/roadmap.md`
+   item 1b, commit `c6a517d`) reutiliza a matriz de amortecimento `C_global` do TOPO da iteração
+   pra avaliar cada tentativa (`Reuses this iteration's M_global/C_global for every trial`,
+   documentado como "an accepted approximation") -- mas exatamente no instante em que o contato
+   liga/desliga, `K_global` (e portanto `C_global = alpha*M + beta*K`) muda bastante, então o
+   resíduo que o backtracking mede pra decidir aceitar/rejeitar o passo já está desatualizado em
+   relação ao resíduo real que a próxima iteração vai encontrar -- deixando passar exatamente a
+   correção que cruza o contato inteiro de uma vez. **Corrigido**: recalcula `C_trial` a partir do
+   `K_global` fresco de cada tentativa (`trial_state.K_global`), em vez de reusar o `C_global`
+   antigo. Isso sozinho já reduziu bastante o resíduo (472→184→76→49→35→32→29 em 7 iterações) mas
+   não bastou sozinho pra convergir de vez -- a posição do nó, porém, já tinha convergido pra um
+   ponto fixo fisicamente desprezível (250µm → 113µm → 43µm → 8,5µm → 4,2µm → 0,35µm de erro), só o
+   critério de resíduo relativo (o ÚNICO critério de parada que o solver dinâmico tinha) continuava
+   oscilando. Por isso um segundo fix: um critério de convergência por INCREMENTO (não força),
+   idêntico em espírito ao critério translação/rotação que `ConvergenceTest` já usa no estático mas
+   que o dinâmico nunca teve -- se a correção aceita numa iteração é menor que 0,1mm/0,0001rad em
+   todo DOF, aceita como convergido mesmo que o resíduo de força não tenha zerado (a posição já não
+   está mais se movendo, então continuar iterando é só ruído numérico). Com os dois fixes, o passo
+   79 converge limpo.
+2. **Passo 87 (t=4,35s): mesmo padrão de "chattering", amplitude maior (~1mm), sem decair.** Nó 297
+   preso num ciclo de período 2 estável só que desta vez SEM convergir gradualmente (os dois
+   estados se repetiam quase exatamente a partir da iteração 8, sem encolher) -- o fix de
+   incremento acima não pega esse caso porque a oscilação não é pequena o bastante. Reconhecido
+   como o caso clássico de ponto fixo de Newton oscilando entre dois estados que "cercam" a raiz
+   verdadeira (o mesmo problema que motiva bisseção/regula-falsi em vez de Newton puro quando a
+   raiz está entre dois pontos que o método visita repetidamente). **Corrigido**: detector de ciclo
+   de período 2 -- guarda o resíduo/estado de 2 iterações atrás; se o resíduo atual bate (±0,01%)
+   com o de 2 iterações atrás depois de pelo menos 5 iterações (evita disparo em coincidências
+   iniciais), aceita a MÉDIA dos dois estados `U` que alternam como a solução -- na prática, uma
+   bisseção do ciclo. Resultado: "período-2 chattering detectado no passo 87 iter 8 -- aceitando o
+   estado com bisseção" e a simulação segue adiante.
+3. **Passo 109 (t=5,45s): tração efetiva NEGATIVA em vários elementos (`T_eff` até -877 kN),
+   achado real e diferente dos dois acima, NÃO CORRIGIDO** -- o resíduo cresce de forma irregular
+   (não é mais um ciclo de período 2 limpo; os valores mudam a cada iteração: 14501→20172→16923→
+   5506→9388→...→11278) com o pior DOF alternando de nó mas sempre em elementos com tração quase
+   zero ou negativa (linha "afrouxando"/"slack" sob a excursão grande de heave/surge do topo real,
+   já que o `T_eff` deste caso ficou bem mais baixo depois da Atualização 5, ~218kN vs. ~1000kN
+   antes -- linha mais frouxa = mais fácil de ficar com tração negativa sob movimento dinâmico
+   grande). Fisicamente, tração efetiva perto de zero ou negativa faz o termo de rigidez
+   geométrica (rigidez "de corda", proporcional à tração) da barra ficar perto de zero ou negativo,
+   e como a rigidez à flexão deste cabo é muito pequena (`EI=21,7 kN.m²`), o elemento fica quase
+   sem resistência transversal -- um problema conhecido de dinâmica de linhas de ancoragem frouxas
+   ("slack line snap"), não um artefato numérico do solver como os dois casos acima. NÃO é o mesmo
+   tipo de bug -- resolver de verdade provavelmente exige uma técnica dedicada (piso mínimo de
+   tração, amortecimento artificial perto de T≈0, ou uma formulação de cabo que trate afrouxamento
+   explicitamente), não uma correção pontual do Newton. Deixado em aberto.
+
+**Resultado**: Near passa a convergir os 600 passos completos (antes: não investigado, falhava);
+Transverse e Cross seguem convergindo limpo (sem regressão); Far avança do passo 79 pro passo 109
+(~40% a mais de simulação) antes de esbarrar no problema de tração negativa (item 3 acima, não
+relacionado aos bugs de chattering corrigidos). Catch2: 361/361, sem regressão. Instrumentação de
+debug (`RISERSIM_DYN_DEBUG`) foi removida antes do commit -- só ficaram os três fixes em si.
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio

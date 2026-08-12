@@ -235,6 +235,17 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         // Newton-Raphson Iterations per Dynamic Time Step
         int nr_converged_iter = -1;
         double res_norm_prev = 1.0e30;
+        // Period-2 cycle detection (docs/roadmap.md, Eixo 2a): a node hovering right at the
+        // seabed contact/friction boundary can make Newton bounce between two fixed states
+        // forever (contact/friction toggling each iteration), with the entering residual for
+        // iteration N reproducing iteration N-2's value EXACTLY -- a stable limit cycle, not
+        // divergence or slow convergence, so neither the force-residual test nor the divergence
+        // check above ever fires. Classic fixed-point-iteration degenerate case: the true root
+        // lies between the two repeating iterates, so bisecting (averaging) them lands much
+        // closer to it than either extreme, same idea as regula-falsi/Illinois for a bracketed
+        // root. res_hist/U_hist keep the entering state from 2 iterations ago, indexed by parity.
+        double res_hist[2] = {-1.0, -1.0};
+        Eigen::VectorXd U_hist[2];
         for (int iter = 0; iter < max_nr_iters; ++iter) {
             AssembledState state = assemble_at(U_curr);
             Eigen::SparseMatrix<double>& K_global = state.K_global;
@@ -286,6 +297,27 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             if (rel_res < nr_tolerance) {
                 nr_converged_iter = iter;
                 break;
+            }
+
+            {
+                int parity = iter % 2;
+                if (iter >= 5 && res_hist[parity] > 0.0 &&
+                    std::abs(res_norm - res_hist[parity]) < 1.0e-4 * std::max(res_norm, 1.0)) {
+                    Eigen::VectorXd U_avg = 0.5 * (U_curr + U_hist[parity]);
+                    assemble_at(U_avg); // leaves node->disp/rot consistent with U_avg (return value unused)
+                    Eigen::VectorXd A_avg = c1 * (U_avg - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
+                    Eigen::VectorXd V_avg = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_avg);
+                    std::cerr << "  ⚖️ Dynamic NR period-2 chattering detected at step " << step
+                              << " iter " << iter << " (res=" << res_norm << " repeats iter " << (iter - 2)
+                              << "'s value) -- accepting the bisected state instead." << std::endl;
+                    U_curr = U_avg;
+                    A_curr = A_avg;
+                    V_curr = V_avg;
+                    nr_converged_iter = iter;
+                    break;
+                }
+                res_hist[parity] = res_norm;
+                U_hist[parity] = U_curr;
             }
 
             // Divergence check: if the residual grew significantly, bail out of this step's correction
@@ -369,11 +401,48 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 trial_state = assemble_at(U_trial);
                 A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
                 V_trial = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_trial);
-                Eigen::VectorXd Residual_trial = trial_state.F_ext - trial_state.F_int - M_global * A_trial - C_global * V_trial;
+                Eigen::SparseMatrix<double> C_trial = alpha_rayleigh * M_global + beta_rayleigh * trial_state.K_global;
+                Eigen::VectorXd Residual_trial = trial_state.F_ext - trial_state.F_int - M_global * A_trial - C_trial * V_trial;
                 double norm_trial = Residual_trial.norm();
 
                 if (norm_trial <= res_norm * 2.0 || bt == max_backtracks) break;
                 trial_alpha *= 0.5;
+            }
+
+            // Increment-magnitude escape hatch, ported from the same idea as
+            // ConvergenceTest's translation/rotation criteria in the static solver
+            // (static_analysis.hpp:33-48): a node sitting almost exactly on the seabed contact
+            // boundary can settle into a force-residual "chattering" limit cycle (contact
+            // stiffness switching on/off between iterations) that never satisfies the strict
+            // relative force-residual test above, EVEN THOUGH the node's actual position has
+            // already converged to a physically negligible (sub-millimeter) fixed point -- traced
+            // to a real repro case (Exemplo_01a, Far load case, step 79/t=3.95s): position error
+            // decayed 250um -> 113um -> 43um -> 8.5um -> 4.2um -> 0.35um across consecutive
+            // iterations while the force residual bounced between ~29N and ~430N. Unlike the
+            // static solver, the dynamic loop had no increment-based criterion at all -- only the
+            // force-residual test -- so this case looped until max_nr_iters with no escape. This
+            // check is intentionally about the ACCEPTED correction's own size (independent of
+            // force units/scale, so it doesn't need per-problem tuning the way an absolute force
+            // tolerance would), not a special case for seabed contact specifically.
+            {
+                double max_transl_inc = 0.0, max_rot_inc = 0.0;
+                for (const auto& node : model->nodes) {
+                    for (int i = 0; i < 3; ++i) {
+                        int eq = node->eq_numbers[i];
+                        if (eq >= 0) max_transl_inc = std::max(max_transl_inc, std::abs(trial_alpha * delta_U[eq]));
+                        int eq_rot = node->eq_numbers[i + 3];
+                        if (eq_rot >= 0) max_rot_inc = std::max(max_rot_inc, std::abs(trial_alpha * delta_U[eq_rot]));
+                    }
+                }
+                constexpr double tiny_translation_m = 1.0e-4;
+                constexpr double tiny_rotation_rad = 1.0e-4;
+                if (max_transl_inc < tiny_translation_m && max_rot_inc < tiny_rotation_rad) {
+                    U_curr = U_trial;
+                    A_curr = A_trial;
+                    V_curr = V_trial;
+                    nr_converged_iter = iter;
+                    break;
+                }
             }
 
             // Update Displacements, Velocities and Accelerations -- the accepted trial's
