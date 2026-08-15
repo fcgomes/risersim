@@ -42,10 +42,10 @@ _SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from aml_reader import ANFLEXAMLReader
-# find_executable() and compiling the config from XML+H5 were extracted into
+# find_executable() and compiling the config from XML+H5/.aml were extracted into
 # risersim_runner.py, also reused by the new run manager (run_server.py/run_worker.py, see
 # docs/roadmap.md, Axis 3b) -- don't duplicate this logic here.
-from risersim_runner import find_executable, build_config_from_xml_h5
+from risersim_runner import find_executable, build_config_from_xml_h5, build_config_from_aml
 
 
 def main():
@@ -132,37 +132,30 @@ def main():
 
     else:
         print(f"\n📖 Lendo arquivo AML: {aml_path}")
-        reader = ANFLEXAMLReader(str(aml_path))
-        reader.summary()
+        # summary() alone (console-only transparency) -- the actual config comes from
+        # build_config_from_aml() below, which parses the .aml a second time internally. Accepted
+        # cost: this is pure-Python text parsing, not the MoorPy solve, so it's cheap.
+        ANFLEXAMLReader(str(aml_path)).summary()
 
-        # reader.to_risersim_json() (not the older to_risersim_config()) is what actually
-        # produces the schema ModelBuilder::load_from_json reads -- see docs/roadmap.md item 2a
-        # and aml_reader.py's own docstring for the two methods. --num-elements is threaded
-        # straight into mesh synthesis (there's no separate 'geometry' dict to patch after the
-        # fact anymore, the mesh is already built by the time this call returns). --load-case-id
+        # build_config_from_aml() (risersim_runner.py) -- reader.to_risersim_json() (not the
+        # older to_risersim_config()) is what actually produces the schema
+        # ModelBuilder::load_from_json reads (see docs/roadmap.md item 2a), plus the MoorPy
+        # mesh-length correction (see risersim_runner.py::_apply_moorpy_mesh_correction()) applied
+        # automatically -- both now shared with the web run manager (run_server.py), not
+        # duplicated here. --num-elements is threaded straight into mesh synthesis. --load-case-id
         # picks which %LOAD_CASE (current+wave pairing) to resolve from when the .aml defines
         # more than one (e.g. 'Near'/'Far') -- defaults to the first in the file, same as before
-        # this flag existed, when not given.
-        config = reader.to_risersim_json(
-            line_index=args.line_index, num_elements_override=args.num_elements,
+        # this flag existed, when not given. Same override semantics as the XML+H5 branch above
+        # (build_config_from_xml_h5): only overrides duration/dt/dynamic-enabled when the user
+        # actually passed the corresponding flag, so as not to mask the AML's own real values with
+        # the CLI's fixed defaults.
+        config = build_config_from_aml(
+            aml_path, line_index=args.line_index, num_elements_override=args.num_elements,
             load_case_id=args.load_case_id,
+            duration=(args.duration if '--duration' in sys.argv else None),
+            dt=(args.dt if '--dt' in sys.argv else None),
+            static_only=args.static_only,
         )
-
-        # Same override semantics as the XML+H5 branch above (build_config_from_xml_h5): only
-        # overrides duration/dt/dynamic-enabled when the user actually passed the corresponding
-        # flag, so as not to mask the AML's own real values with the CLI's fixed defaults.
-        if '--duration' in sys.argv:
-            config['analysis_options']['dynamic']['duration_s'] = args.duration
-        if '--dt' in sys.argv:
-            config['analysis_options']['dynamic']['dt_s'] = args.dt
-        if args.static_only:
-            config['analysis_options']['dynamic']['enabled'] = False
-
-        # Safety-net Rayleigh damping if the AML computed zero (avoids divergence in the dynamic
-        # phase) -- same floor as before this change, just applied to the new schema's location.
-        ray = config['analysis_options']['dynamic']['rayleigh_damping']
-        ray['alpha'] = max(ray.get('alpha', 0.0), 0.05)
-        ray['beta'] = max(ray.get('beta', 0.0), 0.005)
 
     # 2. Create the output directory and save the input JSON
     out_dir = Path(args.out_dir).resolve()
@@ -171,45 +164,6 @@ def main():
     input_json_path = out_dir / 'input_simulation.json'
     with open(input_json_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-
-    if not use_xml_h5:
-        # `_synthesize_mesh()` (aml_reader.py) places the initial nodes on the STRAIGHT LINE
-        # (chord) between the real top/anchor points -- fine as a Newton-Raphson starting guess,
-        # but `model_builder.cpp:149` derives each element's `L_unstretched` (its unstressed
-        # reference length, used for axial strain) from the EUCLIDEAN distance between a pair of
-        # input node coordinates, not from the line's real declared segment length. A chord is
-        # always shorter than the real (sagging) catenary arc length it connects -- confirmed for
-        # Exemplo_01a/Cross: chord ≈392m vs the real 500m of pipe -- so every element's assumed
-        # rest length came out ~21% too short, and stretching real per-element spacing (needed to
-        # span the real geometry) out of that too-short a rest length produced a large spurious
-        # axial strain -- and with EA=360 MN, several times too much static top tension (994 kN
-        # vs the real, XML+H5-validated 217 kN, T_eff otherwise correct: same converged anchor
-        # position to the centimeter, same T_eff whether starting the Newton solve from this
-        # straight chord or from the (already existing, previously used only as a displacement
-        # overlay, see `model_builder.cpp:200-205`) MoorPy-solved real shape -- ruling out the
-        # *initial guess* and pointing at the *reference geometry* itself).
-        # Fix: replace the straight-line node coordinates with MoorPy's own equilibrium shape
-        # (`moorpy_warm_start.py`, already used/validated elsewhere in this pipeline) BEFORE
-        # `model_builder.cpp` ever computes `L_unstretched` from them -- MoorPy resamples by
-        # normalized arc length using the line's real segment lengths, so consecutive nodes end
-        # up correctly ~1m apart (not ~0.785m), matching the real material. Best-effort: only the
-        # `.aml` pure path needs this (the XML+H5 path's nodes already come from ANFLEX's own
-        # real, arc-length-consistent solved geometry); falls back to the original straight-line
-        # mesh (today's unchanged behavior) if MoorPy can't solve this particular model.
-        try:
-            from moorpy_warm_start import compute_warm_start_positions
-            node_positions, _meta = compute_warm_start_positions(str(input_json_path))
-            coords_by_id = {p['node_id']: p['coords'] for p in node_positions}
-            for n in config['model']['nodes']:
-                if n['id'] in coords_by_id:
-                    n['coords'] = coords_by_id[n['id']]
-            with open(input_json_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            print("⚓ Malha inicial corrigida via MoorPy: comprimento real do cabo preservado "
-                  "(evita o encurtamento artificial da corda reta topo-âncora).")
-        except Exception as exc:
-            print(f"⚠️ Não foi possível corrigir a malha inicial via MoorPy ({exc}) -- "
-                  f"usando a malha reta original (comprimento pode ficar incorreto).")
 
     print(f"✅ Arquivo de entrada JSON gerado com sucesso: {input_json_path}")
 

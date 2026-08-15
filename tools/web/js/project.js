@@ -1,6 +1,6 @@
 import { initThemeToggle } from './ui/ThemeToggle.js';
 import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
-import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun as apiCreateRun, DuplicateRunError } from './utils/runManagerFormat.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun as apiCreateRun, fetchLoadCases, DuplicateRunError } from './utils/runManagerFormat.js';
 
 /**
  * project.js
@@ -26,6 +26,11 @@ class ProjectPage {
         // tab/run is reopened, which would lose the viewer's camera/zoom position).
         this.currentView = 'manager';
         this.currentRun = undefined;
+        // Load cases available for this project's .aml (see GET .../load-cases), fetched once
+        // (not on every scheduleAutoRefresh() poll -- they never change while the page is open,
+        // unlike run status). Empty until the first load() resolves; renderLoadCaseSelect() only
+        // shows the selector once populated with >1 case.
+        this.loadCases = [];
         this.bindEvents();
         this.load().then(() => this.applyViewFromUrl());
     }
@@ -160,9 +165,31 @@ class ProjectPage {
             document.getElementById('runs-container').innerHTML = '';
             return;
         }
+        if (!this.loadCasesFetched) {
+            this.loadCasesFetched = true;
+            const data = await fetchLoadCases(this.projectId);
+            this.loadCases = data.load_cases || [];
+            this.renderLoadCaseSelect();
+        }
         this.renderHeader();
         this.renderRuns();
         this.scheduleAutoRefresh();
+    }
+
+    /** Populates/toggles the "new run" load-case <select> -- only shown when the project's .aml
+     * defines more than one %LOAD_CASE (backward-compat: a project with no .aml, or one with 0-1
+     * cases, keeps the selector hidden and run creation behaves exactly as before this feature). */
+    renderLoadCaseSelect() {
+        const select = document.getElementById('load-case-select');
+        if (this.loadCases.length <= 1) {
+            select.style.display = 'none';
+            select.innerHTML = '';
+            return;
+        }
+        select.innerHTML = this.loadCases.map(lc =>
+            `<option value="${lc.id}">${escapeHtml(lc.name)} (ID ${lc.id})</option>`
+        ).join('');
+        select.style.display = '';
     }
 
     renderHeader() {
@@ -232,6 +259,7 @@ class ProjectPage {
                     <thead>
                         <tr>
                             <th>Simulação</th>
+                            <th>Caso</th>
                             <th>Status</th>
                             <th>Criada</th>
                             <th>Início</th>
@@ -344,6 +372,7 @@ class ProjectPage {
         return `
             <tr>
                 <td class="run-id-cell mono">${escapeHtml(run.id)}${dupBadge}</td>
+                <td>${escapeHtml(run.load_case_name || '—')}</td>
                 <td id="status-${escapeHtml(run.id)}">${statusPill(run.status)}</td>
                 <td class="mono">${formatDate(run.created_at)}</td>
                 <td id="started-${escapeHtml(run.id)}" class="mono">${formatDate(run.started_at)}</td>
@@ -351,7 +380,7 @@ class ProjectPage {
                 <td id="actions-${escapeHtml(run.id)}">${this.renderActionsCell(run)}</td>
             </tr>
             <tr class="log-row" id="log-row-${escapeHtml(run.id)}" style="display:${logDisplay};">
-                <td colspan="6"><pre class="log-box" id="log-box-${escapeHtml(run.id)}">${logText}</pre></td>
+                <td colspan="7"><pre class="log-box" id="log-box-${escapeHtml(run.id)}">${logText}</pre></td>
             </tr>
         `;
     }
@@ -423,8 +452,11 @@ class ProjectPage {
         const btn = document.getElementById('new-run-btn');
         btn.disabled = true;
         btn.innerText = 'Criando…';
+        const select = document.getElementById('load-case-select');
+        const load_case_id = (select && select.style.display !== 'none' && select.value)
+            ? parseInt(select.value, 10) : null;
         try {
-            await apiCreateRun(this.projectId, { force });
+            await apiCreateRun(this.projectId, { force, load_case_id });
             await this.load();
         } catch (err) {
             if (err instanceof DuplicateRunError) {

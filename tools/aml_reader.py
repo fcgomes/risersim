@@ -1613,6 +1613,34 @@ class ANFLEXAMLReader:
             },
         }
 
+    def list_load_cases(self) -> list:
+        """Public enumeration of every %LOAD_CASE this .aml defines (e.g. 'Near'/'Far'/
+        'Transverse'/'Cross' in Exemplo_01a.aml), for callers that need to let a user CHOOSE a
+        load_case_id (the web run-manager's "load case per run" selector, docs/roadmap.md) instead
+        of reaching into the private `model_data['load_cases']` directly. Reuses
+        `_resolve_current()`/`_resolve_wave()` -- the same resolution `to_risersim_json()` itself
+        uses -- so the summary here (current/wave name+height+period) can't drift from what
+        actually gets baked into the JSON for a given load_case_id.
+
+        Cheap and side-effect-free: doesn't synthesize a mesh or resolve vessel motion/connection
+        geometry (only `to_risersim_json()` does that), so it's safe to call on every API request.
+
+        Returns `[]` for a .aml with no %LOAD_CASE block at all (older/simpler files) -- never
+        raises, mirroring `_resolve_load_case()`'s own fallback philosophy.
+        """
+        result = []
+        for lc in self.model_data.get('load_cases', []):
+            current = self._resolve_current(lc)
+            wave = self._resolve_wave(lc)
+            result.append({
+                'id': lc.get('id'),
+                'name': lc.get('name'),
+                'current_name': current.get('name') if current else None,
+                'wave_height_m': wave.get('height_m') if wave else None,
+                'wave_period_s': wave.get('period_s') if wave else None,
+            })
+        return result
+
     # -------------------------------------------------------------------------
     # OUTPUT
     # -------------------------------------------------------------------------

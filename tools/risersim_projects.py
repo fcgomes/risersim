@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from risersim_version import WEB_VERSION
+from risersim_runner import list_aml_load_cases, build_config_from_aml
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 
@@ -95,6 +96,16 @@ def _count_statuses(runs):
     return counts
 
 
+class DuplicateRunError(Exception):
+    """Raised by `ProjectStore.create_run()` when a finished run with the same `model_hash`
+    already exists and `force` wasn't set -- carries the existing run (`.run`) so the caller
+    (`run_server.py`) can report it back (409, same shape `find_run_by_model_hash` already
+    produced before this moved inside `create_run()`)."""
+    def __init__(self, run):
+        super().__init__(f"já existe uma simulação terminada com o mesmo model_hash (run '{run.get('id')}')")
+        self.run = run
+
+
 class ProjectStore:
     def __init__(self, root=None):
         self.root = Path(root) if root else DEFAULT_PROJECTS_ROOT
@@ -132,13 +143,18 @@ class ProjectStore:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def _store_source_files(self, pdir, xml_path, h5_path, aml_path=None):
-        """Copies the source files (the real XML+H5 exported by ANFLEX, AML optional) into
-        `projects/<id>/source/`, making the project self-contained -- closes the gap where
-        `source.xml_path` used to point outside the project directory (dependent on the
-        trunk/exemplos mount staying in the same place). Single code path used by both the
-        pre-discovered-example flow and the upload flow (see run_server.py
-        `api_create_project`/`api_upload_project`) -- neither duplicates this logic.
+    def _store_source_files(self, pdir, xml_path=None, h5_path=None, aml_path=None):
+        """Copies the source files into `projects/<id>/source/`, making the project
+        self-contained -- closes the gap where `source.xml_path` used to point outside the
+        project directory (dependent on the trunk/exemplos mount staying in the same place).
+        Single code path used by both the pre-discovered-example flow and the upload flow (see
+        run_server.py `api_create_project`/`api_upload_project`) -- neither duplicates this logic.
+
+        `xml_path`/`h5_path` are optional as a PAIR (either both given -- a real XML+H5 export --
+        or neither): an `.aml`-only project (no XML+H5 export at all, see
+        `risersim_runner.py::build_config_from_aml()`) has only `aml_path`. `aml_path` alone is
+        also optional on its own for either case (an XML+H5 project's `.aml` isn't always
+        available next to it).
 
         Preserves each file's ORIGINAL NAME (not a generic name like "model.xml") --
         `xml_path`/`h5_path`/`aml_path` already arrive here with the right basename in both flows
@@ -148,25 +164,35 @@ class ProjectStore:
         screen.
 
         Returns the paths RELATIVE to the project directory (to write into
-        `project.json["source"]` without leaking an absolute host path)."""
+        `project.json["source"]` without leaking an absolute host path); `None` for whichever of
+        `xml_path`/`h5_path` wasn't given."""
         source_dir = pdir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
-        xml_name = Path(xml_path).name
-        h5_name = Path(h5_path).name
-        shutil.copy2(xml_path, source_dir / xml_name)
-        shutil.copy2(h5_path, source_dir / h5_name)
-        stored = {"xml_path": f"source/{xml_name}", "h5_path": f"source/{h5_name}", "aml_path": None}
+        stored = {"xml_path": None, "h5_path": None, "aml_path": None}
+        if xml_path and h5_path:
+            xml_name = Path(xml_path).name
+            h5_name = Path(h5_path).name
+            shutil.copy2(xml_path, source_dir / xml_name)
+            shutil.copy2(h5_path, source_dir / h5_name)
+            stored["xml_path"] = f"source/{xml_name}"
+            stored["h5_path"] = f"source/{h5_name}"
         if aml_path and Path(aml_path).is_file():
             aml_name = Path(aml_path).name
             shutil.copy2(aml_path, source_dir / aml_name)
             stored["aml_path"] = f"source/{aml_name}"
         return stored
 
-    def create_project(self, name, config, xml_path, h5_path, aml_path=None, origin=None, description=""):
+    def create_project(self, name, config, xml_path=None, h5_path=None, aml_path=None, origin=None, description=""):
         """Creates a new project: `project.json` + `input_simulation.json` (the compiled config,
-        ready for `ModelBuilder` to consume), copying the real source files (XML+H5+optional AML)
-        into the project's own directory (`_store_source_files`). Doesn't trigger any run --
-        that's a separate step (`create_run`).
+        ready for `ModelBuilder` to consume), copying the real source files into the project's own
+        directory (`_store_source_files`). Doesn't trigger any run -- that's a separate step
+        (`create_run`).
+
+        `xml_path`+`h5_path` (a real XML+H5 export) and `aml_path` alone (an `.aml`-only project,
+        see `risersim_runner.py::build_config_from_aml()`) are the two supported combinations --
+        the caller (`run_server.py`) is responsible for compiling `config` with whichever pipeline
+        matches what was actually given here; this method itself doesn't care which one produced
+        `config`, it only stores whatever source files it was handed.
 
         `origin` is reference metadata about where the model came from (e.g.
         `{"example_id": "..."}` for the pre-discovered-example flow, `{"kind": "upload"}` for the
@@ -280,39 +306,73 @@ class ProjectStore:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def create_run(self, project_id):
-        """Creates a new run: freezes (snapshots) the project's current `input_simulation.json`
-        into the run's directory, and writes `run.json` with `status: "pending"`. Doesn't block
-        waiting for the run to finish -- `run_worker.py` (a separate process) is what picks it up
-        from the queue and executes it.
+    def create_run(self, project_id, load_case_id=None, force=False):
+        """Creates a new run and writes `run.json` with `status: "pending"`. Doesn't block waiting
+        for the run to finish -- `run_worker.py` (a separate process) is what picks it up from the
+        queue and executes it.
+
+        `load_case_id=None` (default): identical to this method's original behavior -- freezes
+        (snapshots) the project's current `input_simulation.json` unchanged. `load_case_id` given:
+        the project must have an `.aml` in `source` (raises `ValueError` if not); rebuilds the
+        config for that specific %LOAD_CASE via `build_config_from_aml()` (risersim_runner.py,
+        the same pipeline `run_from_aml.py --load-case-id` uses, including the MoorPy mesh-length
+        correction -- docs/roadmap.md, Eixo 2a) instead of reusing the project-level snapshot --
+        different load cases of the same physical model need different current/wave data, so a
+        single project-level `input_simulation.json` can't represent all of them at once.
 
         Also records here the provenance that's already knowable at creation time (see
-        docs/roadmap.md, Axis 3b): `model_hash` (sha256 of the freshly-copied snapshot -- used by
-        `find_run_by_model_hash` to avoid duplicate runs of the same model), `schema_version`
-        (read back from the snapshot itself, written by
-        `xml_h5_reader.py::to_risersim_json()`), and `web_version` (which interface version this
-        run was created with). `solver_fingerprint` starts as `None` -- only `run_worker.py` has
-        access to the compiled binary (separate containers), so this field is only filled in once
-        the run is actually executed."""
+        docs/roadmap.md, Axis 3b): `model_hash` (sha256 of the config bytes this run will actually
+        execute -- used by `find_run_by_model_hash` to avoid duplicate runs of the same model+case
+        combination), `schema_version` (read back from the config itself), `web_version` (which
+        interface version this run was created with), and the new `load_case_id`/`load_case_name`
+        (both `None` for the default/no-selection path, same as any pre-existing run created before
+        this field existed -- read everywhere via `.get()`, no migration needed).
+        `solver_fingerprint` starts as `None` -- only `run_worker.py` has access to the compiled
+        binary (separate containers), so this field is only filled in once the run is executed.
+
+        Raises `DuplicateRunError` (carrying the existing run) instead of creating a new one when
+        a finished run with the same `model_hash` already exists and `force` isn't set -- moved
+        here (from the caller) so the dedup check always hashes the bytes THIS run would actually
+        use, not unconditionally the project-level file regardless of `load_case_id`."""
         project = self.get_project(project_id)
         if project is None:
             raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
 
         pdir = self.project_dir(project_id)
-        input_json = pdir / "input_simulation.json"
-        if not input_json.is_file():
-            raise FileNotFoundError(f"projeto '{project_id}' não tem input_simulation.json")
+        load_case_name = None
+
+        if load_case_id is None:
+            input_json = pdir / "input_simulation.json"
+            if not input_json.is_file():
+                raise FileNotFoundError(f"projeto '{project_id}' não tem input_simulation.json")
+            config_bytes = input_json.read_bytes()
+        else:
+            aml_rel = (project.get("source") or {}).get("aml_path")
+            if not aml_rel:
+                raise ValueError(f"projeto '{project_id}' não tem .aml associado -- não é possível selecionar caso de carregamento")
+            aml_path = pdir / aml_rel
+            load_cases = list_aml_load_cases(aml_path)
+            match = next((lc for lc in load_cases if lc.get("id") == load_case_id), None)
+            if match is None:
+                raise ValueError(f"load_case_id {load_case_id} não encontrado no .aml do projeto '{project_id}'")
+            load_case_name = match.get("name")
+            config = build_config_from_aml(aml_path, load_case_id=load_case_id)
+            config_bytes = json.dumps(config, indent=2, ensure_ascii=False).encode("utf-8")
+
+        model_hash = hashlib.sha256(config_bytes).hexdigest()
+        if not force:
+            dup = self.find_run_by_model_hash(project_id, model_hash)
+            if dup is not None:
+                raise DuplicateRunError(dup)
 
         run_id = generate_run_id(pdir)
         rdir = self.run_dir(project_id, run_id)
         rdir.mkdir(parents=True)
-        shutil.copy2(input_json, rdir / "input_simulation.json")
+        (rdir / "input_simulation.json").write_bytes(config_bytes)
         (rdir / "stdout.log").touch()
 
-        snapshot_bytes = (rdir / "input_simulation.json").read_bytes()
-        model_hash = hashlib.sha256(snapshot_bytes).hexdigest()
         try:
-            schema_version = json.loads(snapshot_bytes).get("schema_version")
+            schema_version = json.loads(config_bytes).get("schema_version")
         except json.JSONDecodeError:
             schema_version = None
 
@@ -326,6 +386,8 @@ class ProjectStore:
             "exit_code": None,
             "model_hash": model_hash,
             "schema_version": schema_version,
+            "load_case_id": load_case_id,
+            "load_case_name": load_case_name,
             "web_version": WEB_VERSION,
             "solver_fingerprint": None,
         }

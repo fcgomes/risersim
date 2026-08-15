@@ -8,7 +8,7 @@ import { bindCameraToolbar } from './ui/CameraToolbar.js';
 import { switchTab } from './ui/TabPanel.js';
 import { initThemeToggle } from './ui/ThemeToggle.js';
 import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
-import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun, DuplicateRunError } from './utils/runManagerFormat.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun, fetchLoadCases, DuplicateRunError } from './utils/runManagerFormat.js';
 
 /**
  * preprocessor_app.js
@@ -68,7 +68,29 @@ class PreprocessorApp {
             this.switchParentView('manager');
         });
 
+        this.loadCases = [];
+        fetchLoadCases(this.projectId).then((data) => {
+            this.loadCases = data.load_cases || [];
+            this.renderLoadCaseSelect();
+        });
+
         this.loadProjectMeta();
+    }
+
+    /** Same idea as project.js::renderLoadCaseSelect() -- populates/toggles the "new run"
+     * load-case <select> in the Simulações tab, shown only when the project's .aml defines more
+     * than one %LOAD_CASE. */
+    renderLoadCaseSelect() {
+        const select = document.getElementById('runs-tab-load-case-select');
+        if (this.loadCases.length <= 1) {
+            select.style.display = 'none';
+            select.innerHTML = '';
+            return;
+        }
+        select.innerHTML = this.loadCases.map(lc =>
+            `<option value="${lc.id}">${escapeHtml(lc.name)} (ID ${lc.id})</option>`
+        ).join('');
+        select.style.display = '';
     }
 
     /**
@@ -584,6 +606,7 @@ class PreprocessorApp {
         const rows = runs.map(r => `
             <tr>
                 <td class="run-id-cell mono">${escapeHtml(r.id)}</td>
+                <td>${escapeHtml(r.load_case_name || '—')}</td>
                 <td>${statusPill(r.status)}</td>
                 <td class="mono">${formatDate(r.created_at)}</td>
                 <td>${r.status === 'converged' ? `<a class="link-btn" href="#" data-view-results="${escapeHtml(r.id)}">Ver resultados →</a>` : ''}</td>
@@ -592,7 +615,7 @@ class PreprocessorApp {
         container.innerHTML = `
             <div class="runs-list">
                 <table class="run-table">
-                    <thead><tr><th>Simulação</th><th>Status</th><th>Criada</th><th></th></tr></thead>
+                    <thead><tr><th>Simulação</th><th>Caso</th><th>Status</th><th>Criada</th><th></th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table>
             </div>
@@ -631,8 +654,11 @@ class PreprocessorApp {
         const btn = document.getElementById('runs-tab-new-run-btn');
         btn.disabled = true;
         btn.innerText = 'Criando…';
+        const select = document.getElementById('runs-tab-load-case-select');
+        const load_case_id = (select && select.style.display !== 'none' && select.value)
+            ? parseInt(select.value, 10) : null;
         try {
-            await createRun(this.projectId, { force });
+            await createRun(this.projectId, { force, load_case_id });
             await this.loadProjectMeta();
             if (window.parent !== window && window.parent.projectPage) window.parent.projectPage.load();
         } catch (err) {

@@ -163,16 +163,18 @@ export class DuplicateRunError extends Error {
  * callers own their own confirm-and-retry UI (see project.js::createRun for the pattern: catch
  * `DuplicateRunError`, confirm with the user, call again with `force: true`).
  * @param {string} projectId
- * @param {{force?: boolean}} [opts]
+ * @param {{force?: boolean, load_case_id?: number|null}} [opts] `load_case_id`: which %LOAD_CASE
+ * this run should use (see {@link fetchLoadCases}) -- omitted/`null` reuses the project's own
+ * already-compiled `input_simulation.json` unchanged, same as before this parameter existed.
  * @returns {Promise<object>} The created run.
  * @throws {DuplicateRunError} On a 409 (duplicate model_hash).
  * @throws {Error} On any other non-2xx response.
  */
-export async function createRun(projectId, { force = false } = {}) {
+export async function createRun(projectId, { force = false, load_case_id = null } = {}) {
     const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, load_case_id }),
     });
     if (res.status === 409) {
         const body = await res.json().catch(() => ({}));
@@ -184,4 +186,24 @@ export async function createRun(projectId, { force = false } = {}) {
         throw new Error(detail || `HTTP ${res.status}`);
     }
     return res.json();
+}
+
+/**
+ * `GET /api/projects/<id>/load-cases` -- lists the %LOAD_CASE bundles (e.g. "Near"/"Far"/
+ * "Transverse"/"Cross") available for a project's `.aml`, if it has one, for the "new run"
+ * load-case selector (project.js/preprocessor_app.js).
+ *
+ * Best-effort by design: a network failure or backend error here shouldn't block run creation --
+ * it should just hide the selector, so this NEVER throws, unlike {@link fetchJSON}/{@link createRun}.
+ * @param {string} projectId
+ * @returns {Promise<{available: boolean, load_cases: Array<{id: number, name: string, current_name: string|null, wave_height_m: number|null, wave_period_s: number|null}>}>}
+ */
+export async function fetchLoadCases(projectId) {
+    try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/load-cases`);
+        if (!res.ok) return { available: false, load_cases: [] };
+        return await res.json();
+    } catch (e) {
+        return { available: false, load_cases: [] };
+    }
 }

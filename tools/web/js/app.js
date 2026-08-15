@@ -79,9 +79,9 @@ class RiserSimApp {
         return { url: '../catenary_results.json', fallbackUrl: '../catenary_results.json' };
     }
 
-    /** Switches between the side data-panel tabs (Controls/Visualization/Table/Load). */
+    /** Switches between the side data-panel tabs (Visualization/Table). */
     setDataTab(tab) {
-        switchTab({ controls: 'tab-controls', viz: 'tab-viz', table: 'tab-table', load: 'tab-load' }, tab);
+        switchTab({ viz: 'tab-viz', table: 'tab-table' }, tab);
     }
 
     bindEvents() {
@@ -128,10 +128,8 @@ class RiserSimApp {
         bindCameraToolbar(this.cameraController, this.zoomWindow, () => this.getCurrentStep(), () => this.getEnvBounds());
 
         // Side data-panel tabs
-        document.getElementById('tab-controls-btn').addEventListener('click', () => this.setDataTab('controls'));
         document.getElementById('tab-viz-btn').addEventListener('click', () => this.setDataTab('viz'));
         document.getElementById('tab-table-btn').addEventListener('click', () => this.setDataTab('table'));
-        document.getElementById('tab-load-btn').addEventListener('click', () => this.setDataTab('load'));
 
         // Elements / Nodes toggle within the "Table" tab
         document.getElementById('table-view-elements-btn').addEventListener('click', () => this.setTableViewMode('elements'));
@@ -168,12 +166,6 @@ class RiserSimApp {
 
         // Colormap
         document.getElementById('colormap-select').addEventListener('change', () => this.render());
-
-        // File Upload
-        document.getElementById('json-input').addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) this.loadSimulationData(file);
-        });
 
         // Light/dark theme
         initThemeToggle(this);

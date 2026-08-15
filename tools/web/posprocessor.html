@@ -61,11 +61,42 @@
 
         /* Static styling for markup below that has no dynamic JS-driven style toggles. */
         #viewport-tabs { position: absolute; top: 10px; left: 10px; z-index: 25; display: flex; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px); }
+
+        /* Floating playback bar (video-player style), anchored to the bottom of the 3D viewport. */
+        #playback-overlay {
+            position: absolute;
+            left: 50%;
+            bottom: 16px;
+            transform: translateX(-50%);
+            z-index: 25;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 4px;
+            padding: 4px 8px;
+            max-width: calc(100% - 32px);
+            box-sizing: border-box;
+            background: color-mix(in srgb, var(--bg-recessed) 82%, transparent);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        #playback-overlay #step-slider { flex: 1 1 90px; min-width: 70px; }
+        #playback-overlay #step-label { font-size: 11px; font-weight: bold; white-space: nowrap; padding: 0 2px; }
+        #playback-overlay .btn-icon {
+            flex: 0 0 auto;
+            padding: 4px 7px;
+            font-size: 13px;
+            line-height: 1;
+            background: linear-gradient(135deg, var(--brand-accent), var(--brand-accent-strong));
+            color: #ffffff;
+        }
+        #playback-overlay .btn-icon:hover { opacity: 0.85; }
         /* Full-bleed viewport layers (the 3D canvas and the 3 chart overlays) -- app.js's
            switchViewportView() toggles each one's `display` individually via inline style
            (kept inline below); everything else about their sizing is static and shared here. */
         .viewport-layer { width: 100%; height: 100%; box-sizing: border-box; }
-        .step-slider-label { font-size: 12px; }
         .step-label-value { font-weight: bold; }
         .table-tab-heading-controls { font-size: 11px; padding: 3px 8px; }
         #table-view-elements-btn { margin-left: 8px; }
@@ -139,6 +170,16 @@
 
             <div id="zoom-rect"></div>
 
+            <!-- Floating playback overlay bar (video-player style) -->
+            <div id="playback-overlay">
+                <button class="btn-icon" id="prev-btn" title="Passo Anterior">⏮️</button>
+                <button class="btn-icon" id="play-btn" title="Iniciar Animação">▶️</button>
+                <button class="btn-icon" id="pause-btn" title="Pausar Animação">⏸️</button>
+                <button class="btn-icon" id="next-btn" title="Próximo Passo">⏭️</button>
+                <input type="range" id="step-slider" min="0" max="400" value="400" step="1">
+                <span id="step-label" class="step-label-value">400/400 (20.00s)</span>
+            </div>
+
             <!-- Floating Colorbar Legend -->
             <div id="colorbar-legend">
                 <div class="colorbar-caption" id="cbar-unit-title">Tração (kN)</div>
@@ -158,32 +199,17 @@
 
         <div id="data-panel">
             <div id="bottom-tabs">
-                <button class="btn-tab active" id="tab-controls-btn">🎬 Controles</button>
-                <button class="btn-tab" id="tab-viz-btn">🎨 Visualização</button>
+                <button class="btn-tab active" id="tab-viz-btn">🎨 Visualização</button>
                 <button class="btn-tab" id="tab-table-btn">📊 Tabela</button>
-                <button class="btn-tab" id="tab-load-btn">📁 Carregar</button>
             </div>
 
-            <div class="bottom-tab-panel active" id="tab-controls">
+            <div class="bottom-tab-panel active" id="tab-viz">
                 <div class="control-group">
                     <div class="control-title">⚙️ MODO DE ANÁLISE (ESTÁTICA / DINÂMICA)</div>
                     <select id="analysis-mode-select">
                         <option value="dynamic" selected>🌊 Análise Dinâmica (Domínio do Tempo)</option>
                         <option value="static">📊 Análise Estática (Equilíbrio & Offset)</option>
                     </select>
-                </div>
-
-                <div class="control-group">
-                    <div class="control-title">🎬 CONTROLES DE ANIMAÇÃO</div>
-                    <label for="step-slider" class="step-slider-label">Passo: <span id="step-label" class="step-label-value">400/400 (20.00s)</span></label>
-                    <input type="range" id="step-slider" min="0" max="400" value="400" step="1">
-
-                    <div class="btn-row">
-                        <button class="btn-icon" id="prev-btn" title="Passo Anterior">⏮️ Voltar</button>
-                        <button class="btn-icon btn-primary" id="play-btn" title="Iniciar Animação">▶️ Play</button>
-                        <button class="btn-icon" id="pause-btn" title="Pausar Animação">⏸️ Pausa</button>
-                        <button class="btn-icon" id="next-btn" title="Próximo Passo">⏭️ Avançar</button>
-                    </div>
                 </div>
 
                 <div class="control-group">
@@ -201,9 +227,7 @@
                         <div class="stat-value" id="max-depth">-80.00 m</div>
                     </div>
                 </div>
-            </div>
 
-            <div class="bottom-tab-panel" id="tab-viz">
                 <div class="control-group">
                     <div class="control-title">🎯 GRANDEZA PARA COLORIR (CAMPO ESCALAR)</div>
                     <select id="scalar-field-select">
@@ -267,13 +291,6 @@
                             <!-- Populated dynamically per active step -->
                         </tbody>
                     </table>
-                </div>
-            </div>
-
-            <div class="bottom-tab-panel" id="tab-load">
-                <div class="control-group">
-                    <div class="control-title">📁 CARREGAR ARQUIVO DE RESULTADOS (.H5 / .JSON)</div>
-                    <input type="file" id="json-input" accept=".h5,.hdf5,.json">
                 </div>
             </div>
         </div>

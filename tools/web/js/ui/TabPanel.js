@@ -3,7 +3,7 @@
  * Switches which tab panel (`.bottom-tab-panel`) is visible inside `#data-panel`, and marks the
  * corresponding button as active -- the same algorithm used by both the preprocessor's tabs
  * (Load/Geometry/Environmental/Analysis) and the postprocessor's tabs
- * (Controls/Visualization/Table/Load), only the set of tabs changes between pages.
+ * (Visualization/Table), only the set of tabs changes between pages.
  */
 
 /**

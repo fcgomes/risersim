@@ -55,6 +55,7 @@ class Dashboard {
             const opt = e.target.selectedOptions[0];
             const nameInput = document.getElementById('project-name-input');
             if (opt && !nameInput.dataset.userEdited) nameInput.value = opt.dataset.name || '';
+            this.renderExampleLoadCaseSelect();
         });
         document.getElementById('project-name-input').addEventListener('input', (e) => {
             e.target.dataset.userEdited = '1';
@@ -284,19 +285,45 @@ class Dashboard {
         backdrop.classList.add('open');
 
         try {
-            const examples = await fetchJSON('/api/examples');
-            if (examples.length === 0) {
-                select.innerHTML = '<option value="">Nenhum exemplo XML+H5 disponível</option>';
+            // Both real XML+H5 exports AND plain .aml files with no export (see
+            // risersim_runner.py::discover_aml_only_examples()) -- an entry's `xml_path` tells
+            // them apart (null for an .aml-only one), same shape either way.
+            this.examples = await fetchJSON('/api/examples');
+            if (this.examples.length === 0) {
+                select.innerHTML = '<option value="">Nenhum exemplo disponível</option>';
                 return;
             }
-            select.innerHTML = examples.map(ex =>
-                `<option value="${escapeHtml(ex.id)}" data-name="${escapeHtml(ex.name)}">${escapeHtml(ex.id)}</option>`
+            select.innerHTML = this.examples.map(ex =>
+                `<option value="${escapeHtml(ex.id)}" data-name="${escapeHtml(ex.name)}">${escapeHtml(ex.id)}${ex.xml_path ? '' : ' · .aml puro (sem XML+H5)'}</option>`
             ).join('');
-            nameInput.value = examples[0].name;
+            nameInput.value = this.examples[0].name;
+            this.renderExampleLoadCaseSelect();
         } catch (err) {
             select.innerHTML = '<option value="">Falha ao carregar exemplos</option>';
             errorEl.innerText = err.message;
         }
+    }
+
+    /** Shows a load-case picker under the example <select> only when the CURRENTLY SELECTED
+     * example is `.aml`-only (`xml_path === null`) and defines more than one %LOAD_CASE -- picks
+     * which case becomes the new project's DEFAULT/project-level input (a real XML+H5 export has
+     * no such choice, it's already resolved to one case; other cases remain reachable afterward
+     * via the per-run selector already in project.js/preprocessor_app.js). */
+    renderExampleLoadCaseSelect() {
+        const row = document.getElementById('example-load-case-row');
+        const select = document.getElementById('example-load-case-select');
+        const exampleId = document.getElementById('example-select').value;
+        const example = (this.examples || []).find(e => e.id === exampleId);
+        const loadCases = (example && !example.xml_path) ? (example.load_cases || []) : [];
+        if (loadCases.length <= 1) {
+            row.style.display = 'none';
+            select.innerHTML = '';
+            return;
+        }
+        select.innerHTML = loadCases.map(lc =>
+            `<option value="${lc.id}">${escapeHtml(lc.name)} (ID ${lc.id})</option>`
+        ).join('');
+        row.style.display = '';
     }
 
     closeNewProjectModal() {
@@ -320,6 +347,11 @@ class Dashboard {
         if (!exampleId) { errorEl.innerText = 'Selecione um exemplo.'; return; }
         if (!name) { errorEl.innerText = 'Informe um nome para o projeto.'; return; }
 
+        const loadCaseSelect = document.getElementById('example-load-case-select');
+        const loadCaseRow = document.getElementById('example-load-case-row');
+        const load_case_id = (loadCaseRow.style.display !== 'none' && loadCaseSelect.value)
+            ? parseInt(loadCaseSelect.value, 10) : null;
+
         confirmBtn.disabled = true;
         confirmBtn.innerText = 'Criando…';
         errorEl.innerText = '';
@@ -327,7 +359,7 @@ class Dashboard {
             const project = await fetchJSON('/api/projects', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ example_id: exampleId, name }),
+                body: JSON.stringify({ example_id: exampleId, name, load_case_id }),
             });
             window.location.href = `project.html?project=${encodeURIComponent(project.id)}`;
         } catch (err) {
@@ -349,13 +381,17 @@ class Dashboard {
         const name = nameInput.value.trim();
 
         if (!name) { errorEl.innerText = 'Informe um nome para o projeto.'; return; }
-        if (!xmlInput.files[0]) { errorEl.innerText = 'Selecione o arquivo XML.'; return; }
-        if (!h5Input.files[0]) { errorEl.innerText = 'Selecione o arquivo H5.'; return; }
+        const hasXmlH5 = xmlInput.files[0] && h5Input.files[0];
+        const hasAmlOnly = amlInput.files[0] && !xmlInput.files[0] && !h5Input.files[0];
+        if (!hasXmlH5 && !hasAmlOnly) {
+            errorEl.innerText = 'Selecione XML+H5 juntos, ou só o arquivo AML/PML (sem XML+H5).';
+            return;
+        }
 
         const formData = new FormData();
         formData.append('name', name);
-        formData.append('xml_file', xmlInput.files[0]);
-        formData.append('h5_file', h5Input.files[0]);
+        if (xmlInput.files[0]) formData.append('xml_file', xmlInput.files[0]);
+        if (h5Input.files[0]) formData.append('h5_file', h5Input.files[0]);
         if (amlInput.files[0]) formData.append('aml_file', amlInput.files[0]);
 
         confirmBtn.disabled = true;

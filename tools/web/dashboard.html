@@ -88,16 +88,20 @@
             </div>
 
             <div id="source-tab-example">
-                <label for="example-select">Exemplo (XML+H5 exportado do ANFLEX)</label>
+                <label for="example-select">Exemplo</label>
                 <select id="example-select"></select>
+                <div id="example-load-case-row" style="display:none;">
+                    <label for="example-load-case-select">Caso de carregamento inicial</label>
+                    <select id="example-load-case-select"></select>
+                </div>
             </div>
 
             <div id="source-tab-upload" style="display:none;">
-                <label for="upload-xml-input">Arquivo XML (obrigatório)</label>
+                <label for="upload-xml-input">Arquivo XML (junto com H5, ou envie só o AML abaixo)</label>
                 <input type="file" id="upload-xml-input" accept=".xml">
-                <label for="upload-h5-input">Arquivo H5 (obrigatório)</label>
+                <label for="upload-h5-input">Arquivo H5 (junto com XML, ou envie só o AML abaixo)</label>
                 <input type="file" id="upload-h5-input" accept=".h5">
-                <label for="upload-aml-input">Arquivo AML/PML (opcional)</label>
+                <label for="upload-aml-input">Arquivo AML/PML (opcional com XML+H5; obrigatório sozinho para importar sem XML+H5)</label>
                 <input type="file" id="upload-aml-input" accept=".aml,.pml">
             </div>
 

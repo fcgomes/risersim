@@ -13,7 +13,6 @@ through the filesystem, with no broker.
 Usage: `python3 run_server.py [port]` (default 8000).
 """
 
-import hashlib
 import os
 import sys
 import tempfile
@@ -30,8 +29,11 @@ if str(_SCRIPT_DIR) not in sys.path:
 # separate from the backend modules importable via _SCRIPT_DIR above.
 _WEB_DIR = _SCRIPT_DIR / "web"
 
-from risersim_projects import ProjectStore
-from risersim_runner import build_config_from_xml_h5, discover_xml_h5_examples
+from risersim_projects import ProjectStore, DuplicateRunError
+from risersim_runner import (
+    build_config_from_xml_h5, discover_xml_h5_examples, list_aml_load_cases,
+    build_config_from_aml, discover_aml_only_examples,
+)
 from risersim_version import WEB_VERSION
 
 # Root of `trunk/exemplos/` -- from tools/ (_SCRIPT_DIR), go up two levels (risersim/, then
@@ -65,12 +67,20 @@ def add_no_cache_headers(resp):
 
 
 # ---------------------------------------------------------------------------
-# API: examples available for creating a project (Phase 1: XML+H5 only, see spec)
+# API: examples available for creating a project
 # ---------------------------------------------------------------------------
 
 @app.route('/api/examples', methods=['GET'])
 def api_list_examples():
-    return jsonify(discover_xml_h5_examples(EXEMPLOS_ROOT))
+    """Every example under `trunk/exemplos/` a project can be created from -- both real XML+H5
+    exports (`discover_xml_h5_examples()`, the original Phase 1 scope) and plain `.aml` files with
+    no export at all (`discover_aml_only_examples()`, the majority of examples -- previously only
+    reachable via the CLI's `run_from_aml.py`, never the web). Both share the same dict shape
+    (`xml_path`/`h5_path` are `None` for an `.aml`-only entry) so the frontend can render one list
+    without a special case; `load_cases` (only present on `.aml`-only entries, always `[]`/absent
+    on an XML+H5 one, which is already resolved to a single case) is what lets the "new project"
+    form offer a case picker before the project even exists."""
+    return jsonify(discover_xml_h5_examples(EXEMPLOS_ROOT) + discover_aml_only_examples(EXEMPLOS_ROOT))
 
 
 # ---------------------------------------------------------------------------
@@ -94,36 +104,52 @@ def api_list_projects():
 
 @app.route('/api/projects', methods=['POST'])
 def api_create_project():
+    """Creates a project from either a real XML+H5 export or a plain `.aml` alone (no export --
+    see `risersim_runner.py::build_config_from_aml()`/`discover_aml_only_examples()`). Which
+    pipeline runs is decided purely by which paths are present after resolving `example_id` (or
+    the explicit `xml_path`/`h5_path`/`aml_path` body fields): `xml_path`+`h5_path` -> XML+H5;
+    `aml_path` alone -> `.aml`-only. `load_case_id` (optional) only matters for the `.aml`-only
+    path -- it picks which %LOAD_CASE becomes this project's DEFAULT/project-level input (the one
+    a run with no `load_case_id` of its own would use); `None` falls back to the first case in the
+    file, same default `build_config_from_aml()`/the CLI already use. A real XML+H5 export has no
+    such choice -- it's already resolved to one case by the time it was exported."""
     body = request.get_json(force=True, silent=True) or {}
+    load_case_id = body.get('load_case_id')
 
     example_id = body.get('example_id')
     if example_id:
-        examples = {e['id']: e for e in discover_xml_h5_examples(EXEMPLOS_ROOT)}
+        examples = {e['id']: e for e in discover_xml_h5_examples(EXEMPLOS_ROOT) + discover_aml_only_examples(EXEMPLOS_ROOT)}
         example = examples.get(example_id)
         if example is None:
             return jsonify({"error": f"example_id desconhecido: {example_id}"}), 400
         name = body.get('name') or example['name']
-        xml_path, h5_path, aml_path = example['xml_path'], example['h5_path'], example['aml_path']
+        xml_path, h5_path, aml_path = example.get('xml_path'), example.get('h5_path'), example.get('aml_path')
         origin = {"example_id": example_id}
     else:
         name = body.get('name')
         xml_path = body.get('xml_path')
         h5_path = body.get('h5_path')
         aml_path = body.get('aml_path')
-        if not name or not xml_path or not h5_path:
+        if not name or not ((xml_path and h5_path) or aml_path):
             return jsonify({
-                "error": "informe 'example_id', ou 'name'+'xml_path'+'h5_path' ('aml_path' é opcional)"
+                "error": "informe 'example_id', ou 'name'+'xml_path'+'h5_path' ('aml_path' opcional), "
+                         "ou 'name'+'aml_path' sozinho (.aml puro, sem XML+H5)"
             }), 400
-        if not Path(xml_path).is_file():
+        if xml_path and not Path(xml_path).is_file():
             return jsonify({"error": f"xml_path não encontrado: {xml_path}"}), 400
-        if not Path(h5_path).is_file():
+        if h5_path and not Path(h5_path).is_file():
             return jsonify({"error": f"h5_path não encontrado: {h5_path}"}), 400
+        if aml_path and not Path(aml_path).is_file():
+            return jsonify({"error": f"aml_path não encontrado: {aml_path}"}), 400
         origin = None
 
     try:
-        config = build_config_from_xml_h5(xml_path, h5_path, aml_path=aml_path)
+        if xml_path and h5_path:
+            config = build_config_from_xml_h5(xml_path, h5_path, aml_path=aml_path)
+        else:
+            config = build_config_from_aml(aml_path, load_case_id=load_case_id)
     except Exception as exc:
-        return jsonify({"error": f"falha ao compilar o modelo a partir do XML+H5: {exc}"}), 400
+        return jsonify({"error": f"falha ao compilar o modelo: {exc}"}), 400
 
     # create_project() copies xml_path/h5_path/aml_path into projects/<id>/source/ (see
     # ProjectStore._store_source_files) -- the project stays self-contained even if
@@ -135,23 +161,28 @@ def api_create_project():
 
 @app.route('/api/projects/upload', methods=['POST'])
 def api_upload_project():
-    """Creates a project from a direct upload (multipart/form-data: `name`, `xml_file`,
-    `h5_file`, `aml_file` optional) -- an alternative to the pre-discovered-example flow
-    (`api_create_project` above) for when the user has their own XML+H5 pair (or XML/AML)
-    outside `trunk/exemplos/`. Reuses `build_config_from_xml_h5()` as-is (the same function used
-    by the example flow), without duplicating the compilation logic -- only where the source
-    files come from changes."""
+    """Creates a project from a direct upload (multipart/form-data: `name`, plus either
+    `xml_file`+`h5_file` (real export) or `aml_file` alone (`.aml`-only, no export -- see
+    `risersim_runner.py::build_config_from_aml()`); `aml_file` is also accepted ALONGSIDE
+    `xml_file`+`h5_file` as extra metadata, same as the example flow. `load_case_id` (optional
+    form field) only matters for the `.aml`-only path -- see `api_create_project`'s docstring.
+    An alternative to the pre-discovered-example flow (`api_create_project` above) for when the
+    user has their own files outside `trunk/exemplos/`. Reuses `build_config_from_xml_h5()`/
+    `build_config_from_aml()` as-is (the same functions the example flow uses), without
+    duplicating the compilation logic -- only where the source files come from changes."""
     name = (request.form.get('name') or '').strip()
     xml_file = request.files.get('xml_file')
     h5_file = request.files.get('h5_file')
     aml_file = request.files.get('aml_file')
+    load_case_id_raw = request.form.get('load_case_id')
+    load_case_id = int(load_case_id_raw) if load_case_id_raw else None
 
     if not name:
         return jsonify({"error": "informe 'name'"}), 400
-    if xml_file is None or not xml_file.filename:
-        return jsonify({"error": "'xml_file' é obrigatório"}), 400
-    if h5_file is None or not h5_file.filename:
-        return jsonify({"error": "'h5_file' é obrigatório"}), 400
+    has_xml_h5 = xml_file is not None and xml_file.filename and h5_file is not None and h5_file.filename
+    has_aml = aml_file is not None and aml_file.filename
+    if not has_xml_h5 and not has_aml:
+        return jsonify({"error": "informe 'xml_file'+'h5_file', ou 'aml_file' sozinho (.aml puro, sem XML+H5)"}), 400
 
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
@@ -160,22 +191,26 @@ def api_upload_project():
         # "Exemplo_03_A1.xml") instead of a generic name -- create_project()/_store_source_files()
         # uses this same name to copy into projects/<id>/source/, so the user recognizes the case
         # on the project screen afterwards.
-        xml_name = secure_filename(xml_file.filename) or "input.xml"
-        h5_name = secure_filename(h5_file.filename) or "input.h5"
-        xml_path = tmp / xml_name
-        h5_path = tmp / h5_name
-        xml_file.save(str(xml_path))
-        h5_file.save(str(h5_path))
-        aml_path = None
-        if aml_file is not None and aml_file.filename:
+        xml_path = h5_path = aml_path = None
+        if has_xml_h5:
+            xml_name = secure_filename(xml_file.filename) or "input.xml"
+            h5_name = secure_filename(h5_file.filename) or "input.h5"
+            xml_path = tmp / xml_name
+            h5_path = tmp / h5_name
+            xml_file.save(str(xml_path))
+            h5_file.save(str(h5_path))
+        if has_aml:
             aml_name = secure_filename(aml_file.filename) or "input.aml"
             aml_path = tmp / aml_name
             aml_file.save(str(aml_path))
 
         try:
-            config = build_config_from_xml_h5(xml_path, h5_path, aml_path=aml_path)
+            if has_xml_h5:
+                config = build_config_from_xml_h5(xml_path, h5_path, aml_path=aml_path)
+            else:
+                config = build_config_from_aml(aml_path, load_case_id=load_case_id)
         except Exception as exc:
-            return jsonify({"error": f"falha ao compilar o modelo a partir do XML+H5: {exc}"}), 400
+            return jsonify({"error": f"falha ao compilar o modelo: {exc}"}), 400
 
         # The copy into projects/<id>/source/ (inside create_project(), via
         # _store_source_files()) happens while still inside the `with` block -- the temporary
@@ -255,6 +290,32 @@ def api_project_input(project_id):
     return send_from_directory(str(pdir), "input_simulation.json", mimetype="application/json", as_attachment=as_attachment)
 
 
+@app.route('/api/projects/<project_id>/load-cases', methods=['GET'])
+def api_project_load_cases(project_id):
+    """Lists the %LOAD_CASE bundles (e.g. "Near"/"Far"/"Transverse"/"Cross") available for this
+    project's `.aml`, if it has one -- feeds the "new run" load-case selector (project.js/
+    preprocessor_app.js), letting a run pick a DIFFERENT case than whatever the project's own
+    XML+H5 export represents (see `ProjectStore.create_run(load_case_id=...)`).
+
+    A project without an `.aml` in `source` (or one whose `.aml` has 0-1 load cases) returns
+    `available: false` -- the frontend hides the selector in that case, zero behavior change for
+    those projects. Never 500s on a missing/unreadable `.aml` -- degrades to `available: false`
+    with an `error` field instead, since this is a best-effort/decorative lookup, not required for
+    the rest of the page to function."""
+    project = store.get_project(project_id)
+    if project is None:
+        abort(404)
+    aml_rel = (project.get('source') or {}).get('aml_path')
+    if not aml_rel:
+        return jsonify({"available": False, "load_cases": []})
+    aml_path = store.project_dir(project_id) / aml_rel
+    try:
+        load_cases = list_aml_load_cases(aml_path)
+    except Exception as exc:
+        return jsonify({"available": False, "load_cases": [], "error": str(exc)})
+    return jsonify({"available": len(load_cases) > 1, "load_cases": load_cases})
+
+
 @app.route('/api/projects/<project_id>/source/<path:filename>', methods=['GET'])
 def api_project_source_file(project_id, filename):
     """Serves an original source file (XML/H5/AML, copied by
@@ -287,29 +348,25 @@ def api_create_run(project_id):
 
     body = request.get_json(force=True, silent=True) or {}
     force = bool(body.get('force'))
+    load_case_id = body.get('load_case_id')
 
-    # Without 'force', avoids accidentally triggering a duplicate run: the solver is
-    # deterministic given the same binary, so a FINISHED run (converged/failed) with the same
-    # model_hash already tells us the result -- spending the serial queue (only one run at a
-    # time) re-running it doesn't help. Hashes the PROJECT-LEVEL input_simulation.json with the
-    # same algorithm (sha256 of the bytes) that create_run() uses on the freshly-copied snapshot
-    # -- shutil.copy2 preserves the bytes exactly, so the two hashes match.
-    if not force:
-        input_json = store.project_dir(project_id) / "input_simulation.json"
-        if input_json.is_file():
-            model_hash = hashlib.sha256(input_json.read_bytes()).hexdigest()
-            dup = store.find_run_by_model_hash(project_id, model_hash)
-            if dup is not None:
-                return jsonify({
-                    "error": "já existe uma simulação terminada com o mesmo model_hash",
-                    "run_id": dup["id"],
-                    "status": dup["status"],
-                }), 409
-
+    # Duplicate-run dedup (avoids accidentally re-running a deterministic solver against the same
+    # input) and load-case config-building both moved into create_run() itself -- see
+    # risersim_projects.py::create_run()'s docstring: the dedup check needs to hash the bytes THIS
+    # run would actually use (which depend on load_case_id), not unconditionally the project-level
+    # file the way this route used to do it.
     try:
-        run = store.create_run(project_id)
+        run = store.create_run(project_id, load_case_id=load_case_id, force=force)
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 400
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except DuplicateRunError as exc:
+        return jsonify({
+            "error": "já existe uma simulação terminada com o mesmo model_hash",
+            "run_id": exc.run["id"],
+            "status": exc.run["status"],
+        }), 409
     # Returns immediately, without waiting for the run to finish -- run_worker.py (a separate
     # process) is what picks it up from the queue (status "pending") and executes it.
     return jsonify(run), 201
