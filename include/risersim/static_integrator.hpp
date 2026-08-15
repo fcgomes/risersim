@@ -43,6 +43,17 @@ public:
                                                  Eigen::VectorXd& F_int) override;
 };
 
+/**
+ * @brief Tikhonov-style artificial stiffness regularization (see static_integrator.cpp's
+ * StaticIntegrator::assemble_stiffness_and_internal_forces for the original inline version and
+ * the real ANFLEX reference: `beam.cpp::calc_artificial_stiffness` / `integrator.cpp::
+ * apply_artificial_stiffness`). Adds a decaying diagonal contribution to `K_global` -- shared
+ * between StaticIntegrator's per-load-step assembly-phase use and DynamicAnalysis's
+ * step==1-only use (matching `dynamic_integrator.cpp:516-517`'s real gating: the real ANFLEX only
+ * applies this on the first time step of a dynamic analysis, never after).
+ */
+void add_artificial_stiffness(const RiserModel* model, int num_dofs, int iter, Eigen::SparseMatrix<double>& K_global);
+
 } // namespace risersim
 
 #endif // RISERSIM_STATIC_INTEGRATOR_HPP

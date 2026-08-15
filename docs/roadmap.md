@@ -629,6 +629,64 @@ elementos com tração já negativa (não global/sempre-ligada como o port diret
 alguma das outras técnicas já listadas no item 3 (piso mínimo de tração, formulação de cabo com
 afrouxamento explícito).
 
+**Atualização 8** (item 3, segunda tentativa -- implementada, testada, também sem efeito):
+seguindo a mudança de metodologia desta sessão (priorizar `anf_analysis/src` C++ real em vez de
+Fortran, ver Eixo 2a), li `dynamic_integrator.cpp:516-517`/`static_integrator.cpp:206-207` do
+ANFLEX real em vez do `bpflex.f` já lido antes -- achado concreto: o real só aplica rigidez
+artificial no **PASSO 1** (`if(m_have_artificial_stiffness && step == 1) apply_artificial_stiffness();`,
+mesmo gate em estático e dinâmico), nunca nos passos seguintes -- bem mais restrito que a tentativa
+da Atualização 7 (toda iteração de todo passo). Extraí a fórmula de decaimento já portada em
+`StaticIntegrator` pra uma função livre (`add_artificial_stiffness()`, `static_integrator.hpp/cpp`)
+e portei pro `assemble_at()` do dinâmico, gated exatamente por `step == 1` -- suíte 361/361 sem
+regressão. **Resultado real (Far, `--duration 30 --dt 0.05`): idêntico byte-a-byte ao baseline**
+(mesmo chattering período-2 no passo 87/iter 8 com `res=1759.62`, mesma falha no passo 109 com
+`res_norm=7730.44`). Causa: o movimento de topo real (`vessel_motion.cpp:286`) tem sua PRÓPRIA
+rampa suave (mesma função `0.5*(1-cos(...))` do fallback) -- no passo 1 (t=0,05s) o fator de rampa
+já é essencially zero, então o passo 1 converge trivial em pouquíssimas iterações sem nunca precisar
+de correção do Newton na prática (a checagem de convergência usa só o resíduo de força, que não
+depende de `K_global`/rigidez artificial nenhuma) -- ou seja, o mecanismo real de rigidez artificial
+no passo 1 existe pra outra coisa (ajudar a transição estática→dinâmica em geral), não tem
+oportunidade de influenciar este caso específico. **Mantido mesmo assim** (fiel ao real, zero
+regressão, zero mudança de comportamento) -- é a segunda tentativa seguida sem efeito no item 3;
+pausado aqui, aguardando decisão do usuário sobre se vale continuar investigando esse item
+específico ou seguir pra outra coisa.
+
+**Atualização 9** (achado decisivo + terceira tentativa, melhoria real mas parcial): antes de
+tentar mais nada, comparei contra uma rodada REAL do Fortran via WSL já feita numa sessão anterior
+(`exemplos/Curso/Exemplo_01/Exemplo_01c/Exemplo_01c_analysis/Exemplo_01c_A1_FarDD.SAI`, dinâmica
+completa 70s/dt=0,05, mesma config) -- nunca conferida contra este item específico até agora.
+**O ANFLEX real não tem NENHUMA dificuldade no passo 109/t=5,45s**: converge em 3 iterações, como
+todos os passos vizinhos (2-5 iterações, sem chattering) do início ao fim dos 70s/1400 passos.
+Descarta de vez a hipótese "talvez seja um limite físico/numérico que o real também tem" -- não é;
+o `risersim` tem uma fragilidade real e específica que o real não tem.
+
+Isso motivou a terceira tentativa: instanciar o Morison (`hydrodynamics.hpp`, escrito há tempos mas
+nunca ligado ao solver dinâmico -- só o movimento de topo via RAO entra dinamicamente hoje, a linha
+em si só recebe arrasto de CORRENTE, constante, nenhuma força hidrodinâmica de ONDA). Implementado
+em `dynamic_analysis.cpp::assemble_at()`: gerado um estado de mar JONSWAP real (uma realização de
+fase aleatória por análise, não por passo) via `JONSWAPSpectrum::generate_wave_components()` +
+`AiryWaveKinematics`, aplicado por elemento via `MorisonForce` (arrasto + inércia). Detalhe de
+correção importante: a aceleração estrutural passada pra `calculate_force_per_length()` é
+deliberadamente ZERO, não a real -- o termo `-(Cm-1)*rho*A*a_struct` do Morison é matematicamente a
+MESMA contribuição de massa adicionada que `mass_matrix()` já bota no lado esquerdo da equação
+(`m_added = rho_water*outer_area()*props.Ca`, com `Ca=Cm-1`); usar a aceleração real duplicaria essa
+massa adicionada (uma vez via `M_global`, outra via `F_ext`). Suíte 361/361 sem regressão.
+
+**Resultado real (Far)**: passa do passo 109 pro **116** (t=5,45s → 5,80s) -- melhoria real, mas
+pequena, longe do comportamento limpo do real (2-5 iterações até o passo 1400). Testei com uma
+segunda semente de fase aleatória (7 em vez do default 42): passo **118** (t=5,90s) -- na mesma
+faixa, confirma que não é ruído de fase específico (não é "essa fase em particular ajuda", é uma
+melhoria real mas modesta e consistente entre realizações). **Suspeita não confirmada de por que a
+melhoria é pequena**: o movimento de topo (RAO "harmônico equivalente", frequência única
+determinística) e o Morison na linha (decomposição de fase aleatória multi-componente) usam DUAS
+realizações INDEPENDENTES do "mesmo" mar JONSWAP -- fisicamente deveriam vir da mesma onda real
+(correlacionadas), mas aqui não estão, o que pode fazer a força de onda na linha brigar com o
+movimento do topo em vez de reforçá-lo em alguns instantes. Não investigado mais a fundo -- exigiria
+repensar a representação do mar (uma realização única alimentando tanto o RAO equivalente quanto o
+Morison), mudança maior. **Mantido mesmo assim** (fisicamente real, correto na formulação, melhoria
+mensurável, zero regressão) -- terceira tentativa seguida sem fechar o item 3 por completo, mas a
+primeira que de fato mudou o resultado na direção certa. Pausado aqui.
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio

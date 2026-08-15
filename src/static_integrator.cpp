@@ -104,6 +104,12 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
 
     if (!artificial_stiffness_enabled || !model || model->elements.empty()) return;
 
+    add_artificial_stiffness(model, analysis->num_dofs, iter, K_global);
+}
+
+void add_artificial_stiffness(const RiserModel* model, int num_dofs, int iter, Eigen::SparseMatrix<double>& K_global) {
+    if (!model || model->elements.empty()) return;
+
     // Artificial stiffness (Tikhonov regularization), the same technique used by
     // real ANFLEX (beam.cpp:calc_artificial_stiffness / static_integrator.cpp).
     double avg_EA_L = 0.0;
@@ -137,7 +143,7 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
             if (eq_rot >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq_rot, eq_rot, k_rotational));
         }
     }
-    Eigen::SparseMatrix<double> K_artificial(analysis->num_dofs, analysis->num_dofs);
+    Eigen::SparseMatrix<double> K_artificial(num_dofs, num_dofs);
     K_artificial.setFromTriplets(artif_triplets.begin(), artif_triplets.end());
     K_global += K_artificial;
 }

@@ -5,7 +5,9 @@
 #include "risersim/dynamic_analysis.hpp"
 #include "risersim/rotation_utils.hpp"
 #include "risersim/hydrostatics.hpp"
+#include "risersim/hydrodynamics.hpp"
 #include "risersim/config.hpp"
+#include "risersim/static_integrator.hpp"
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -65,6 +67,28 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
 
     const int total_steps = static_cast<int>(duration_s / dt_s);
     const double omega = 2.0 * std::numbers::pi / wave_period;
+
+    // Morison hydrodynamic force (drag + inertia) on the submerged line body, from a real
+    // JONSWAP irregular sea state -- distinct from vessel_motion's spectral-MOMENT "equivalent
+    // harmonic" (used only for the TOP's prescribed motion): this is a genuine time-domain
+    // random-phase wave realization (hydrodynamics.hpp), applied directly to every element via
+    // Morison's equation, matching real ANFLEX's cMorison. The module was written a while ago
+    // but never wired in -- see docs/roadmap.md, Eixo 1b item 3: the Far dynamic solver's
+    // negative-tension/slack-cable instability at step 109 (which the real ANFLEX does NOT have,
+    // confirmed against a real WSL Fortran run of the same case) was investigated with "the line
+    // has zero direct wave loading today, only current drag + the top's RAO motion" identified as
+    // a plausible missing-damping/inertia cause. Gated to JONSWAP (the only wave_type with real
+    // Hs/gamma spectral data to build a sea state from -- the older regular-wave fallback has
+    // none). One realization for the whole run (not regenerated per step), same convention as a
+    // real irregular sea state.
+    std::optional<AiryWaveKinematics> wave_kinematics;
+    const double wave_heading_rad = model->environmental.wave_angle_deg * std::numbers::pi / 180.0;
+    if (model->environmental.wave_type == "JONSWAP") {
+        double Hs = 2.0 * wave_amplitude; // wave_amplitude_m is height_m/2.0 (see model_builder.cpp)
+        double depth = model->environmental.water_surface_z - current.seabed_depth;
+        JONSWAPSpectrum spectrum(Hs, wave_period, depth, model->environmental.wave_gamma);
+        wave_kinematics.emplace(spectrum.generate_wave_components(), depth);
+    }
 
     // Newmark-beta Constants (Average Acceleration Method)
     const double gamma_newmark = 0.55;
@@ -150,7 +174,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             Eigen::SparseMatrix<double> K_global;
             Eigen::VectorXd F_int;
         };
-        auto assemble_at = [&](const Eigen::VectorXd& U_trial) -> AssembledState {
+        auto assemble_at = [&](const Eigen::VectorXd& U_trial, int iter) -> AssembledState {
             // Update Node Displacements (Static + Current Dynamic Perturbation) -- top_node
             // included now: it's a genuine free DOF held by the penalty spring (top_motion), not
             // excluded by direct assignment, so it must receive Newton corrections like any other
@@ -221,6 +245,61 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     if (eq1_y >= 0) st.F_ext[eq1_y] += f_drag_y * L * 0.5;
                     if (eq2_y >= 0) st.F_ext[eq2_y] += f_drag_y * L * 0.5;
                 }
+
+                if (wave_kinematics.has_value()) {
+                    Eigen::Vector3d p1 = elem->node1->current_coords();
+                    Eigen::Vector3d p2 = elem->node2->current_coords();
+                    Eigen::Vector3d elem_axis = (p2 - p1).normalized();
+                    Eigen::Vector3d mid = 0.5 * (p1 + p2);
+
+                    // Wave phase coordinate: project onto the propagation direction; z measured
+                    // from the free surface (0 at surface, negative below -- AiryWaveKinematics's
+                    // own convention), converted from the model's own Z frame (surface at
+                    // water_surface_z, not 0). Phase origin (x=0) is the model's own coordinate
+                    // origin, not tied to any real ANFLEX reference -- a simplification, doesn't
+                    // affect the force's magnitude/spectral content, just its phase along the line.
+                    double x_wave = mid.x() * std::cos(wave_heading_rad) + mid.y() * std::sin(wave_heading_rad);
+                    double z_wave = mid.z() - model->environmental.water_surface_z;
+
+                    Eigen::Vector3d v_fluid, a_fluid;
+                    wave_kinematics->calculate_fluid_kinematics(x_wave, z_wave, time, v_fluid, a_fluid);
+
+                    // Structural velocity at the element midpoint, averaged from both nodes'
+                    // CURRENT dynamic state (V_curr, captured by reference) -- same "reused across
+                    // backtracking trials" approximation already used for M_global/C_trial below,
+                    // not recomputed per trial U_trial.
+                    Eigen::Vector3d v_struct = Eigen::Vector3d::Zero();
+                    for (int k = 0; k < 3; ++k) {
+                        int eq1v = elem->node1->eq_numbers[k];
+                        int eq2v = elem->node2->eq_numbers[k];
+                        double v1 = (eq1v >= 0) ? V_curr[eq1v] : 0.0;
+                        double v2 = (eq2v >= 0) ? V_curr[eq2v] : 0.0;
+                        v_struct[k] = 0.5 * (v1 + v2);
+                    }
+
+                    // a_struct passed as ZERO (not V_curr/A_curr's real value) is deliberate, not
+                    // an oversight: Morison's "-(Cm-1)*rho*A*a_struct" term is mathematically the
+                    // SAME added-mass contribution risersim's own mass_matrix() already puts on
+                    // the LEFT-hand side of the equation of motion
+                    // (`m_added = rho_water*outer_area()*props.Ca`, with Ca=Cm-1) -- passing the
+                    // real structural acceleration here would double-count that term (once via
+                    // M_global, once via F_ext). Zeroing it makes calculate_force_per_length()
+                    // return exactly `drag(v_rel) + Cm*rho*A*a_fluid`, the genuinely EXTERNAL part.
+                    double Cm = 1.0 + elem->props.Ca;
+                    MorisonForce morison(elem->props.Cd, Cm, elem->props.D_outer, water_density);
+                    Eigen::Vector3d f_morison = morison.calculate_force_per_length(
+                        v_fluid, a_fluid, v_struct, Eigen::Vector3d::Zero(), elem_axis);
+
+                    int eq1_xm = elem->node1->eq_numbers[0]; int eq2_xm = elem->node2->eq_numbers[0];
+                    int eq1_ym = elem->node1->eq_numbers[1]; int eq2_ym = elem->node2->eq_numbers[1];
+                    int eq1_zm = elem->node1->eq_numbers[2]; int eq2_zm = elem->node2->eq_numbers[2];
+                    if (eq1_xm >= 0) st.F_ext[eq1_xm] += f_morison.x() * L * 0.5;
+                    if (eq2_xm >= 0) st.F_ext[eq2_xm] += f_morison.x() * L * 0.5;
+                    if (eq1_ym >= 0) st.F_ext[eq1_ym] += f_morison.y() * L * 0.5;
+                    if (eq2_ym >= 0) st.F_ext[eq2_ym] += f_morison.y() * L * 0.5;
+                    if (eq1_zm >= 0) st.F_ext[eq1_zm] += f_morison.z() * L * 0.5;
+                    if (eq2_zm >= 0) st.F_ext[eq2_zm] += f_morison.z() * L * 0.5;
+                }
             }
 
             // 2. Assemble Global Stiffness (K) and Internal Force (F_int)
@@ -228,6 +307,18 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             st.F_int = Eigen::VectorXd::Zero(num_dofs);
             assemble_system(st.K_global, st.F_ext, st.F_int);
             st.K_global += assemble_buoyancy_stiffness();
+
+            // Artificial stiffness (Tikhonov regularization), gated to the FIRST time step only --
+            // matches the real ANFLEX exactly (`dynamic_integrator.cpp:516-517`:
+            // `if(m_have_artificial_stiffness && step == 1) apply_artificial_stiffness();`, decaying
+            // by iter within that step via the same formula StaticIntegrator already ports). The
+            // dynamic loop never had this before; a prior attempt applying it on EVERY step (not
+            // just step 1) made things worse (docs/roadmap.md, Eixo 1b Atualização 7) -- this is a
+            // different, narrower experiment matching the real gating precisely, not a retry of the
+            // reverted one.
+            if (step == 1) {
+                add_artificial_stiffness(model, num_dofs, iter, st.K_global);
+            }
 
             return st;
         };
@@ -247,7 +338,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         double res_hist[2] = {-1.0, -1.0};
         Eigen::VectorXd U_hist[2];
         for (int iter = 0; iter < max_nr_iters; ++iter) {
-            AssembledState state = assemble_at(U_curr);
+            AssembledState state = assemble_at(U_curr, iter);
             Eigen::SparseMatrix<double>& K_global = state.K_global;
             Eigen::VectorXd& F_ext = state.F_ext;
             Eigen::VectorXd& F_int = state.F_int;
@@ -304,7 +395,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 if (iter >= 5 && res_hist[parity] > 0.0 &&
                     std::abs(res_norm - res_hist[parity]) < 1.0e-4 * std::max(res_norm, 1.0)) {
                     Eigen::VectorXd U_avg = 0.5 * (U_curr + U_hist[parity]);
-                    assemble_at(U_avg); // leaves node->disp/rot consistent with U_avg (return value unused)
+                    assemble_at(U_avg, iter); // leaves node->disp/rot consistent with U_avg (return value unused)
                     Eigen::VectorXd A_avg = c1 * (U_avg - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
                     Eigen::VectorXd V_avg = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_avg);
                     std::cerr << "  ⚖️ Dynamic NR period-2 chattering detected at step " << step
@@ -398,7 +489,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             AssembledState trial_state;
             for (int bt = 0; bt <= max_backtracks; ++bt) {
                 U_trial = U_curr + trial_alpha * delta_U;
-                trial_state = assemble_at(U_trial);
+                trial_state = assemble_at(U_trial, iter);
                 A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
                 V_trial = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_trial);
                 Eigen::SparseMatrix<double> C_trial = alpha_rayleigh * M_global + beta_rayleigh * trial_state.K_global;
