@@ -434,6 +434,65 @@ implica "o binário usado pelo restante do sistema já reflete o fix".
   trapézio, e por isso o "/2" de `STDPM=sqrt(AREAMOV/2)` não se aplica do mesmo jeito aqui. Não
   investigado mais a fundo -- próxima tentativa, se valer a pena, deveria ler `movgharfloa.f`
   primeiro pra confirmar a definição exata de `AREAMOV` antes de mexer na fórmula de novo.
+
+**Mudança de metodologia (achado nesta rodada, antes de continuar o gap acima)**: `trunk/anf_analysis`
+contém o C++ REAL do ANFLEX (histórico SVN próprio, `$Revision$`/`$LastChangedBy$` nos headers,
+last-changed 2015-2016) -- não é um wrapper fino sobre o Fortran, é uma reimplementação C++ completa
+e ativamente mantida, em duas árvores: `anf_analysis/src` (motor: `domain.cpp`, `dynamic_analysis.cpp`,
+`static_integrator.cpp`, `dynamic_integrator.cpp`, etc., praticamente os mesmos nomes de arquivo já
+citados via `trunk/src` nesta investigação inteira) e `anf_analysis/anf_movements/src` (biblioteca de
+movimento de topo/RAO/onda: `hybrid_movement.cpp`, `equivalent_harmonic.cpp`, `jonswap_spectrum.cpp`,
+`rao.cpp`, `matrix_transform.cpp`). `trunk/src` (usado até aqui) é uma cópia mais antiga (datada de
+2016-10-03 vs. 2016-11-10 do `anf_analysis/src`) com os MESMOS nomes de arquivo mas conteúdo diferente
+-- funcionalmente equivalente pro que já foi lido até agora, mas `anf_analysis` é a árvore mais
+completa e mais nova. **Decisão do usuário**: priorizar o C++ de `anf_analysis` daqui pra frente;
+Fortran (`anf_analysis/fortran/*.f`) só quando o C++ não tiver a rotina ou o caso for complexo demais
+pra entender só pelo C++.
+
+**Atualização 8** (aplicando a mudança acima ao gap do Far -- achado inicial promissor, mas
+descartado depois de implementado e testado, ver abaixo):
+lendo `anf_analysis/anf_movements/src/hybrid_movement.cpp:100-136` (o construtor de `cHybridMovement`,
+onde os momentos espectrais e o extremo de Rayleigh são calculados de fato) em vez do Fortran: a
+fórmula em si (`m_amp_std=sqrt(m0)`, `m_amp_s=2*m_amp_std`, `Tm=2π·sqrt(m2/m4)`,
+`N=t/Tm`, `rayleigh_factor=sqrt(0.5·ln(N))`, `amp_max=amp_s·rayleigh_factor`) bate **exatamente** com
+o que `vessel_motion.cpp:240-256` já calcula hoje -- confirma, com a fonte real (não mais inferência
+via Fortran), que a versão atual (pós-reversão da Atualização 4) estava certa e a tentativa revertida
+(acima) é que introduzia o erro 1/√2. Mas o construtor real tem uma diferença estrutural que
+`vessel_motion.cpp` NÃO replica: `hybrid_movement.cpp:69-81` restringe o laço de componentes de onda
+usado no cálculo dos momentos (m0/m2/m4) ao intervalo `[rao_min, rao_max]` -- a faixa de frequência
+REALMENTE tabelada na RAO (`m_rao_table->get_min_fre()/get_max_fre()`), descartando qualquer
+componente de onda fora dela. `vessel_motion.cpp:215-238` integra sobre a faixa CONFIGURADA inteira
+(`%WAVE.FIRST_FREQUENCY`/`LAST_FREQUENCY`, 0,2-3,0 rad/s no Exemplo_01a) e usa `interp_linear()`
+(`vessel_motion.cpp:118-130`), que EXTRAPOLA como constante (`y.front()`/`y.back()`) fora da faixa da
+RAO, em vez de excluir esses pontos. Conferido contra o `.aml` real: a tabela RAO do Exemplo_01a vai
+só até **1,20 rad/s** (`exemplos/Curso/Exemplo_01/Exemplo_01a/Exemplo_01a.aml:756-760`), bem abaixo do
+teto de integração configurado (3,0 rad/s) -- ou seja, hoje incluímos ~60% do domínio de integração
+(1,2 a 3,0 rad/s) com um valor de RAO extrapolado (constante) que o código real simplesmente não usa
+ali. Como `m4` pesa por `ω⁴`, essa cauda espúria pesa desproporcionalmente mais nela do que em `m0`,
+e como o efeito depende de quão achatada/alta é a última amostra tabelada de cada GDL (heave/roll do
+Far, notados como tendo um pico mais agudo -- ver achado anterior nesta seção), é consistente com o
+gap ser não-uniforme entre GDL e maior no Far.
+
+**Implementado e testado -- hipótese DESCARTADA, gap continua aberto**: clipei o laço de
+`vessel_motion.cpp` à faixa `[frequencies_rad_s.front(), frequencies_rad_s.back()]` da própria RAO
+(`mov_ini`/`mov_fin`, mesmo algoritmo de `hybrid_movement.cpp:69-81`, inclusive o mesmo off-by-one de
+fronteira quando um ponto da grade de onda cai EXATAMENTE no limite da RAO -- exigiu ajustar a
+referência independente de `test_vessel_motion.cpp` pra bater; suíte 361/361 sem regressão).
+Recompilei `risersim_test_main.exe` (não só a suíte) e rodei o Far real com um debug print temporário
+(`RISERSIM_VESSEL_MOTION_DEBUG`, removido depois) pra imprimir os 6 GDL antes/depois do fix.
+**Resultado: byte-idêntico ao valor pré-fix** (surge=2,57 sway=1,867 heave=7,96 roll=7,82° pitch=3,21°
+yaw=1,111° -- mesmos números da tabela da Atualização 4). Causa: minha leitura anterior do `.aml` só
+cobriu as primeiras ~48 das 59 linhas de frequência da tabela RAO (`Exemplo_01a.aml:712`, cabeçalho
+"25 59") -- a tabela real do heading 0° vai até **10,0 rad/s**, bem além do teto de integração
+JONSWAP configurado (3,0 rad/s), confirmado lendo `frequencies_rad_s` de volta do
+`input_simulation.json` gerado (min 0,0628, max **10,0**, não 1,2 como eu tinha lido antes). Ou seja,
+a RAO tabelada é mais LARGA que o domínio de integração, não mais estreita -- o clip nunca exclui
+nada na prática pra este caso real, e por isso o fix não muda o resultado. **Mantido mesmo assim**
+(código correto, fiel ao algoritmo real, zero regressão, zero mudança de comportamento nos casos já
+validados) -- só não é a causa do gap. Gap do heave/roll do Far **continua sem causa identificada**;
+próxima hipótese, se valer a pena perseguir, precisa ser outra (a suspeita de grid JONSWAP já foi
+descartada antes; frequência de corte da RAO agora também descartada com evidência direta).
+
 **Atualização 5** (causa raiz do `T_eff` estático do "Cross" via `.aml` puro, ~994 kN vs. 217 kN
 real, achada e corrigida -- ✅ **RESOLVIDO**): não era o formato do chute inicial por si só (testado
 diretamente: rodar com o `warm_start` já existente, aplicado como `disp` por cima da malha reta
@@ -690,6 +749,44 @@ kN, dinâmica em andamento nos mesmos termos de uma rodada por exemplo) — comp
 fluxo por exemplo, só a origem dos arquivos muda. Aba "📤 Importar arquivo" testada via clique real
 simulado num harness same-origin: abre o modal, alterna painéis (`display:none`/`""`), atualiza
 classe `active` dos botões e `dashboard.sourceTab`, tudo correto.
+
+#### Fase 3 — ✅ IMPLEMENTADA: caso de carregamento por rodada, projeto a partir de `.aml` puro, limpeza de UI
+
+Rodada de trabalho puxada pelo usuário navegando a interface real (Docker) e apontando lacunas
+concretas, não planejada de antemão.
+
+- **Caso de carregamento por rodada** — até aqui, "projeto" era 1:1 com um caso já resolvido (uma
+  pasta XML+H5 = um caso); o `--load-case-id` do `run_from_aml.py` nunca tinha sido ligado ao
+  backend web. Decisão do usuário (entre duas arquiteturas propostas): **projeto = modelo físico
+  (o `.aml`), rodada escolhe o `%LOAD_CASE`** — o mesmo modelo mental já usado via CLI a sessão
+  inteira, agora navegável dentro do MESMO projeto. Implementado extraindo
+  `build_config_from_aml()`/`list_aml_load_cases()`/a correção de malha MoorPy pra
+  `risersim_runner.py` (compartilhadas entre `run_from_aml.py` e o backend web, zero mudança de
+  comportamento no CLI); `ProjectStore.create_run()` ganhou `load_case_id` opcional, monta e
+  hasheia o config certo por rodada (`DuplicateRunError` substitui a checagem de dedupe que antes
+  só olhava o projeto); nova rota `GET /api/projects/<id>/load-cases`; seletor de caso na criação
+  de rodada (`project.html`/`preprocessor.html`) e coluna "Caso" nas tabelas de rodada.
+- **Projeto a partir de `.aml` puro** — perguntado pelo usuário ao notar que só 7 dos 31 exemplos
+  (os com pasta `_analysis/` já exportada) podiam virar projeto. `discover_aml_only_examples()`
+  (`risersim_runner.py`) varre `trunk/exemplos/` por `.aml` sem XML+H5 correspondente (24 dos 31);
+  `create_project()`/`_store_source_files()` (`risersim_projects.py`) e as rotas de criação
+  (`run_server.py`) passaram a aceitar `aml_path` sozinho; `dashboard.html`/`dashboard.js` marcam
+  exemplos aml-only na lista e mostram o seletor de caso já na criação do projeto.
+- **Limpeza de UI do pós-processador** — aba "📁 Carregar" (upload manual, redundante com o caminho
+  `?project=&run=` principal) removida; controles de animação (play/pause/slider) movidos da aba
+  lateral pra uma barra flutuante compacta sobre o canvas 3D (estilo player de vídeo, só ícones,
+  cor no gradiente laranja da marca — `--brand-accent`/`--brand-accent-strong`), reaproveitando o
+  padrão de overlay HTML já usado por `#colorbar-legend`/`#zoom-rect`.
+- `WEB_VERSION`: `1.0.0` → `1.3.1`.
+
+**Verificação real** (2026-08-15, mesmo stack Docker): rebuild de `web` OK a cada mudança; todos os
+4 casos de carregamento do Exemplo_01a criados como rodadas do mesmo projeto, T_eff consistente com
+o já validado via CLI (~217-220 kN); projeto criado a partir de `Exemplo_01b.aml` (aml puro) —
+rodada falhou na estática por limitação pré-existente e não-relacionada (EI≈0,01 kN·m², reproduzida
+identicamente via CLI); projeto criado a partir de `DNV_Check.aml` (aml puro) — estática convergiu
+limpa (18 iterações), dinâmica confirmada avançando via log ao vivo antes de abortada (rodada grande
+demais pra esperar terminar, não necessário pra validar o pipeline). Markup/JS servidos conferidos
+via `curl` contra o container real a cada mudança.
 
 ### 3c. Pós-processamento
 

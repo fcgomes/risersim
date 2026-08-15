@@ -218,15 +218,32 @@ VesselMotion::VesselMotion(const VesselMotionConfig& config, double wave_heading
         w[i] = config.jonswap_wini_rad_s + (config.jonswap_wfin_rad_s - config.jonswap_wini_rad_s) * i / (nwave - 1);
     }
 
+    // Restringe o intervalo de integração dos momentos espectrais à faixa REALMENTE tabelada na
+    // RAO (`config.frequencies_rad_s`), como `hybrid_movement.cpp:69-81` faz (`m_mov_ini_fre`/
+    // `m_mov_fin_fre`) -- sem isso, `curve_at()`/`interp_linear()` extrapolava a amplitude da RAO
+    // como constante além da tabela (ex. Exemplo_01a: RAO só vai até 1,2 rad/s, mas o grid JONSWAP
+    // configurado ia até 3,0 rad/s), incluindo uma cauda espúria que o código real nunca usa --
+    // pesa desproporcionalmente em m4 (~ω⁴) e explicava o gap não-uniforme entre GDL documentado
+    // em docs/roadmap.md (Eixo 2a, Atualização 8).
+    int mov_ini = 0, mov_fin = nwave - 1;
+    if (!config.frequencies_rad_s.empty()) {
+        double rao_min = config.frequencies_rad_s.front();
+        double rao_max = config.frequencies_rad_s.back();
+        for (int i = 0; i < nwave; ++i) {
+            if (w[i] < rao_min) mov_ini = i;
+            if (w[i] < rao_max) mov_fin = i;
+        }
+    }
+
     std::array<double, 6> amp_max{}, acel_max{};
     for (int dof = 0; dof < 6; ++dof) {
         double m0 = 0.0, m2 = 0.0, m4 = 0.0;
         double s_prev = 0.0;
-        for (int i = 0; i < nwave; ++i) {
+        for (int i = mov_ini; i <= mov_fin; ++i) {
             double amp = curve_at(config.frequencies_rad_s, re[dof], im[dof], w[i]).first;
             double s_jonswap = jonswap_spectrum(w[i], config.jonswap_alpha, config.jonswap_gamma, config.jonswap_period_s);
             double s_dof = amp * amp * s_jonswap;
-            if (i > 0) {
+            if (i > mov_ini) {
                 double dw = w[i] - w[i - 1];
                 double a = 0.5 * (s_prev + s_dof) * dw;
                 double wm = 0.5 * (w[i - 1] + w[i]);
