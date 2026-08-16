@@ -23,6 +23,9 @@ Functions here:
   path. Extracted from `run_from_aml.py`'s `.aml`-pure branch so both the CLI and the web run
   manager build it identically (including the MoorPy mesh-length correction, see
   `_apply_moorpy_mesh_correction()` below -- docs/roadmap.md, Eixo 2a Atualização 5).
+- `build_config_from_aml_multiline()`: multi-line sibling of the above (docs/roadmap.md backlog:
+  "múltiplas linhas com corpo flutuante compartilhado", driven by
+  exemplos/Multilinhas/Multilinhas.aml) -- reuses `aml_reader.py::to_risersim_json_multiline()`.
 - `run_simulation_subprocess()`: invokes the C++ binary with the same `subprocess` pattern
   `run_from_aml.py` already used (stdout/stderr redirectable to a log file, cwd in the output
   directory).
@@ -338,6 +341,42 @@ def build_config_from_aml(aml_path, line_index=0, num_elements_override=None, lo
 
     if apply_moorpy_correction:
         config = _apply_moorpy_mesh_correction(config)
+
+    return config
+
+
+def build_config_from_aml_multiline(aml_path, line_indices=None, num_elements_override=None, load_case_id=None,
+                                     duration=None, dt=None, static_only=False):
+    """Multi-line sibling of build_config_from_aml() (docs/roadmap.md backlog: "múltiplas linhas
+    com corpo flutuante compartilhado") -- same override semantics (duration/dt/static_only/
+    Rayleigh safety net), but calls `ANFLEXAMLReader.to_risersim_json_multiline()` instead of
+    `to_risersim_json()`.
+
+    No separate `apply_moorpy_correction` step here (unlike build_config_from_aml() above):
+    `to_risersim_json_multiline()` already applies the MoorPy mesh correction ITSELF, per line
+    (`ANFLEXAMLReader._moorpy_correct_line_mesh()`) -- the whole-file `_apply_moorpy_mesh_correction()`
+    below assumes `model.elements` forms one continuous chain, which isn't true once multiple
+    lines' elements are merged into one flat list, so it can't be reused unmodified here (see that
+    method's own docstring for why the correction had to move per-line instead).
+    """
+    from aml_reader import ANFLEXAMLReader
+
+    reader = ANFLEXAMLReader(str(aml_path))
+    config = reader.to_risersim_json_multiline(
+        line_indices=line_indices, num_elements_override=num_elements_override,
+        load_case_id=load_case_id,
+    )
+
+    if duration is not None:
+        config['analysis_options']['dynamic']['duration_s'] = duration
+    if dt is not None:
+        config['analysis_options']['dynamic']['dt_s'] = dt
+    if static_only:
+        config['analysis_options']['dynamic']['enabled'] = False
+
+    ray = config['analysis_options']['dynamic']['rayleigh_damping']
+    ray['alpha'] = max(ray.get('alpha', 0.0), 0.05)
+    ray['beta'] = max(ray.get('beta', 0.0), 0.005)
 
     return config
 

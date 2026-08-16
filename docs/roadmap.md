@@ -693,6 +693,75 @@ Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao lo
 comprimento) — nem `aml_reader.py` nem `xml_h5_reader.py` correlacionam isso hoje, ambos assumem
 solo único global. Só vale a pena se um caso de teste real desse tipo entrar em uso.
 
+### 2c. Suporte a múltiplas linhas (corpo flutuante compartilhado) — ✅ IMPLEMENTADO (motor + import), engine-verified
+
+Pedido do usuário (prioridade explícita), movido do backlog. Caso real: `Multilinhas.aml` -- 7
+linhas presas ao MESMO corpo flutuante (`%FLOATING.SHIP`, 6 GDL) via 7 pontos de conexão locais
+distintos, não acoplamento linha-linha. Pesquisa prévia (2 agentes Explore + 1 Plan) mapeou tanto
+a arquitetura real do ANFLEX (`interfaces/src/`: `cReference`/`cConnection`/`cLine`, corpo
+flutuante é um SUBTIPO de referência, não entidade separada) quanto o estado do risersim dos dois
+lados -- decisão do usuário: espelhar fielmente essa hierarquia no schema JSON (`references`/
+`connections`/`lines`), não uma versão minimalista; frontend/web run-manager explicitamente fora
+de escopo desta rodada.
+
+**Fase 1 -- mecânica C++ multi-anexo** (`model.hpp`: novos `ReferenceInfo`/`ConnectionInfo`/
+`LineInfo` + `RiserModel::resolve_line_attachments()`; `simulation.cpp`/`dynamic_analysis.cpp`/
+`static_analysis.cpp`: os 3 pontos hardcoded em `nodes.front()` como "o" nó de topo viraram loops
+por linha). Achado no caminho: plumbing profundo do solver (numeração de equação RCM,
+`compute_rcm_order()`) já era 100% genérico pra componentes desconexos -- zero mudança necessária
+ali, só ganhou teste dedicado. Achado um bug de correção física real (não relacionado à
+numeração): `compute_stress_and_curvature()`'s vizinho prev/next (usado pra curvatura/momento/von
+Mises/MBR) era escolhido só por posição no array (`elements[i-1]`/`[i+1]`), não por adjacência
+topológica real -- com múltiplas linhas, elementos de linhas diferentes ficam lado a lado no array
+plano sem se tocar; corrigido pra checar `node2==node1` de verdade antes de usar como vizinho (4
+pontos: `capture_snapshot()`, `solve_vessel_offset()`, `dynamic_analysis.cpp`, todos compartilhando
+a mesma lógica antes errada). Novo `tests/test_multiline.cpp`: duas correntes catenárias
+totalmente desconexas resolvidas juntas batem, ponto a ponto, contra cada uma resolvida sozinha
+(prova zero cross-talk); modelo sem `lines[]` continua com comportamento idêntico ao de sempre.
+
+**Fase 2 -- parsing JSON no `ModelBuilder`** (`model_builder.cpp`): resolução de ID generalizada
+de índice-direto-no-array (`node1_id - 1` como posição) pra mapa `id -> Node3D*` (mesmo padrão já
+usado pelo bloco de warm-start) -- necessário pra IDs globalmente únicos mas não densos entre
+linhas. Extraída `parse_vessel_motion_config()` (antes inline só em `environmental.vessel_motion`)
+pra ficar reutilizável também em `references[].vessel_motion`. Fixture JSON de 2 linhas parseia e
+converge; fixture single-line (sem `lines[]`) prova retrocompatibilidade total.
+
+**Fase 3 -- síntese multi-linha em `aml_reader.py`, testada contra o `Multilinhas.aml` real**:
+`_extract_all()`/`_parse_floating_ships()`/`_parse_connections()` já parseavam tudo multi-entrada
+(achado surpreendente -- não começava do zero); o gargalo estava só downstream
+(`to_risersim_json(line_index=0)` sempre resolvia UMA linha). Novo `to_risersim_json_multiline()`
+(`tools/aml_reader.py`) + `build_config_from_aml_multiline()` (`risersim_runner.py`) +
+`run_from_aml.py --all-lines`. Achado e resolvido no caminho: a correção de malha via MoorPy
+(`_apply_moorpy_mesh_correction()`, corrige a corda reta pra geometria de catenária real --
+sem ela `L_unstretched` sai curto e a tração estática fica várias vezes maior que a real, mesmo
+bug já documentado no Eixo 2a) assume que `model.elements` forma UMA corrente contínua
+(`node_order = [elements[0].node1_id] + [e.node2_id for e in elements]`) -- quebraria correndo
+através de fronteiras entre linhas no array plano mesclado. Resolvido aplicando a correção POR
+LINHA (`ANFLEXAMLReader._moorpy_correct_line_mesh()`, nova, roda a mesma lógica MoorPy numa
+fatia JSON de uma linha só, isolada, dentro do loop) em vez de tentar ensinar a ferramenta
+existente sobre fronteiras de linha.
+
+**Verificação real** (2026-08-16): `exemplos/Multilinhas/Multilinhas.aml` real, via `run_from_aml.py
+--all-lines --static-only`: as 7 linhas resolvem conexão+catenária reais (moorpy) com sucesso,
+schema gerado estruturalmente correto (14497 nós/14490 elementos, IDs globalmente únicos e sem
+sobreposição entre linhas, confirmado inspecionando o JSON gerado -- linha N vai de node_id
+X a Y sem invadir a faixa da linha seguinte), `references`/`connections`/`lines` corretos (1
+corpo flutuante compartilhado, 7 conexões de topo + 7 de âncora). H5 exportado sem crash mesmo
+no modelo grande. **Achado não resolvido, fora de escopo desta rodada**: a análise estática NÃO
+converge para este arquivo -- resíduo diverge já no 1º passo de carga. Isolado via teste A/B:
+rodando a MESMA linha 1 sozinha pelo caminho single-line já existente e não tocado
+(`to_risersim_json()`, sem nenhuma mudança desta rodada) reproduz a *mesma* divergência (mesmo
+formato de crescimento do resíduo) -- prova que não é um bug do multi-linha, é uma dificuldade de
+convergência pré-existente do motor para este caso específico (águas muito profundas, 2200m vs.
+100-265m dos exemplos já validados; linha muito longa, 5265m; EI muito baixo, 6,27 kN·m²; malha
+com ~2070 elementos/linha, bem além de qualquer caso já testado). Testado também com malha bem
+mais grosseira (40 elementos/linha): melhora (para de divergir pra o infinito, mas ainda não
+converge dentro do orçamento de iterações) -- confirma que faz parte do mesmo problema de
+robustez/condicionamento do Eixo 1b, não um artefato do multi-linha. Catch2: 405/405 (Fases 1-2,
+nenhuma mudança de C++ na Fase 3) sem regressão.
+
+**Fora de escopo desta rodada** (confirmado com o usuário antes de começar): frontend (`Riser3DRenderer.js`/`DataLoaderService.js`/tabela de resultados -- hoje assumem uma corrente única contígua, precisam de conectividade real exportada no H5 primeiro); seleção de linha no gerenciador de rodadas web (`risersim_projects.py`/`run_server.py`, sem conceito de "linha" hoje); caminho XML+H5 (`xml_h5_reader.py`, sem export real multi-linha existente).
+
 ## Eixo 3 — Interfaces (podem começar em paralelo aos eixos 1-2, escopadas ao que o motor já suporta)
 
 ### 3a. Interface de entrada de dados
@@ -1106,16 +1175,60 @@ force=true por já existir uma rodada com o mesmo `model_hash`) convergiu normal
 Docker) testado contra o `.aml` real do Exemplo_01a com `--static-only`, reproduzindo
 `T_eff≈217,3 kN` e gerando `catenary_results.h5` ao lado do `input_simulation.json` gerado.
 
+#### Fase 7 — ✅ IMPLEMENTADA: nomear também o arquivo de entrada pelo caso (mesma regra do de saída)
+
+Usuário pediu a mesma regra de nome do `results_filename` (Fase 5/6) pro arquivo de entrada
+per-rodada -- até aqui o snapshot congelado do config que o solver efetivamente lê continuava
+com o nome genérico `input_simulation.json` dentro de `runs/<run_id>/`, enquanto o resultado ao
+lado já se chamava `<Projeto>[_<Caso>]_results.h5`. Escopo continua o mesmo da Fase 5/6: só o
+arquivo POR RODADA, dentro de `runs/<run_id>/` -- o `input_simulation.json` de NÍVEL DE PROJETO
+(`projects/<id>/input_simulation.json`, o "config atual" fora de qualquer rodada específica, sem
+caso associado) fica como estava, sem mudança.
+
+- **`risersim_projects.py::create_run()`**: computa `stem = "_".join([projeto, caso])` uma vez só
+  e deriva os dois nomes a partir dele -- `input_filename = f"{stem}_input.json"` e
+  `results_filename = f"{stem}_results.h5"` (mesma sanitização via `_sanitize_filename_component`
+  já usada pra `results_filename`). O snapshot é gravado direto sob `input_filename` (não mais
+  `input_simulation.json`); o campo novo `input_filename` é gravado em `run.json` junto do já
+  existente `results_filename`.
+- **`run_worker.py`**: lê `run.get("input_filename")` (com fallback pra `"input_simulation.json"`
+  -- rodadas criadas antes desta fase não têm o campo) em vez do nome fixo, e passa esse caminho
+  como `argv[1]` pro binário.
+- **`run_server.py`**: `RESULT_FILENAMES` (dict estático que só tinha a entrada
+  `"input_simulation.json"`) removido inteiro -- virou código morto assim que o nome parou de ser
+  fixo. `api_run_results()` agora valida `filename` contra os DOIS campos dinâmicos do run
+  (`input_filename` OU `results_filename`), não mais um allowlist estático + um campo dinâmico.
+- **`preprocessor_app.js::resolveInputUrl()`**: virou assíncrona, mesmo padrão de
+  `app.js::resolveResultsUrl()` -- no caminho `?project=&run=`, busca `GET .../runs/<run_id>`
+  primeiro pra ler o `input_filename` real, então monta a URL com esse nome. Diferença importante
+  em relação ao dos resultados: o arquivo de entrada é gravado SÍNCRONA e IMEDIATAMENTE na
+  criação da rodada (antes do solver sequer começar), então não precisa checar `status` como
+  `resolveResultsUrl()` faz -- só falha se a rodada em si não existir.
+- `WEB_VERSION`: `1.5.0` → `1.6.0` (novo campo em `run.json`, nova exigência de nome dinâmico na
+  rota de resultados).
+
+**Verificação real** (2026-08-16, Docker): rodada real disparada via API (`Cross`, `exemplo-01a`,
+force=true): resposta da criação já veio com `input_filename:"Exemplo_01a_Cross_input.json"` e
+`results_filename:"Exemplo_01a_Cross_results.h5"`; após convergir, o diretório da rodada só tinha
+esses dois arquivos (mais `run.json`/`stdout.log`) -- nenhum `input_simulation.json`/
+`catenary_results.h5` genérico. Rota de resultados: nome real do input → 200; nome real dos
+resultados → 200; `input_simulation.json` (nome genérico antigo) → 404; `catenary_results.h5`
+(idem) → 404 -- confirma que a rota não aceita mais nomes fixos, só os dois nomes reais desta
+rodada. Pós-processador de ENTRADA (`preprocessor.html?project=&run=`) carregado via harness
+Chrome headless real sobre essa rodada -- 501 nós / 500 elementos, `inputValid: true`, sem erro no
+console.
+
 ## Backlog de recursos faltantes do motor (não bloqueante — puxar sob demanda)
 
-Achados documentados em `mapa_aml_exemplos_e_web_interface.md`, nenhum implementado: múltiplas
-linhas com corpo flutuante compartilhado (`Multilinhas.aml`), boias/tendões como entidade própria
-(hoje só existe `BuoyancyModule`/`BendRestrictor`, modificadores locais não lidos por
-`ModelBuilder::load_from_json`), conexões articuladas tipo flexjoint/drilljoint, turret com
-movimento prescrito 6-GDL por caso de carga (`Turret.aml`), ruptura de elemento em tempo de
+Achados documentados em `mapa_aml_exemplos_e_web_interface.md`, nenhum implementado: boias/tendões
+como entidade própria (hoje só existe `BuoyancyModule`/`BendRestrictor`, modificadores locais não
+lidos por `ModelBuilder::load_from_json`), conexões articuladas tipo flexjoint/drilljoint, turret
+com movimento prescrito 6-GDL por caso de carga (`Turret.aml`), ruptura de elemento em tempo de
 execução dinâmico (`Ruptura.aml`), verificação de código DNV como pós-processamento
 (`DNV_Check.aml`). Cada um só vale a pena quando um caso de teste real concreto precisar dele — não
-faz sentido implementar especulativamente.
+faz sentido implementar especulativamente. (Múltiplas linhas com corpo flutuante compartilhado —
+implementado, ver Eixo 2c; a lacuna real que sobrou lá é convergência estática em águas muito
+profundas/linhas muito longas, não a estrutura multi-linha em si.)
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 

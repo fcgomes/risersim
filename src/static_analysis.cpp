@@ -199,8 +199,11 @@ StepSnapshot capture_snapshot(RiserModel* model, int step_index, double load_fac
     for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
     for (size_t i = 0; i < model->elements.size(); ++i) {
         auto* elem = model->elements[i].get();
-        const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
-        const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
+        // Vizinho REAL (compartilha o nó), não só adjacente no array -- com múltiplas linhas,
+        // elementos de linhas diferentes ficam lado a lado no array plano sem se tocar; usar
+        // i-1/i+1 cegamente misturaria curvatura/momento entre linhas desconexas na fronteira.
+        const auto* prev = (i > 0 && model->elements[i - 1]->node2 == elem->node1) ? model->elements[i - 1].get() : nullptr;
+        const auto* next = (i + 1 < model->elements.size() && model->elements[i + 1]->node1 == elem->node2) ? model->elements[i + 1].get() : nullptr;
 
         elem->update_effective_tension();
         auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -487,9 +490,26 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
     if (!model) return false;
 
-    Node3D* top_node = model->nodes.front().get();
-    Eigen::Vector3d start_disp = top_node->disp;
-    std::vector<int> saved_eq_numbers = top_node->eq_numbers;
+    // Resolve o(s) nó(s) de topo -- suporte multi-linha (docs/roadmap.md, backlog "múltiplas
+    // linhas com corpo flutuante compartilhado"). Um modelo single-line (model->lines vazio)
+    // resolve pra exatamente um attachment, nodes.front() -- comportamento de hoje, inalterado.
+    auto attachments = model->resolve_line_attachments();
+    if (attachments.empty()) return false;
+
+    struct LineOffsetState {
+        Node3D* top_node;
+        Eigen::Vector3d start_disp;
+        std::vector<int> saved_eq_numbers;
+        PrescribedMotion* prescribed = nullptr;
+    };
+    std::vector<LineOffsetState> line_states;
+    for (const auto& att : attachments) {
+        LineOffsetState ls;
+        ls.top_node = att.top_node;
+        ls.start_disp = att.top_node->disp;
+        ls.saved_eq_numbers = att.top_node->eq_numbers;
+        line_states.push_back(ls);
+    }
 
     // Passo 7 do roadmap de modernização (mapa_classes_anflex_estatica.md): em vez de escrever
     // top_node->disp diretamente fora do sistema linear (a técnica antiga -- um Dirichlet BC
@@ -498,24 +518,35 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
     // mecanismo que o ANFLEX real usa para movimento imposto (cLoad + "big number"), genérico o
     // bastante para futuramente vir de uma série temporal medida, não só um offset sintético.
     // Restaurado para engastado ao final (ver abaixo), preservando exatamente o contrato de GDL
-    // que o resto do código (ex.: DynamicAnalysis) espera do nó de topo.
-    top_node->eq_numbers = {0, 1, 2, 3, 4, 5};
+    // que o resto do código (ex.: DynamicAnalysis) espera do(s) nó(s) de topo. Todos os nós de
+    // topo são resetados ANTES de uma única chamada de assign_equation_numbers() (não uma
+    // renumeração por linha).
+    for (auto& ls : line_states) ls.top_node->eq_numbers = {0, 1, 2, 3, 4, 5};
     assign_equation_numbers();
 
+    // Uma PrescribedMotion por linha -- reserve() evita realocação enquanto guardamos ponteiros
+    // pra dentro do vetor em line_states.
     prescribed_motions.clear();
-    prescribed_motions.emplace_back(top_node);
-    PrescribedMotion& top_motion = prescribed_motions.back();
-    top_motion.dof_active = {true, true, true, false, false, false}; // translation only, matches VesselOffset's scope
+    prescribed_motions.reserve(line_states.size());
+    for (auto& ls : line_states) {
+        prescribed_motions.emplace_back(ls.top_node);
+        ls.prescribed = &prescribed_motions.back();
+        ls.prescribed->dof_active = {true, true, true, false, false, false}; // translation only, matches VesselOffset's scope
+    }
 
     bool all_steps_converged = true;
 
     for (int step = 1; step <= steps && all_steps_converged; ++step) {
         double offset_factor = static_cast<double>(step) / static_cast<double>(steps);
-        top_motion.target_disp = start_disp + offset.offset_disp * offset_factor;
+        // O mesmo offset.offset_disp (corpo rígido único) aplicado a cada linha, a partir da
+        // própria posição inicial de cada uma.
+        for (auto& ls : line_states) {
+            ls.prescribed->target_disp = ls.start_disp + offset.offset_disp * offset_factor;
+        }
 
         std::cout << "\n[Offset Step " << std::setw(2) << step << "/" << steps << "] Offset Factor: "
                   << std::fixed << std::setprecision(2) << (offset_factor * 100.0) << "% | Target Top Pos X: "
-                  << top_motion.target_disp.x() << " m" << std::endl;
+                  << line_states.front().prescribed->target_disp.x() << " m" << std::endl;
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
         double water_surface_z_offset = model->environmental.water_surface_z;
@@ -566,7 +597,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
             if (rel_R < 1.0e-4) {
                 std::cout << "  ✅ Offset Step " << step << " Converged in " << iter << " iterations! (Top Pos X: "
-                          << top_node->disp.x() << " m)" << std::endl;
+                          << line_states.front().top_node->disp.x() << " m)" << std::endl;
                 step_converged = true;
 
                 StepSnapshot snap;
@@ -575,8 +606,10 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
                 for (size_t i = 0; i < model->elements.size(); ++i) {
                     auto* elem = model->elements[i].get();
-                    const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
-                    const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
+                    // Vizinho REAL (compartilha o nó), não só adjacente no array -- ver mesmo
+                    // comentário em capture_snapshot() acima.
+                    const auto* prev = (i > 0 && model->elements[i - 1]->node2 == elem->node1) ? model->elements[i - 1].get() : nullptr;
+                    const auto* next = (i + 1 < model->elements.size() && model->elements[i + 1]->node1 == elem->node2) ? model->elements[i + 1].get() : nullptr;
 
                     elem->update_effective_tension();
                     auto sc = elem->compute_stress_and_curvature(prev, next);
@@ -618,10 +651,10 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
         }
     }
 
-    // Restaura o nó de topo ao seu contrato original de GDL (engastado), congelando a posição de
-    // offset convergida como um valor de Dirichlet de novo -- consistente com o que o resto do
-    // código (ex.: DynamicAnalysis, que reusa o mesmo model) espera do nó de topo.
-    top_node->eq_numbers = saved_eq_numbers;
+    // Restaura todos os nós de topo ao seu contrato original de GDL (engastado), congelando a
+    // posição de offset convergida como um valor de Dirichlet de novo -- consistente com o que o
+    // resto do código (ex.: DynamicAnalysis, que reusa o mesmo model) espera do(s) nó(s) de topo.
+    for (auto& ls : line_states) ls.top_node->eq_numbers = ls.saved_eq_numbers;
     prescribed_motions.clear();
     assign_equation_numbers();
 

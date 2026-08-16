@@ -45,7 +45,7 @@ from aml_reader import ANFLEXAMLReader
 # find_executable() and compiling the config from XML+H5/.aml were extracted into
 # risersim_runner.py, also reused by the new run manager (run_server.py/run_worker.py, see
 # docs/roadmap.md, Axis 3b) -- don't duplicate this logic here.
-from risersim_runner import find_executable, build_config_from_xml_h5, build_config_from_aml
+from risersim_runner import find_executable, build_config_from_xml_h5, build_config_from_aml, build_config_from_aml_multiline
 
 
 def main():
@@ -68,6 +68,12 @@ def main():
                               'Necessário pra rodar com --load-case-id um %%LOAD_CASE que não foi o '
                               'exportado (o XML+H5 real corresponde só a um %%LOAD_CASE por vez -- '
                               'ver docs/roadmap.md, eixo 2a).')
+    parser.add_argument('--all-lines', action='store_true',
+                         help='Multi-linha (docs/roadmap.md backlog: "múltiplas linhas com corpo '
+                              'flutuante compartilhado") -- inclui TODAS as %%LINE do .aml num único '
+                              'modelo, em vez de --line-index escolher uma só. Só o caminho .aml puro '
+                              'suporta isso (força --force-aml-path -- não existe export XML+H5 '
+                              'multi-linha real, ver docs/roadmap.md).')
     parser.add_argument('--num-elements', type=int, default=None, help='Sobrescreve o número de elementos')
     parser.add_argument('--static-only', action='store_true', help='Executa apenas análise estática')
     parser.add_argument('--offset-near', action='store_true', help='Usa offset Near em vez de Far')
@@ -92,7 +98,7 @@ def main():
     xml_file = analysis_dir / f"{base_name}_A1.xml"
     h5_file = analysis_dir / f"{base_name}_A1.h5"
 
-    use_xml_h5 = xml_file.is_file() and h5_file.is_file() and not args.force_aml_path
+    use_xml_h5 = xml_file.is_file() and h5_file.is_file() and not args.force_aml_path and not args.all_lines
     config = {}
 
     if use_xml_h5:
@@ -149,13 +155,22 @@ def main():
         # (build_config_from_xml_h5): only overrides duration/dt/dynamic-enabled when the user
         # actually passed the corresponding flag, so as not to mask the AML's own real values with
         # the CLI's fixed defaults.
-        config = build_config_from_aml(
-            aml_path, line_index=args.line_index, num_elements_override=args.num_elements,
-            load_case_id=args.load_case_id,
-            duration=(args.duration if '--duration' in sys.argv else None),
-            dt=(args.dt if '--dt' in sys.argv else None),
-            static_only=args.static_only,
-        )
+        if args.all_lines:
+            config = build_config_from_aml_multiline(
+                aml_path, num_elements_override=args.num_elements,
+                load_case_id=args.load_case_id,
+                duration=(args.duration if '--duration' in sys.argv else None),
+                dt=(args.dt if '--dt' in sys.argv else None),
+                static_only=args.static_only,
+            )
+        else:
+            config = build_config_from_aml(
+                aml_path, line_index=args.line_index, num_elements_override=args.num_elements,
+                load_case_id=args.load_case_id,
+                duration=(args.duration if '--duration' in sys.argv else None),
+                dt=(args.dt if '--dt' in sys.argv else None),
+                static_only=args.static_only,
+            )
 
     # 2. Create the output directory and save the input JSON
     out_dir = Path(args.out_dir).resolve()

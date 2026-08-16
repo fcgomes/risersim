@@ -1321,7 +1321,7 @@ class ANFLEXAMLReader:
     # MESH SYNTHESIS (no pre-solved geometry in a plain .aml, unlike xml_h5_reader.py)
     # -------------------------------------------------------------------------
     def _synthesize_mesh(self, line, depth, span_x, num_elements_fallback, num_elements_override=None,
-                          top_override=None, bottom_override=None):
+                          top_override=None, bottom_override=None, id_offset=0, element_id_offset=None):
         """Synthesizes an initial straight-line node/element mesh from the line's segment
         lengths -- there's no pre-solved geometry to copy out of a plain .aml the way
         xml_h5_reader.py copies real solved coordinates out of the H5 (see extract_nodes()
@@ -1358,7 +1358,16 @@ class ANFLEXAMLReader:
         breakdown with a single uniform mesh of that many elements instead -- there's nothing
         riding on preserving per-segment boundaries today since aml_reader.py only resolves one
         global material for the whole line, not a per-segment one by %LINE.SEGMENT.MATERIAL_ID.
+
+        `id_offset`/`element_id_offset` (default 0/None -- None means "same as id_offset", the
+        single-line default of both starting at the next id after 0): shifts this line's node/
+        element ids so multiple lines can be merged into one flat `model.nodes`/`model.elements`
+        list with globally-unique ids (to_risersim_json_multiline()) -- ModelBuilder resolves
+        every id by lookup, not by assuming a dense 1..N sequence (see model_builder.cpp), so ids
+        only need to be unique across the WHOLE model, not contiguous per line.
         """
+        if element_id_offset is None:
+            element_id_offset = id_offset
         segments = line.get('segments') or []
         total_length = line.get('total_length_m', 500.0)
         if total_length <= 0:
@@ -1377,8 +1386,8 @@ class ANFLEXAMLReader:
         top = tuple(top_override) if top_override is not None else (0.0, 0.0, 0.0)
         bottom = tuple(bottom_override) if bottom_override is not None else (span_x, 0.0, -depth)
 
-        nodes = [{"id": 1, "coords": list(top)}]
-        node_id = 1
+        nodes = [{"id": id_offset + 1, "coords": list(top)}]
+        node_id = id_offset + 1
         cum_length = 0.0
         for seg_len, seg_n in zip(seg_lengths, seg_elem_counts):
             step = seg_len / seg_n
@@ -1394,7 +1403,7 @@ class ANFLEXAMLReader:
         elements = []
         for i in range(len(nodes) - 1):
             elements.append({
-                "id": i + 1,
+                "id": element_id_offset + i + 1,
                 "node1_id": nodes[i]["id"],
                 "node2_id": nodes[i + 1]["id"],
             })
@@ -1607,6 +1616,293 @@ class ANFLEXAMLReader:
                 "current": current_dict,
                 "wave": wave_dict,
             } | ({"vessel_motion": {"enabled": True, **vessel_motion}} if vessel_motion is not None else {}),
+            "analysis_options": {
+                "static": static_opts,
+                "dynamic": dynamic_opts,
+            },
+        }
+
+    @staticmethod
+    def _moorpy_correct_line_mesh(nodes, elements, top_id, anchor_id, total_length_m, seabed_dict):
+        """Per-line counterpart of `risersim_runner.py::_apply_moorpy_mesh_correction()` --
+        overwrites `nodes[i]["coords"]` in place with MoorPy's own solved equilibrium shape,
+        exactly like that function, but scoped to ONE line's own nodes/elements instead of a
+        whole `input_simulation.json`.
+
+        Why a separate copy instead of just calling `_apply_moorpy_mesh_correction()`: that
+        function (and `moorpy_warm_start.py::compute_warm_start_positions()`/
+        `build_from_risersim_json.py::build_system_from_json()` underneath it) assumes the WHOLE
+        `model.elements` array forms ONE continuous chain (`node_order = [elements[0].node1_id] +
+        [e.node2_id for e in elements]`) -- true for a single-line JSON, but for a multi-line
+        JSON's flat merged `all_elements` this would walk straight across a line boundary as if
+        two unrelated lines' elements were connected. Calling it per-line, on a throwaway
+        single-line JSON slice built from just this line's own `nodes`/`elements` (already
+        contiguous and self-consistent, straight out of `_synthesize_mesh()`), reuses the exact
+        same MoorPy solve/resample logic without duplicating it, sidestepping the chain
+        assumption entirely instead of trying to teach it about line boundaries. Also avoids a
+        circular import: `_apply_moorpy_mesh_correction()` lives in `risersim_runner.py`, which
+        imports `aml_reader.py`, not the other way around.
+
+        Same best-effort contract as `_apply_moorpy_mesh_correction()`: any exception (MoorPy
+        unavailable, solve failure, ...) leaves `nodes` unchanged (the straight chord --
+        length may be off) and prints a warning, never raises.
+        """
+        import json
+        import tempfile
+        from pathlib import Path
+
+        try:
+            from moorpy_warm_start import compute_warm_start_positions
+        except Exception as exc:
+            print(f"⚠️ MoorPy indisponível ({exc}) -- linha mantém a malha reta original (comprimento pode ficar incorreto).")
+            return
+
+        line_doc = {
+            "model": {"nodes": nodes, "elements": elements, "total_length_m": total_length_m},
+            "boundary_conditions": {
+                "prescribed_dofs": [{"node_id": top_id, "dofs": [-1] * 6}],
+                "restrained_dofs": [{"node_id": anchor_id, "dofs": [-1] * 6}],
+            },
+            "environmental": {"seabed": seabed_dict},
+        }
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                scratch_path = Path(tmp) / "input_simulation.json"
+                with open(scratch_path, "w", encoding="utf-8") as f:
+                    json.dump(line_doc, f)
+                node_positions, _meta = compute_warm_start_positions(str(scratch_path))
+            coords_by_id = {p["node_id"]: p["coords"] for p in node_positions}
+            for n in nodes:
+                if n["id"] in coords_by_id:
+                    n["coords"] = coords_by_id[n["id"]]
+        except Exception as exc:
+            print(f"⚠️ Não foi possível corrigir a malha desta linha via MoorPy ({exc}) -- "
+                  "mantém a malha reta original (comprimento pode ficar incorreto).")
+
+    def to_risersim_json_multiline(self, line_indices=None, num_elements_override=None, load_case_id=None):
+        """Multi-line sibling of to_risersim_json() (docs/roadmap.md backlog: "múltiplas linhas
+        com corpo flutuante compartilhado", driven by exemplos/Multilinhas/Multilinhas.aml -- 7
+        lines, all attached to the SAME %FLOATING.SHIP via 7 distinct %CONNECTION.BEGIN blocks).
+        Single-line callers (risersim_runner.py::build_config_from_aml(), run_from_aml.py without
+        --all-lines) keep calling to_risersim_json() unchanged -- this is an ADDITIVE sibling, not
+        a retrofit, so nothing about the existing single-line path changes.
+
+        `line_indices` (default: every line in the file) selects which %LINE occurrences to
+        include -- all of them end up in ONE model, sharing environmental data (seabed/current/
+        wave -- resolved once, from the FIRST selected line/the given load_case, same "one
+        environment" convention real ANFLEX and this schema already use) and referencing a shared
+        `references[]` entry per distinct floating body they connect to (see model.hpp's
+        ReferenceInfo/ConnectionInfo/LineInfo, mirroring real ANFLEX's cReference/cConnection/
+        cLine, interfaces/src/).
+
+        Every selected line's connection AND catenary geometry must resolve successfully (real
+        %CONNECTION/%FLOATING data, moorpy installed and converging) -- raises ValueError
+        (naming which line) otherwise, rather than silently falling back to a synthetic (0,0,0)
+        origin for just that one line: _resolve_vessel_motion()'s `movement_center` is only
+        correct when node 1 truly sits at the connection's real global position for EVERY line
+        sharing that floating body (see that method's own docstring on the "gap" it computes) --
+        one silently-unresolved line would corrupt the shared body's vessel_motion for every line
+        attached to it, not just fail loudly for itself.
+        """
+        from xml_h5_reader import SCHEMA_VERSION, extract_assembly_flag, extract_static_convergence_criterium
+
+        all_lines = self.model_data['lines']
+        if not all_lines:
+            raise ValueError(f"'{self.filepath}' não define nenhuma %LINE.")
+        indices = line_indices if line_indices is not None else list(range(len(all_lines)))
+
+        mat = self.model_data['material']
+        glb = self.model_data['global']
+        load_case = self._resolve_load_case(load_case_id)
+
+        # Ambiente compartilhado (um só, real ANFLEX também trata seabed/corrente/onda como
+        # global, não por linha) -- resolvido a partir da PRIMEIRA linha selecionada, mesmo
+        # padrão de to_risersim_json() (que já só resolvia uma linha por vez).
+        first_line = all_lines[indices[0]]
+        soil = self._resolve_soil_for_line(first_line)
+        curr = self._resolve_current(load_case)
+        wave = self._resolve_wave(load_case)
+        depth = glb['seabed_depth_m']
+
+        section_properties = {
+            "E": mat['E_Pa'], "G": mat['G_Pa'], "A": mat['A_m2'],
+            "IY": mat['IY_m4'], "IZ": mat['IZ_m4'], "J": mat['J_m4'],
+            "EI": mat['EI_Nm2'],
+            "weight_wet_kNm": mat['weight_wet_kNm'],
+            "rho": mat['rho_kgm3'],
+            "D_outer": mat['outer_diameter_m'], "D_inner": mat['inner_diameter_m'],
+            "rho_fluid": glb['water_density_kgm3'],
+            "Ca": mat['Cm'] - 1.0,
+            "Cd": mat['Cd'],
+        }
+
+        GLOBAL_REF_ID = 0
+        all_nodes, all_elements = [], []
+        prescribed_nodes, restrained_nodes = [], []
+        references_json, connections_json, lines_json = [], [], []
+        floating_ref_ids = {}  # %FLOATING.ID real -> já emitido em references_json (dedup)
+        global_ref_added = False
+        node_id_offset = 0
+        elem_id_offset = 0
+        next_connection_id = 1
+        flat0 = None  # geometry/simulation_options do primeiro loop -- reusado fora dele
+
+        for line_num, idx in enumerate(indices, start=1):
+            line = all_lines[idx]
+            flat = self.to_risersim_config(line_index=idx)
+            if flat0 is None:
+                flat0 = flat
+
+            conn_result = self._resolve_connection_global(line)
+            if conn_result is None:
+                raise ValueError(
+                    f"Linha '{line.get('name', idx)}' (índice {idx}) não tem %CONNECTION/%FLOATING "
+                    "real resolvível -- multi-linha exige que TODAS as linhas selecionadas "
+                    "resolvam sua conexão (ver to_risersim_json_multiline()).")
+            connection_global, ship = conn_result
+            catenary_result = self._solve_catenary_geometry(
+                connection_global, line.get('catenary_angle_deg', 5.0), line.get('azimuth_deg', 0.0),
+                line.get('total_length_m', 500.0), mat['EA_N'], mat['weight_wet_kNm'] * 1000.0,
+                soil.get('friction_lateral', 0.5),
+            )
+            if catenary_result is None:
+                raise ValueError(
+                    f"Linha '{line.get('name', idx)}' (índice {idx}): MoorPy não conseguiu resolver "
+                    "a geometria da catenária -- multi-linha exige resolução completa em todas as "
+                    "linhas selecionadas (ver to_risersim_json_multiline()).")
+            anchor_global, t_eff_estimate_n = catenary_result
+            print(f"⚓ Linha '{line.get('name', idx)}': topo ({connection_global[0]:.2f}, "
+                  f"{connection_global[1]:.2f}, {connection_global[2]:.2f}) m, âncora "
+                  f"({anchor_global[0]:.2f}, {anchor_global[1]:.2f}, {anchor_global[2]:.2f}) m, "
+                  f"T_eff estimado {t_eff_estimate_n / 1000.0:.1f} kN")
+
+            nodes, elements = self._synthesize_mesh(
+                line, depth, flat['geometry']['span_x_m'], flat['geometry']['num_elements'], num_elements_override,
+                top_override=connection_global, bottom_override=anchor_global,
+                id_offset=node_id_offset, element_id_offset=elem_id_offset,
+            )
+            for elem in elements:
+                elem["section_properties"] = dict(section_properties)
+            top_id, anchor_id = nodes[0]["id"], nodes[-1]["id"]
+            # Corrige a malha reta (corda) pra geometria de catenária real do MoorPy -- mesma
+            # correção que to_risersim_json()/build_config_from_aml() aplicam no caminho
+            # single-line (risersim_runner.py::_apply_moorpy_mesh_correction()), sem a qual
+            # L_unstretched (model_builder.cpp) sai curto e a tração estática fica várias vezes
+            # maior que a real (ver docstring de _moorpy_correct_line_mesh() acima).
+            self._moorpy_correct_line_mesh(
+                nodes, elements, top_id, anchor_id, line.get('total_length_m', 500.0), {"depth_m": -abs(depth)},
+            )
+            all_nodes.extend(nodes)
+            all_elements.extend(elements)
+            node_id_offset += len(nodes)
+            elem_id_offset += len(elements)
+            prescribed_nodes.append({"node_id": top_id, "dofs": [-1, -1, -1, -1, -1, -1]})
+            restrained_nodes.append({"node_id": anchor_id, "dofs": [-1, -1, -1, -1, -1, -1]})
+
+            # Uma reference por corpo flutuante REAL distinto (dedup por %FLOATING.ID -- várias
+            # linhas presas ao MESMO corpo, o caso do Multilinhas.aml, compartilham uma só
+            # reference/vessel_motion, resolvidos a partir da PRIMEIRA linha que se conecta a ele
+            # -- gap=0 pra toda linha cuja conexão resolveu de verdade, ver docstring desta
+            # função, então o resultado independe de qual linha especificamente é usada aqui).
+            ship_id = ship['id']
+            if ship_id not in floating_ref_ids:
+                vessel_motion = self._resolve_vessel_motion(load_case, line, top_node_position=connection_global)
+                ref_entry = {"id": ship_id, "type": "FLOATING", "name": ship.get('name', '')}
+                if vessel_motion is not None:
+                    ref_entry["vessel_motion"] = {"enabled": True, **vessel_motion}
+                references_json.append(ref_entry)
+                floating_ref_ids[ship_id] = ship_id
+            top_conn_id = next_connection_id; next_connection_id += 1
+            connections_json.append({"id": top_conn_id, "reference_id": ship_id, "node_id": top_id})
+
+            # Âncora: connection sintética contra uma reference GLOBAL compartilhada (mesmo padrão
+            # real do ANFLEX -- âncora é só um cConnection apontando pro cGlobalRef, não uma
+            # entidade estruturalmente diferente, ver docs/mapa_classes_anflex_interface.md).
+            if not global_ref_added:
+                references_json.append({"id": GLOBAL_REF_ID, "type": "GLOBAL", "name": "seabed"})
+                global_ref_added = True
+            anchor_conn_id = next_connection_id; next_connection_id += 1
+            connections_json.append({"id": anchor_conn_id, "reference_id": GLOBAL_REF_ID, "node_id": anchor_id})
+
+            lines_json.append({
+                "id": line_num, "name": line.get('name', f'Line{line_num}'),
+                "top_connection_id": top_conn_id, "anchor_connection_id": anchor_conn_id,
+            })
+
+        seabed_dict = {
+            "depth_m": -abs(depth),
+            "stiffness_Nm": soil['stiffness_Nm'],
+            "friction_coeff": soil['friction_lateral'],
+            "axial_friction": soil['friction_axial'],
+            "lateral_friction": soil['friction_lateral'],
+        }
+        if soil.get('axial_elastic_deflection_limit') is not None:
+            seabed_dict['axial_elastic_deflection_limit'] = soil['axial_elastic_deflection_limit']
+        if soil.get('lateral_elastic_deflection_limit') is not None:
+            seabed_dict['lateral_elastic_deflection_limit'] = soil['lateral_elastic_deflection_limit']
+        if self.model_data.get('soil_model') is not None:
+            seabed_dict['soil_model'] = self.model_data['soil_model']
+
+        current_dict = {
+            "depth_below_surface_m": curr.get('depths_m', [0.0, depth]),
+            "velocities_ms": curr.get('velocities_ms', [0.0, 0.0]),
+            "angles_deg": curr.get('angles_deg', [0.0, 0.0]),
+        }
+        wave_dict = {
+            "type": "JONSWAP" if wave.get('jonswap', True) else "REGULAR",
+            "period_s": wave.get('period_s', 10.0),
+            "height_m": wave.get('height_m', 2.0),
+            "amplitude_m": wave.get('height_m', 2.0) / 2.0,
+            "gamma": wave.get('gamma', 3.3),
+            "angle_deg": wave.get('angle_deg', 0.0),
+        }
+
+        sim_opts = flat0['simulation_options']
+        static_opts = {
+            "steps": sim_opts['static_steps'],
+            "max_iterations": sim_opts['static_max_iter'],
+            "tolerance": sim_opts['static_tolerance'],
+            "vessel_offset": {"near_m": 0.0, "far_m": 0.0},
+        }
+        assembly_flag = extract_assembly_flag(self.filepath)
+        if assembly_flag is not None:
+            static_opts['use_assembly_phase'] = assembly_flag
+        enable_unbalanced, max_unbalanced = extract_static_convergence_criterium(self.filepath)
+        if enable_unbalanced:
+            static_opts['enable_unbalanced_criteria'] = True
+            if max_unbalanced is not None:
+                static_opts['unbalanced_force_tol'] = max_unbalanced
+                static_opts['unbalanced_moment_tol'] = max_unbalanced
+
+        dynamic_opts = {
+            "enabled": True,
+            "duration_s": sim_opts['duration_s'],
+            "dt_s": sim_opts['dt_s'],
+            "max_iterations": sim_opts['dynamic_max_iter'],
+            "tolerance": sim_opts['dynamic_tolerance'],
+            "rayleigh_damping": {"alpha": flat0['rayleigh']['alpha'], "beta": flat0['rayleigh']['beta']},
+        }
+
+        print(f"🎯 Multi-linha: {len(indices)} linha(s), corpo(s) flutuante(s): "
+              f"{len(floating_ref_ids)} | Caso de carregamento: {load_case.get('id', '(padrão)')}")
+
+        return {
+            "title": self.model_data['title'],
+            "schema_version": SCHEMA_VERSION,
+            "model": {"nodes": all_nodes, "elements": all_elements},
+            "boundary_conditions": {
+                "prescribed_dofs": prescribed_nodes,
+                "restrained_dofs": restrained_nodes,
+            },
+            "references": references_json,
+            "connections": connections_json,
+            "lines": lines_json,
+            "environmental": {
+                "seabed": seabed_dict,
+                "water_density": glb['water_density_kgm3'],
+                "current": current_dict,
+                "wave": wave_dict,
+            },
             "analysis_options": {
                 "static": static_opts,
                 "dynamic": dynamic_opts,

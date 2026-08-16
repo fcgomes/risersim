@@ -12,6 +12,8 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <map>
+#include <optional>
 
 namespace risersim {
 
@@ -33,20 +35,56 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     std::cout << "  Duration: " << duration_s << " s | dt: " << dt_s << " s | Wave Amp: " << wave_amplitude << " m | Wave Period: " << wave_period << " s" << std::endl;
     std::cout << "=========================================================================\n" << std::endl;
 
-    if (vessel_motion.has_value()) {
-        std::cout << "  Vessel motion (RAO+JONSWAP equivalent harmonic): freq=" << vessel_motion->frequency_rad_s()
-                  << " rad/s (T=" << (2.0 * std::numbers::pi / vessel_motion->frequency_rad_s()) << " s)" << std::endl;
-        std::cout << "    surge=" << vessel_motion->amplitude(VesselDof::Surge) << " m"
-                  << " sway=" << vessel_motion->amplitude(VesselDof::Sway) << " m"
-                  << " heave=" << vessel_motion->amplitude(VesselDof::Heave) << " m"
-                  << " roll=" << vessel_motion->amplitude(VesselDof::Roll) << " rad"
-                  << " pitch=" << vessel_motion->amplitude(VesselDof::Pitch) << " rad"
-                  << " yaw=" << vessel_motion->amplitude(VesselDof::Yaw) << " rad" << std::endl;
-    }
-
     if (!model || model->nodes.empty()) return false;
 
-    Node3D* top_node = model->nodes.front().get();
+    // Resolve every line's top attachment ONCE, here -- suporte multi-linha (docs/roadmap.md,
+    // backlog "múltiplas linhas com corpo flutuante compartilhado"). Um modelo single-line
+    // (model->lines vazio) resolve pra exatamente um attachment, {nodes.front(),
+    // environmental.vessel_motion} -- comportamento de hoje, inalterado. `vessel_motions` (membro,
+    // dynamic_analysis.hpp) só recebe uma entrada por linha cuja config resolvida tem
+    // `enabled=true`; `line_runtimes` abaixo guarda, por linha, um ponteiro pra essa entrada (ou
+    // nullptr, fallback senoidal) -- resolvido localmente, nesta função, então não há alinhamento
+    // frágil por posição entre duas resoluções separadas.
+    auto attachments = model->resolve_line_attachments();
+    if (attachments.empty()) return false;
+
+    std::map<const Node3D*, size_t> node_array_index;
+    for (size_t i = 0; i < model->nodes.size(); ++i) node_array_index[model->nodes[i].get()] = i;
+
+    vessel_motions.clear();
+    size_t enabled_count = 0;
+    for (const auto& att : attachments) if (att.vessel_motion->enabled) ++enabled_count;
+    vessel_motions.reserve(enabled_count); // garante que nenhum ponteiro abaixo seja invalidado por realocação
+
+    struct LineRuntime {
+        Node3D* top_node;
+        size_t node_array_index;
+        VesselMotion* motion; ///< nullptr -- essa linha usa o fallback senoidal em Z.
+        std::vector<int> saved_eq_numbers;
+        PrescribedMotion* prescribed = nullptr; ///< Preenchido logo abaixo, após popular prescribed_motions.
+    };
+    std::vector<LineRuntime> line_runtimes;
+    for (const auto& att : attachments) {
+        LineRuntime lr;
+        lr.top_node = att.top_node;
+        lr.node_array_index = node_array_index.at(att.top_node);
+        lr.motion = nullptr;
+        if (att.vessel_motion->enabled) {
+            vessel_motions.emplace_back(*att.vessel_motion, wave_angle_deg, 10800.0, att.top_node->current_coords());
+            lr.motion = &vessel_motions.back();
+            std::cout << "  Vessel motion (RAO+JONSWAP equivalent harmonic), nó " << att.top_node->id
+                      << ": freq=" << lr.motion->frequency_rad_s()
+                      << " rad/s (T=" << (2.0 * std::numbers::pi / lr.motion->frequency_rad_s()) << " s)" << std::endl;
+            std::cout << "    surge=" << lr.motion->amplitude(VesselDof::Surge) << " m"
+                      << " sway=" << lr.motion->amplitude(VesselDof::Sway) << " m"
+                      << " heave=" << lr.motion->amplitude(VesselDof::Heave) << " m"
+                      << " roll=" << lr.motion->amplitude(VesselDof::Roll) << " rad"
+                      << " pitch=" << lr.motion->amplitude(VesselDof::Pitch) << " rad"
+                      << " yaw=" << lr.motion->amplitude(VesselDof::Yaw) << " rad" << std::endl;
+        }
+        line_runtimes.push_back(std::move(lr));
+    }
+
     // Movimento prescrito do topo via mola de penalidade (PrescribedMotion), não mais eliminação
     // de GDL + atribuição direta de disp/rot fora do sistema linear -- mesma técnica que o ANFLEX
     // real usa pra carga imposta (`cLoad`/"big number", `integrator.cpp::set_load_dofs`) e que
@@ -59,8 +97,14 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     // `disp`/`rot` direto, o que jogava fora exatamente esse termo -- diagnosticado como a causa
     // provável da divergência do Newton dinâmico mesmo com movimento de topo minúsculo (ver
     // docs/mapa_aml_exemplos_e_web_interface.md).
-    std::vector<int> top_node_saved_eq_numbers = top_node->eq_numbers;
-    top_node->eq_numbers = {0, 1, 2, 3, 4, 5};
+    //
+    // Todos os nós de topo (uma por linha) precisam ter seus eq_numbers resetados ANTES de uma
+    // única chamada de assign_equation_numbers() -- não uma renumeração por linha, que invalidaria
+    // a numeração já atribuída às linhas processadas antes dela.
+    for (auto& lr : line_runtimes) {
+        lr.saved_eq_numbers = lr.top_node->eq_numbers;
+        lr.top_node->eq_numbers = {0, 1, 2, 3, 4, 5};
+    }
     assign_equation_numbers();
 
     history.clear();
@@ -109,48 +153,61 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     Eigen::VectorXd V = Eigen::VectorXd::Zero(num_dofs);
     Eigen::VectorXd A = Eigen::VectorXd::Zero(num_dofs);
 
+    // Uma PrescribedMotion por linha -- reserve() evita realocação enquanto guardamos ponteiros
+    // pra dentro do vetor em line_runtimes (mesmo cuidado de vessel_motions acima).
     prescribed_motions.clear();
-    prescribed_motions.emplace_back(top_node);
-    PrescribedMotion& top_motion = prescribed_motions.back();
-    // Todos os 6 GDL, sempre -- inclusive no fallback sem vessel_motion real, onde X/Y/rotação
-    // recebem um alvo CONSTANTE (a própria posição estática) em vez de ficarem livres sem
-    // nenhuma restrição: reproduz o comportamento antigo (Dirichlet fixo nesses GDL) só que agora
-    // via a mesma mola de penalidade, preservando o acoplamento de massa consistente.
-    top_motion.dof_active = {true, true, true, true, true, true};
+    prescribed_motions.reserve(line_runtimes.size());
+    for (auto& lr : line_runtimes) {
+        prescribed_motions.emplace_back(lr.top_node);
+        lr.prescribed = &prescribed_motions.back();
+        // Todos os 6 GDL, sempre -- inclusive no fallback sem vessel_motion real, onde X/Y/rotação
+        // recebem um alvo CONSTANTE (a própria posição estática) em vez de ficarem livres sem
+        // nenhuma restrição: reproduz o comportamento antigo (Dirichlet fixo nesses GDL) só que
+        // agora via a mesma mola de penalidade, preservando o acoplamento de massa consistente.
+        lr.prescribed->dof_active = {true, true, true, true, true, true};
+    }
 
     bool all_steps_converged = true;
 
     for (int step = 0; step <= total_steps; ++step) {
         double time = step * dt_s;
 
-        // Prescribe Top Vessel Motion: real RAO+JONSWAP "equivalent harmonic" (6 DOFs) when the
-        // input JSON has real data for it (vessel_motion.hpp), else the old single-Z regular-
-        // wave sinusoid with the same 5s smooth ramp -- now via top_motion's penalty-spring
-        // target (see setup above), not a direct disp/rot assignment.
-        double disp_z = 0.0; // só usado no log de progresso abaixo
-        if (vessel_motion.has_value()) {
-            Eigen::Vector3d vessel_disp, vessel_rot;
-            vessel_motion->get_motion(time, vessel_disp, vessel_rot);
-            top_motion.target_disp = static_disps.front() + vessel_disp;
-            // Componente a componente, NÃO compose_rotations() -- confirmado contra o mecanismo
-            // real de movimento prescrito (`integrator.cpp::set_load_dofs`, `presc_desl[i] +=
-            // movements[i]` pra i=0..5, sem distinção entre translação/rotação): o ANFLEX real
-            // soma o vetor de rotação do harmônico equivalente direto em cima da referência
-            // estática, sem compor via Rodrigues/quaternion. Faz sentido com o próprio método:
-            // "equivalent harmonic" já é linearizado do início ao fim (RAO é resposta linear em
-            // frequência), então uma composição não-linear aqui introduziria uma não-linearidade
-            // que o método de referência não tem. `compose_rotations` continua correto pro ESTADO
-            // realmente resolvido pelo Newton (linha ~155, abaixo, agora também pro nó de topo) --
-            // esse é outro mecanismo do ANFLEX real (`nMathUtils::pseudo_sum`,
-            // `integrator.cpp:697`), aplicado ao alvo vs. ao estado, não ao mesmo lugar.
-            top_motion.target_rot = static_rots.front() + vessel_rot;
-            disp_z = vessel_disp.z();
-        } else {
-            double ramp_time = 5.0;
-            double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
-            disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
-            top_motion.target_disp = static_disps.front() + Eigen::Vector3d(0.0, 0.0, disp_z);
-            top_motion.target_rot = static_rots.front(); // alvo constante -- rotação do topo nunca foi dinamicamente imposta sem vessel_motion real
+        // Prescribe Top Vessel Motion: real RAO+JONSWAP "equivalent harmonic" (6 DOFs) quando a
+        // linha tem dado real pra isso (vessel_motion.hpp), senão o antigo fallback senoidal em Z
+        // com a mesma rampa suave de 5s -- aplicado independentemente por linha, via o alvo da
+        // mola de penalidade (setup acima), não uma atribuição direta de disp/rot.
+        double disp_z = 0.0; // só usado no log de progresso abaixo (linha 0, representativa)
+        for (size_t li = 0; li < line_runtimes.size(); ++li) {
+            auto& lr = line_runtimes[li];
+            const Eigen::Vector3d& base_disp = static_disps[lr.node_array_index];
+            const Eigen::Vector3d& base_rot = static_rots[lr.node_array_index];
+            double line_disp_z = 0.0;
+            if (lr.motion) {
+                Eigen::Vector3d vessel_disp, vessel_rot;
+                lr.motion->get_motion(time, vessel_disp, vessel_rot);
+                lr.prescribed->target_disp = base_disp + vessel_disp;
+                // Componente a componente, NÃO compose_rotations() -- confirmado contra o
+                // mecanismo real de movimento prescrito (`integrator.cpp::set_load_dofs`,
+                // `presc_desl[i] += movements[i]` pra i=0..5, sem distinção entre translação/
+                // rotação): o ANFLEX real soma o vetor de rotação do harmônico equivalente direto
+                // em cima da referência estática, sem compor via Rodrigues/quaternion. Faz
+                // sentido com o próprio método: "equivalent harmonic" já é linearizado do início
+                // ao fim (RAO é resposta linear em frequência), então uma composição não-linear
+                // aqui introduziria uma não-linearidade que o método de referência não tem.
+                // `compose_rotations` continua correto pro ESTADO realmente resolvido pelo Newton
+                // (abaixo, agora também pro nó de topo) -- esse é outro mecanismo do ANFLEX real
+                // (`nMathUtils::pseudo_sum`, `integrator.cpp:697`), aplicado ao alvo vs. ao
+                // estado, não ao mesmo lugar.
+                lr.prescribed->target_rot = base_rot + vessel_rot;
+                line_disp_z = vessel_disp.z();
+            } else {
+                double ramp_time = 5.0;
+                double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
+                line_disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
+                lr.prescribed->target_disp = base_disp + Eigen::Vector3d(0.0, 0.0, line_disp_z);
+                lr.prescribed->target_rot = base_rot; // alvo constante -- rotação do topo nunca foi dinamicamente imposta sem vessel_motion real
+            }
+            if (li == 0) disp_z = line_disp_z;
         }
 
         // Save Previous State Vectors for Newmark Integration
@@ -571,8 +628,12 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
 
             for (size_t i = 0; i < model->elements.size(); ++i) {
                 auto* elem = model->elements[i].get();
-                const auto* prev = (i > 0) ? model->elements[i - 1].get() : nullptr;
-                const auto* next = (i + 1 < model->elements.size()) ? model->elements[i + 1].get() : nullptr;
+                // Vizinho REAL (compartilha o nó), não só adjacente no array -- com múltiplas
+                // linhas, elementos de linhas diferentes ficam lado a lado no array plano sem se
+                // tocar; usar i-1/i+1 cegamente misturaria curvatura/momento entre linhas
+                // desconexas na fronteira.
+                const auto* prev = (i > 0 && model->elements[i - 1]->node2 == elem->node1) ? model->elements[i - 1].get() : nullptr;
+                const auto* next = (i + 1 < model->elements.size() && model->elements[i + 1]->node1 == elem->node2) ? model->elements[i + 1].get() : nullptr;
 
                 auto sc = elem->compute_stress_and_curvature(prev, next, 350.0);
                 snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
@@ -592,10 +653,10 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         }
     }
 
-    // Restaura o nó de topo ao contrato de GDL original (mesmo padrão de limpeza de
+    // Restaura todos os nós de topo ao contrato de GDL original (mesmo padrão de limpeza de
     // StaticAnalysis::solve_vessel_offset) -- por simetria/higiene, mesmo esta sendo a última fase
     // da análise hoje.
-    top_node->eq_numbers = top_node_saved_eq_numbers;
+    for (auto& lr : line_runtimes) lr.top_node->eq_numbers = lr.saved_eq_numbers;
     prescribed_motions.clear();
     assign_equation_numbers();
 

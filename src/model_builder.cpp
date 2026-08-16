@@ -4,6 +4,8 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
 #include <sstream>
 
 using json = nlohmann::json;
@@ -25,6 +27,59 @@ T value_warn(const json& obj, const std::string& key, T default_val, const std::
     oss << field_path << " ausente no JSON -- assumindo " << default_val << ".";
     warnings.push_back({"warning", oss.str()});
     return default_val;
+}
+
+/// Parses a `vessel_motion` JSON block (raw RAO+JONSWAP table) into a VesselMotionConfig --
+/// shared by `environmental.vessel_motion` (single-line models, or a multi-line model's
+/// backward-compat fallback) and `references[].vessel_motion` (the floating body a multi-line
+/// model's connections attach to, see model.hpp's ReferenceInfo) -- same schema either way, just
+/// nested under a different JSON parent. Caller is responsible for checking `enabled` on the
+/// source object first (see both call sites in load_from_json()) -- this always returns an
+/// `enabled=true` config once called.
+VesselMotionConfig parse_vessel_motion_config(const json& vm) {
+    VesselMotionConfig vmc;
+    vmc.enabled = true;
+
+    auto center = vm.value("movement_center", std::vector<double>{0.0, 0.0, 0.0});
+    auto offset = vm.value("offset", std::vector<double>{0.0, 0.0, 0.0});
+    for (int i = 0; i < 3 && i < static_cast<int>(center.size()); ++i) {
+        vmc.cm_position_m[i] = center[i];
+    }
+    for (int i = 0; i < 3 && i < static_cast<int>(offset.size()); ++i) {
+        vmc.offset_m[i] = offset[i];
+    }
+    vmc.refsys_angle_deg = vm.value("refsys_angle_deg", 0.0);
+
+    static const std::map<std::string, VesselDof> dof_map = {
+        {"surge", VesselDof::Surge}, {"sway", VesselDof::Sway}, {"heave", VesselDof::Heave},
+        {"roll", VesselDof::Roll}, {"pitch", VesselDof::Pitch}, {"yaw", VesselDof::Yaw},
+    };
+    std::string max_dof_str = vm.value("maximization_dof", std::string("heave"));
+    auto dof_it = dof_map.find(max_dof_str);
+    vmc.maximization_dof = (dof_it != dof_map.end()) ? dof_it->second : VesselDof::Heave;
+
+    vmc.headings_deg = vm.value("headings_deg", std::vector<double>{});
+    vmc.frequencies_rad_s = vm.value("frequencies_rad_s", std::vector<double>{});
+
+    if (vm.contains("amplitude") && vm.contains("phase_deg")) {
+        auto amp = vm["amplitude"];
+        auto phase = vm["phase_deg"];
+        for (const auto& [name, dof] : dof_map) {
+            vmc.amplitude[static_cast<int>(dof)] = amp.value(name, std::vector<std::vector<double>>{});
+            vmc.phase_deg[static_cast<int>(dof)] = phase.value(name, std::vector<std::vector<double>>{});
+        }
+    }
+
+    if (vm.contains("jonswap")) {
+        auto js = vm["jonswap"];
+        vmc.jonswap_alpha = js.value("alpha", 0.0);
+        vmc.jonswap_gamma = js.value("gamma", vmc.jonswap_gamma);
+        vmc.jonswap_period_s = js.value("period_s", vmc.jonswap_period_s);
+        vmc.jonswap_wini_rad_s = js.value("wini_rad_s", vmc.jonswap_wini_rad_s);
+        vmc.jonswap_wfin_rad_s = js.value("wfin_rad_s", vmc.jonswap_wfin_rad_s);
+        vmc.jonswap_nwave = js.value("nwave", vmc.jonswap_nwave);
+    }
+    return vmc;
 }
 
 } // namespace
@@ -129,15 +184,30 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             }
         }
 
+        // ID -> Node3D* lookup, built once here and reused by every block below that resolves a
+        // node by id (elements, boundary conditions, warm start, multi-line connections) instead
+        // of treating `id - 1` as a direct array index -- that only worked because every model
+        // used to have exactly one line, with IDs forming a dense 1..N sequence matching
+        // insertion order. Multi-line models assign globally-unique but not necessarily
+        // contiguous-per-line IDs (see aml_reader.py's id_offset), so resolution has to go
+        // through a real lookup -- same pattern the warm-start block already used.
+        std::map<int, Node3D*> node_by_id;
+        for (const auto& node : model.nodes) node_by_id[node->id] = node.get();
+
         // 2. Load elements
         std::map<std::string, int> missing_field_counts;
         int elements_missing_section_properties = 0;
+        int elements_missing_nodes = 0;
         if (j.contains("model") && j["model"].contains("elements") && !model.nodes.empty()) {
             auto elems_json = j["model"]["elements"];
             for (auto& e_j : elems_json) {
                 int id = e_j["id"];
-                int n1_idx = e_j["node1_id"].get<int>() - 1;
-                int n2_idx = e_j["node2_id"].get<int>() - 1;
+                auto n1_it = node_by_id.find(e_j["node1_id"].get<int>());
+                auto n2_it = node_by_id.find(e_j["node2_id"].get<int>());
+                if (n1_it == node_by_id.end() || n2_it == node_by_id.end()) {
+                    elements_missing_nodes++;
+                    continue;
+                }
 
                 BeamMaterialProps elem_props;
                 if (e_j.contains("section_properties")) {
@@ -146,9 +216,14 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                     elements_missing_section_properties++;
                 }
 
-                double L_unstretched = (model.nodes[n2_idx]->coords - model.nodes[n1_idx]->coords).norm();
-                model.add_element(id, model.nodes[n1_idx].get(), model.nodes[n2_idx].get(), elem_props, L_unstretched);
+                double L_unstretched = (n2_it->second->coords - n1_it->second->coords).norm();
+                model.add_element(id, n1_it->second, n2_it->second, elem_props, L_unstretched);
             }
+        }
+        if (elements_missing_nodes > 0) {
+            std::ostringstream oss;
+            oss << elements_missing_nodes << " elemento(s) referenciando node1_id/node2_id inexistente -- ignorado(s).";
+            warnings.push_back({"error", oss.str()});
         }
         if (elements_missing_section_properties > 0) {
             std::ostringstream oss;
@@ -162,27 +237,27 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         }
 
         // 3. Boundary conditions
-        std::vector<bool> is_constrained(model.nodes.size(), false);
+        std::set<Node3D*> constrained_nodes;
         if (j.contains("boundary_conditions")) {
             auto bc = j["boundary_conditions"];
 
             // Prescribed
             if (bc.contains("prescribed_dofs")) {
                 for (auto& p_d : bc["prescribed_dofs"]) {
-                    int n_id = p_d["node_id"].get<int>() - 1;
-                    if (n_id >= 0 && n_id < static_cast<int>(model.nodes.size())) {
-                        model.nodes[n_id]->eq_numbers = std::vector<int>(6, -1);
-                        is_constrained[n_id] = true;
+                    auto it = node_by_id.find(p_d["node_id"].get<int>());
+                    if (it != node_by_id.end()) {
+                        it->second->eq_numbers = std::vector<int>(6, -1);
+                        constrained_nodes.insert(it->second);
                     }
                 }
             }
             // Restrained
             if (bc.contains("restrained_dofs")) {
                 for (auto& r_d : bc["restrained_dofs"]) {
-                    int n_id = r_d["node_id"].get<int>() - 1;
-                    if (n_id >= 0 && n_id < static_cast<int>(model.nodes.size())) {
-                        model.nodes[n_id]->eq_numbers = std::vector<int>(6, -1);
-                        is_constrained[n_id] = true;
+                    auto it = node_by_id.find(r_d["node_id"].get<int>());
+                    if (it != node_by_id.end()) {
+                        it->second->eq_numbers = std::vector<int>(6, -1);
+                        constrained_nodes.insert(it->second);
                     }
                 }
             }
@@ -190,10 +265,10 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
 
         // Sets DOFs for free (intermediate) nodes.
         // Node3D always initializes eq_numbers with 6 entries (never empty), so DOF
-        // freedom must be tracked via is_constrained, not via .empty()
-        for (size_t i = 0; i < model.nodes.size(); ++i) {
-            if (!is_constrained[i]) {
-                model.nodes[i]->eq_numbers = {0, 1, 2, 3, 4, 5}; // Free translations and rotations
+        // freedom must be tracked via constrained_nodes, not via .empty()
+        for (const auto& node : model.nodes) {
+            if (!constrained_nodes.count(node.get())) {
+                node->eq_numbers = {0, 1, 2, 3, 4, 5}; // Free translations and rotations
             }
         }
 
@@ -203,9 +278,6 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         // Only adjusts `disp` (never `coords`), preserving each
         // element's unstretched length computed above.
         if (j.contains("warm_start") && j["warm_start"].contains("node_positions")) {
-            std::map<int, Node3D*> node_by_id;
-            for (const auto& node : model.nodes) node_by_id[node->id] = node.get();
-
             int warm_applied = 0;
             for (auto& wp : j["warm_start"]["node_positions"]) {
                 int n_id = wp["node_id"].get<int>();
@@ -219,6 +291,54 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             }
             std::cout << "Warm start applied: " << warm_applied << " nodes (source: "
                       << j["warm_start"].value("source", "?") << ")" << std::endl;
+        }
+
+        // 3.6. Multi-line grouping metadata (docs/roadmap.md backlog: "múltiplas linhas com
+        // corpo flutuante compartilhado", driven by exemplos/Multilinhas/Multilinhas.aml) --
+        // purely additive, mirrors real ANFLEX's cReference/cConnection/cLine hierarchy
+        // (interfaces/src/) at the JSON level (see model.hpp's ReferenceInfo/ConnectionInfo/
+        // LineInfo doc comments). When `lines` is absent (every JSON written before this existed,
+        // and every single-line model going forward), model.lines/connections/references stay
+        // empty and RiserModel::resolve_line_attachments() falls back to today's exact behavior
+        // (nodes.front(), environmental.vessel_motion) -- zero migration needed.
+        if (j.contains("references")) {
+            for (auto& r_j : j["references"]) {
+                ReferenceInfo ref;
+                ref.id = r_j.value("id", 0);
+                ref.name = r_j.value("name", std::string());
+                std::string type_str = r_j.value("type", std::string("GLOBAL"));
+                ref.type = (type_str == "FLOATING") ? ReferenceType::Floating : ReferenceType::Global;
+                // Mesmo schema de environmental.vessel_motion, só que aninhado sob a reference do
+                // corpo flutuante em vez de solto em environmental -- ver parse_vessel_motion_config().
+                if (ref.type == ReferenceType::Floating && r_j.contains("vessel_motion") &&
+                    r_j["vessel_motion"].value("enabled", false)) {
+                    ref.vessel_motion = parse_vessel_motion_config(r_j["vessel_motion"]);
+                }
+                model.references.push_back(ref);
+            }
+        }
+        if (j.contains("connections")) {
+            for (auto& c_j : j["connections"]) {
+                ConnectionInfo conn;
+                conn.id = c_j.value("id", 0);
+                conn.reference_id = c_j.value("reference_id", 0);
+                conn.node_id = c_j.value("node_id", -1);
+                if (node_by_id.find(conn.node_id) == node_by_id.end()) {
+                    warnings.push_back({"error", "connection id=" + std::to_string(conn.id) +
+                        " referencia node_id=" + std::to_string(conn.node_id) + " que não existe."});
+                }
+                model.connections.push_back(conn);
+            }
+        }
+        if (j.contains("lines")) {
+            for (auto& l_j : j["lines"]) {
+                LineInfo line;
+                line.id = l_j.value("id", 0);
+                line.name = l_j.value("name", std::string());
+                line.top_connection_id = l_j.value("top_connection_id", -1);
+                line.anchor_connection_id = l_j.value("anchor_connection_id", -1);
+                model.lines.push_back(line);
+            }
         }
 
         // 4. Environmental parameters -> model.environmental (single place other classes
@@ -329,51 +449,12 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             }
             // Movimento real de topo (RAO + JONSWAP "equivalent harmonic") -- recurso novo e
             // opcional (`.value()` simples, sem value_warn); ausente = fallback já existente
-            // (onda regular só em Z), ver dynamic_analysis.cpp.
+            // (onda regular só em Z), ver dynamic_analysis.cpp. Único ponto que um modelo
+            // multi-linha SEM `references[].vessel_motion` próprio (ex. uma linha cujo
+            // top_connection_id resolve pra uma reference GLOBAL) ainda pode usar -- ver
+            // RiserModel::resolve_line_attachments().
             if (env.contains("vessel_motion") && env["vessel_motion"].value("enabled", false)) {
-                auto vm = env["vessel_motion"];
-                auto& vmc = ec.vessel_motion;
-                vmc.enabled = true;
-
-                auto center = vm.value("movement_center", std::vector<double>{0.0, 0.0, 0.0});
-                auto offset = vm.value("offset", std::vector<double>{0.0, 0.0, 0.0});
-                for (int i = 0; i < 3 && i < static_cast<int>(center.size()); ++i) {
-                    vmc.cm_position_m[i] = center[i];
-                }
-                for (int i = 0; i < 3 && i < static_cast<int>(offset.size()); ++i) {
-                    vmc.offset_m[i] = offset[i];
-                }
-                vmc.refsys_angle_deg = vm.value("refsys_angle_deg", 0.0);
-
-                static const std::map<std::string, VesselDof> dof_map = {
-                    {"surge", VesselDof::Surge}, {"sway", VesselDof::Sway}, {"heave", VesselDof::Heave},
-                    {"roll", VesselDof::Roll}, {"pitch", VesselDof::Pitch}, {"yaw", VesselDof::Yaw},
-                };
-                std::string max_dof_str = vm.value("maximization_dof", std::string("heave"));
-                auto it = dof_map.find(max_dof_str);
-                vmc.maximization_dof = (it != dof_map.end()) ? it->second : VesselDof::Heave;
-
-                vmc.headings_deg = vm.value("headings_deg", std::vector<double>{});
-                vmc.frequencies_rad_s = vm.value("frequencies_rad_s", std::vector<double>{});
-
-                if (vm.contains("amplitude") && vm.contains("phase_deg")) {
-                    auto amp = vm["amplitude"];
-                    auto phase = vm["phase_deg"];
-                    for (const auto& [name, dof] : dof_map) {
-                        vmc.amplitude[static_cast<int>(dof)] = amp.value(name, std::vector<std::vector<double>>{});
-                        vmc.phase_deg[static_cast<int>(dof)] = phase.value(name, std::vector<std::vector<double>>{});
-                    }
-                }
-
-                if (vm.contains("jonswap")) {
-                    auto js = vm["jonswap"];
-                    vmc.jonswap_alpha = js.value("alpha", 0.0);
-                    vmc.jonswap_gamma = js.value("gamma", vmc.jonswap_gamma);
-                    vmc.jonswap_period_s = js.value("period_s", vmc.jonswap_period_s);
-                    vmc.jonswap_wini_rad_s = js.value("wini_rad_s", vmc.jonswap_wini_rad_s);
-                    vmc.jonswap_wfin_rad_s = js.value("wfin_rad_s", vmc.jonswap_wfin_rad_s);
-                    vmc.jonswap_nwave = js.value("nwave", vmc.jonswap_nwave);
-                }
+                ec.vessel_motion = parse_vessel_motion_config(env["vessel_motion"]);
             }
         }
 

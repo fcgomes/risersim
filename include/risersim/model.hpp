@@ -14,6 +14,7 @@
 #include <string>
 #include <memory>
 #include <utility>
+#include <map>
 
 namespace risersim {
 
@@ -110,6 +111,62 @@ struct AnalysisOptionsConfig {
 };
 
 /**
+ * @brief One reference/coordinate frame a line can attach to -- mirrors real ANFLEX's `cReference`
+ * hierarchy (`interfaces/src/reference.h`), where a floating body (`cFloating`, `%FLOATING.SHIP`
+ * in the AML) is itself just a `cReference` subtype alongside the one fixed/global frame
+ * (`cGlobalRef`). Only `Floating` references carry a meaningful `vessel_motion` -- `Global`
+ * exists so an anchor-to-seabed connection can use the exact same `ConnectionInfo` shape as a
+ * floating-body attachment (same real-ANFLEX design: an anchor is a `cConnection` pointing at
+ * `cGlobalRef`, not a structurally special case).
+ */
+enum class ReferenceType { Global, Floating };
+
+/**
+ * @brief One entry in `RiserModel::references` -- see ReferenceType. `vessel_motion` is only
+ * consulted when `type == Floating`; for `Global` it's left default (`enabled=false`).
+ */
+struct ReferenceInfo {
+    int id = 0;
+    ReferenceType type = ReferenceType::Global;
+    std::string name;
+    VesselMotionConfig vessel_motion;
+};
+
+/**
+ * @brief One entry in `RiserModel::connections` -- mirrors real ANFLEX's `cConnection`
+ * (`interfaces/src/connection.h`): which `ReferenceInfo` (by `reference_id`) a line attaches to.
+ * `node_id` is the field the C++ solver actually consumes: it bridges to the `Node3D` whose
+ * global position was already resolved upstream (Python's `_resolve_connection_global()`/
+ * `_synthesize_mesh()`, or a hand-built model) -- the solver does NOT re-derive a node's position
+ * from a reference frame's origin/azimuth plus a local offset, since that would duplicate the
+ * (MoorPy-backed) catenary-geometry solving that already happens once, upstream, in Python.
+ */
+struct ConnectionInfo {
+    int id = 0;
+    int reference_id = 0;
+    int node_id = -1;
+};
+
+/**
+ * @brief One line (riser/mooring) in a possibly-multi-line model -- mirrors real ANFLEX's `cLine`
+ * (`interfaces/src/line.h`), which has two independent `cConnection`s (top + anchor). Only
+ * `top_connection_id` is consumed by the solver today (resolved to the line's prescribed-motion
+ * node); `anchor_connection_id` is documentation/traceability -- the actual fixation still comes
+ * from `boundary_conditions.restrained_dofs`, same as a single-line model.
+ *
+ * `RiserModel::lines` is empty for every model built before this concept existed (hand-built
+ * single-line models, JSON without a `lines` array) -- callers (`Simulation`, `StaticAnalysis`,
+ * `DynamicAnalysis`) must treat that as "exactly one line, top node = nodes.front(), vessel motion
+ * = environmental.vessel_motion", preserving today's behavior with zero migration.
+ */
+struct LineInfo {
+    int id = 0;
+    std::string name;
+    int top_connection_id = -1;
+    int anchor_connection_id = -1;
+};
+
+/**
  * @brief Owning container of a riser/mooring model's nodes and elements, equivalent to ANFLEX's `cDomain`.
  *
  * Owns its Node3D/CorotationalBeam3D instances via `std::unique_ptr` (roadmap step 6, see
@@ -127,6 +184,16 @@ public:
     std::vector<std::unique_ptr<CorotationalBeam3D>> elements;
     EnvironmentalConfig environmental;
     AnalysisOptionsConfig analysis_options;
+
+    /// Multi-line support (docs/roadmap.md, backlog "múltiplas linhas com corpo flutuante
+    /// compartilhado") -- empty on every single-line model (see LineInfo's doc comment for the
+    /// backward-compat contract). `nodes`/`elements` stay ONE flat list regardless (matching
+    /// `cDomain`/the HDF5 exporter/RCM equation numbering, all already line-agnostic) -- these
+    /// three vectors only add GROUPING metadata on top, they don't change how nodes/elements are
+    /// stored.
+    std::vector<ReferenceInfo> references;
+    std::vector<ConnectionInfo> connections;
+    std::vector<LineInfo> lines;
 
     RiserModel() = default;
 
@@ -161,6 +228,65 @@ public:
     void clear() {
         elements.clear();
         nodes.clear();
+    }
+
+    /**
+     * @brief One line's resolved top-attachment point + the VesselMotionConfig that applies to
+     * it -- what Simulation/StaticAnalysis/DynamicAnalysis actually need per line, hiding the
+     * references/connections/lines ID resolution behind one call.
+     */
+    struct LineAttachment {
+        Node3D* top_node;
+        const VesselMotionConfig* vessel_motion; ///< Never null.
+    };
+
+    /**
+     * @brief Resolves every line's top node + applicable VesselMotionConfig.
+     *
+     * `lines` empty (every model built before this concept existed -- hand-built single-line
+     * models, JSON without a `lines` array): returns exactly one attachment, `{nodes.front(),
+     * &environmental.vessel_motion}` -- today's behavior, unchanged, zero migration needed.
+     *
+     * `lines` non-empty: for each line, follows `top_connection_id -> ConnectionInfo -> node_id`
+     * to the real `Node3D*` (already positioned by whoever built this model -- this method does
+     * NOT re-derive geometry from a reference's origin/offset, see ConnectionInfo's doc comment),
+     * and `ConnectionInfo::reference_id -> ReferenceInfo` for the VesselMotionConfig to use: that
+     * reference's own `vessel_motion` when `type == Floating`, else the model-wide
+     * `environmental.vessel_motion` (e.g. an anchor-referenced or otherwise `Global` connection --
+     * shouldn't normally be used as a TOP connection, but falls back safely rather than
+     * dereferencing nothing). A line whose `top_connection_id`/`node_id` doesn't resolve is
+     * skipped (not a partial/garbage entry) -- callers iterate whatever comes back.
+     */
+    std::vector<LineAttachment> resolve_line_attachments() {
+        std::vector<LineAttachment> result;
+        if (lines.empty()) {
+            if (!nodes.empty()) {
+                result.push_back({nodes.front().get(), &environmental.vessel_motion});
+            }
+            return result;
+        }
+
+        std::map<int, Node3D*> node_by_id;
+        for (const auto& n : nodes) node_by_id[n->id] = n.get();
+        std::map<int, const ConnectionInfo*> conn_by_id;
+        for (const auto& c : connections) conn_by_id[c.id] = &c;
+        std::map<int, const ReferenceInfo*> ref_by_id;
+        for (const auto& r : references) ref_by_id[r.id] = &r;
+
+        for (const auto& line : lines) {
+            auto cit = conn_by_id.find(line.top_connection_id);
+            if (cit == conn_by_id.end()) continue;
+            auto nit = node_by_id.find(cit->second->node_id);
+            if (nit == node_by_id.end()) continue;
+
+            const VesselMotionConfig* cfg = &environmental.vessel_motion;
+            auto rit = ref_by_id.find(cit->second->reference_id);
+            if (rit != ref_by_id.end() && rit->second->type == ReferenceType::Floating) {
+                cfg = &rit->second->vessel_motion;
+            }
+            result.push_back({nit->second, cfg});
+        }
+        return result;
     }
 };
 
