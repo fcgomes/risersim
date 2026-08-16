@@ -1409,6 +1409,44 @@ class ANFLEXAMLReader:
             })
         return nodes, elements
 
+    @staticmethod
+    def _static_robustness_overrides(ei_nm2: float) -> dict:
+        """Escape hatch for a real static-solver instability found on
+        exemplos/Multilinhas/Multilinhas.aml (EI=6.27 kN.m^2, 2070 elements/line, 2200m water
+        depth): full-step Newton blows up in ROTATIONAL DOFs (not the already-known seabed
+        contact/friction chattering) for very bendable, finely-meshed lines. Root cause: with
+        EI this low, the rotational stiffness terms are near-singular, so a full Newton step
+        overcorrects rotation wildly instead of converging.
+
+        Fix requires zero C++ change: `enable_step_limiting` (already implemented, off by
+        default) with a MUCH tighter rotation cap than its own default (0.01 rad vs 0.3 rad)
+        resolves it completely -- confirmed on all 7 Multilinhas.aml lines individually and on
+        the combined multi-line model, all converging to the identical T_eff (2361 kN).
+        `unbalanced_force_tol`/`unbalanced_moment_tol` also loosened (5->30 N) -- with the
+        tighter rotation cap alone, convergence was real but needed hundreds of iterations per
+        step (chasing a residual that was already physically negligible); loosening these too
+        cut that back down to ~15-40 iterations/step. This deliberately overrides any real
+        %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM value already extracted from the .aml (see
+        extract_static_convergence_criterium() call sites below) -- a documented departure from
+        fidelity, justified because the alternative is non-convergence for this class of case.
+
+        Verified harmless on an already-validated normal case too (Exemplo_01a/Cross, EI=21.7
+        kN.m^2, 500 elements): same T_eff (217.3 kN) as the unmodified baseline, converging in
+        FEWER iterations -- so the EI threshold below only needs to separate the two real data
+        points found so far, not be exact; erring toward triggering more often costs a little
+        compute, not correctness. See docs/roadmap.md Eixo 2c.
+        """
+        EI_THRESHOLD_NM2 = 15_000.0  # between the two real data points: 6 270 (unstable) / 21 700 (fine)
+        if ei_nm2 >= EI_THRESHOLD_NM2:
+            return {}
+        return {
+            "enable_step_limiting": True,
+            "max_translation_step_m": 0.2,
+            "max_rotation_step_rad": 0.01,
+            "unbalanced_force_tol": 30.0,
+            "unbalanced_moment_tol": 30.0,
+        }
+
     # -------------------------------------------------------------------------
     # STRUCTURED JSON (the schema ModelBuilder::load_from_json actually reads)
     # -------------------------------------------------------------------------
@@ -1584,6 +1622,15 @@ class ANFLEXAMLReader:
             if max_unbalanced is not None:
                 static_opts['unbalanced_force_tol'] = max_unbalanced
                 static_opts['unbalanced_moment_tol'] = max_unbalanced
+        robustness_overrides = self._static_robustness_overrides(mat['EI_Nm2'])
+        if robustness_overrides:
+            static_opts['enable_unbalanced_criteria'] = True
+            static_opts.update(robustness_overrides)
+            # 400: covers the observed worst case (step 1's cold start from the straight
+            # initial mesh needed 387 iterations on the real Multilinhas.aml, even with the
+            # loosened tolerance above -- later steps converge in ~15-40, starting from the
+            # previous step's already-good solution).
+            static_opts['max_iterations'] = max(static_opts['max_iterations'], 400)
 
         dynamic_opts = {
             "enabled": True,
@@ -1873,6 +1920,15 @@ class ANFLEXAMLReader:
             if max_unbalanced is not None:
                 static_opts['unbalanced_force_tol'] = max_unbalanced
                 static_opts['unbalanced_moment_tol'] = max_unbalanced
+        robustness_overrides = self._static_robustness_overrides(mat['EI_Nm2'])
+        if robustness_overrides:
+            static_opts['enable_unbalanced_criteria'] = True
+            static_opts.update(robustness_overrides)
+            # 400: covers the observed worst case (step 1's cold start from the straight
+            # initial mesh needed 387 iterations on the real Multilinhas.aml, even with the
+            # loosened tolerance above -- later steps converge in ~15-40, starting from the
+            # previous step's already-good solution).
+            static_opts['max_iterations'] = max(static_opts['max_iterations'], 400)
 
         dynamic_opts = {
             "enabled": True,

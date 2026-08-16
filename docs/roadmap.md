@@ -747,18 +747,43 @@ schema gerado estruturalmente correto (14497 nós/14490 elementos, IDs globalmen
 sobreposição entre linhas, confirmado inspecionando o JSON gerado -- linha N vai de node_id
 X a Y sem invadir a faixa da linha seguinte), `references`/`connections`/`lines` corretos (1
 corpo flutuante compartilhado, 7 conexões de topo + 7 de âncora). H5 exportado sem crash mesmo
-no modelo grande. **Achado não resolvido, fora de escopo desta rodada**: a análise estática NÃO
-converge para este arquivo -- resíduo diverge já no 1º passo de carga. Isolado via teste A/B:
-rodando a MESMA linha 1 sozinha pelo caminho single-line já existente e não tocado
-(`to_risersim_json()`, sem nenhuma mudança desta rodada) reproduz a *mesma* divergência (mesmo
-formato de crescimento do resíduo) -- prova que não é um bug do multi-linha, é uma dificuldade de
-convergência pré-existente do motor para este caso específico (águas muito profundas, 2200m vs.
-100-265m dos exemplos já validados; linha muito longa, 5265m; EI muito baixo, 6,27 kN·m²; malha
-com ~2070 elementos/linha, bem além de qualquer caso já testado). Testado também com malha bem
-mais grosseira (40 elementos/linha): melhora (para de divergir pra o infinito, mas ainda não
-converge dentro do orçamento de iterações) -- confirma que faz parte do mesmo problema de
-robustez/condicionamento do Eixo 1b, não um artefato do multi-linha. Catch2: 405/405 (Fases 1-2,
-nenhuma mudança de C++ na Fase 3) sem regressão.
+no modelo grande.
+
+**Achado inicial: a estática não convergia** -- resíduo divergia já no 1º passo de carga. Isolado
+via teste A/B: rodando a MESMA linha 1 sozinha pelo caminho single-line já existente e não tocado
+(`to_risersim_json()`, sem nenhuma mudança desta rodada) reproduz a *mesma* divergência -- prova
+que não era um bug do multi-linha, e sim algo pré-existente no motor pra esse tipo de geometria
+(águas muito profundas, 2200m vs. 100-265m dos exemplos já validados; linha muito longa, 5265m;
+EI muito baixo, 6,27 kN·m²; malha com ~2070 elementos/linha, bem além de qualquer caso já testado).
+
+**✅ Investigado e resolvido, sem mudança de C++** (2026-08-16): instrumentação de debug temporária
+(removida depois) achou a causa real -- não é o "chattering" de contato/atrito já documentado (o
+DOF de maior resíduo, no trecho onde a explosão começa, é sempre uma ROTAÇÃO, em nós longe do
+leito, com atrito zerado). É mal-condicionamento: EI tão baixo com malha tão fina deixa a rigidez
+rotacional quase singular, e o passo de Newton cheio "chuta" a rotação longe demais. O mecanismo
+que resolve já existia (`StaticAnalysis::enable_step_limiting`, desligado por padrão) -- só
+precisava de calibração: cap de rotação bem mais apertado que seu próprio default (0,01 rad vs.
+0,3 rad) elimina a explosão por completo; a tolerância de força/momento desbalanceados (usada como
+"escape hatch" perto do limite de iteração, ver `convergence_test.cpp`) também precisou afrouxar
+(5→30 N) pra não ficar perseguindo um resíduo já fisicamente desprezível por centenas de
+iterações. Confirmado convergindo as 7 linhas individualmente E o modelo combinado (7 linhas, 11
+passos de carga cada) -- todas batendo no mesmo `T_eff=2361 kN` (forte prova de consistência
+física, já que as 7 linhas são geometricamente equivalentes, só giradas). Testado também que essas
+configurações são inofensivas num caso já validado (Exemplo_01a/Cross, EI=21,7 kN·m²): T_eff
+idêntico ao baseline (217,3 kN), convergindo em MENOS iterações -- ou seja, o gatilho da
+auto-detecção não precisa ser cirúrgico, só separar os dois pontos reais já encontrados.
+
+**Implementado**: `ANFLEXAMLReader._static_robustness_overrides(ei_nm2)` (`tools/aml_reader.py`),
+chamado tanto em `to_risersim_json()` quanto em `to_risersim_json_multiline()` -- se
+`EI < 15.000 N·m²` (limiar entre os dois pontos reais, 6.270 instável / 21.700 inofensivo), liga
+`enable_step_limiting`+cap 0,01 rad, afrouxa `unbalanced_force_tol`/`moment_tol` pra 30 N, e sobe
+`max_iterations` pro maior entre o valor real do `.aml` e 400 (cobre o pior caso observado, o
+passo 1 partindo da malha reta inicial, que precisou de 387). Zero mudança em C++/`model.hpp`
+(os defaults do mecanismo continuam os mesmos pra todo o resto). Reverificado ponta a ponta pelo
+pipeline real (`run_from_aml.py --all-lines`, sem nenhuma edição manual de JSON): converge os 11
+passos, mesmo `T_eff=2361 kN` de antes; `Exemplo_01a` via caminho `.aml` puro confirmado SEM
+disparar a auto-detecção (EI=21,7 kN·m² > limiar), comportamento idêntico ao de sempre. Catch2:
+405/405 (mudança só em Python).
 
 **Fora de escopo desta rodada** (confirmado com o usuário antes de começar): frontend (`Riser3DRenderer.js`/`DataLoaderService.js`/tabela de resultados -- hoje assumem uma corrente única contígua, precisam de conectividade real exportada no H5 primeiro); seleção de linha no gerenciador de rodadas web (`risersim_projects.py`/`run_server.py`, sem conceito de "linha" hoje); caminho XML+H5 (`xml_h5_reader.py`, sem export real multi-linha existente).
 
@@ -1227,8 +1252,8 @@ com movimento prescrito 6-GDL por caso de carga (`Turret.aml`), ruptura de eleme
 execução dinâmico (`Ruptura.aml`), verificação de código DNV como pós-processamento
 (`DNV_Check.aml`). Cada um só vale a pena quando um caso de teste real concreto precisar dele — não
 faz sentido implementar especulativamente. (Múltiplas linhas com corpo flutuante compartilhado —
-implementado, ver Eixo 2c; a lacuna real que sobrou lá é convergência estática em águas muito
-profundas/linhas muito longas, não a estrutura multi-linha em si.)
+implementado e com convergência estática resolvida pra águas muito profundas/linhas muito longas,
+ver Eixo 2c.)
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 
