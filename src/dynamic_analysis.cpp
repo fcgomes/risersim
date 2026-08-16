@@ -380,6 +380,39 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             return st;
         };
 
+        // Assembles M from the model's CURRENT node state (must be called right after
+        // assemble_at() has positioned the nodes for the state being evaluated) -- extracted so
+        // both the top-of-iteration assembly and each backtracking trial below can share it,
+        // instead of only K/C being recomputed per trial while M silently used the top-of-
+        // iteration geometry for every trial. `local_mass_matrix()` (element_beam.cpp) uses
+        // `current_length()`, so M is NOT geometry-independent as an earlier version of this
+        // comment claimed -- found while investigating the Far dynamic case's negative-tension
+        // divergence (docs/roadmap.md, Eixo 1b, Atualização 10/11): the friction-state and
+        // C-staleness bugs already fixed here follow the same pattern (a quantity recomputed once
+        // per iteration and silently reused across trials whose geometry has since moved).
+        auto assemble_mass = [&]() -> Eigen::SparseMatrix<double> {
+            Eigen::SparseMatrix<double> M(num_dofs, num_dofs);
+            std::vector<Eigen::Triplet<double>> m_triplets;
+            for (const auto& elem : model->elements) {
+                Eigen::MatrixXd m_elem = elem->mass_matrix(water_density_for_mass);
+                int n_dof = elem->num_nodes() * 6;
+                std::vector<int> eq_map(n_dof);
+                for (int n = 0; n < elem->num_nodes(); ++n) {
+                    Node3D* nd = elem->node(n);
+                    for (int i = 0; i < 6; ++i) eq_map[n * 6 + i] = nd->eq_numbers[i];
+                }
+                for (int r = 0; r < n_dof; ++r) {
+                    if (eq_map[r] < 0) continue;
+                    for (int c = 0; c < n_dof; ++c) {
+                        if (eq_map[c] < 0) continue;
+                        m_triplets.push_back(Eigen::Triplet<double>(eq_map[r], eq_map[c], m_elem(r, c)));
+                    }
+                }
+            }
+            M.setFromTriplets(m_triplets.begin(), m_triplets.end());
+            return M;
+        };
+
         // Newton-Raphson Iterations per Dynamic Time Step
         int nr_converged_iter = -1;
         double res_norm_prev = 1.0e30;
@@ -401,31 +434,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             Eigen::VectorXd& F_int = state.F_int;
 
             if (!model) return false;
-            Eigen::SparseMatrix<double> M_global(num_dofs, num_dofs);
-            std::vector<Eigen::Triplet<double>> m_triplets;
-            // Goes through the Element interface, same rationale as Analysis::assemble_system()
-            // (see analysis.cpp) -- works unchanged for any future element type. Not Z-dependent
-            // (unlike K_global) -- safe to reuse as-is across this iteration's backtracking
-            // trials below without recomputing.
-            for (const auto& elem : model->elements) {
-                Eigen::MatrixXd m_elem = elem->mass_matrix(water_density_for_mass);
-
-                int n_dof = elem->num_nodes() * 6;
-                std::vector<int> eq_map(n_dof);
-                for (int n = 0; n < elem->num_nodes(); ++n) {
-                    Node3D* nd = elem->node(n);
-                    for (int i = 0; i < 6; ++i) eq_map[n * 6 + i] = nd->eq_numbers[i];
-                }
-
-                for (int r = 0; r < n_dof; ++r) {
-                    if (eq_map[r] < 0) continue;
-                    for (int c = 0; c < n_dof; ++c) {
-                        if (eq_map[c] < 0) continue;
-                        m_triplets.push_back(Eigen::Triplet<double>(eq_map[r], eq_map[c], m_elem(r, c)));
-                    }
-                }
-            }
-            M_global.setFromTriplets(m_triplets.begin(), m_triplets.end());
+            // Mass at the state assemble_at(U_curr, iter) just left the nodes in -- recomputed
+            // per iteration (not reused stale from a previous one), and each backtracking trial
+            // below recomputes its OWN M_trial the same way, since mass_matrix() depends on
+            // current element length just like K does.
+            Eigen::SparseMatrix<double> M_global = assemble_mass();
 
             // Damping Matrix C = alpha*M + beta*K
             Eigen::SparseMatrix<double> C_global = alpha_rayleigh * M_global + beta_rayleigh * K_global;
@@ -520,9 +533,12 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // (docs/roadmap.md item 1b), because a capped-but-still-accepted step can itself
             // land somewhere that makes the NEXT iteration's residual explode. Checks the trial
             // BEFORE committing to it, instead of applying blindly and only noticing the blowup
-            // one iteration later. Reuses this iteration's M_global/C_global for every trial (not
-            // recomputed per trial -- M isn't Z-dependent at all, and re-deriving C from a
-            // slightly stale K_global is an accepted approximation for this accept/reject check).
+            // one iteration later. K, C and M are all recomputed fresh for each trial below (see
+            // assemble_mass()) -- an earlier version of this comment claimed M/C were reused
+            // stale from the top of the iteration as "an accepted approximation"; that stopped
+            // being true for C in Atualização 6 and for M in Atualização 11 (docs/roadmap.md,
+            // Eixo 1b) once both were found to matter for the same class of touchdown-zone
+            // chattering.
             //
             // Threshold is 2x, NOT static's 100x (`apply_newton_step_with_line_search()`) -- tried
             // 100x first (matching static's "catastrophic-blowup-only" convention) and it did
@@ -566,8 +582,13 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 trial_state = assemble_at(U_trial, iter);
                 A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
                 V_trial = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_trial);
-                Eigen::SparseMatrix<double> C_trial = alpha_rayleigh * M_global + beta_rayleigh * trial_state.K_global;
-                Eigen::VectorXd Residual_trial = trial_state.F_ext - trial_state.F_int - M_global * A_trial - C_trial * V_trial;
+                // Mass at THIS trial's geometry (element length moves with the nodes, same
+                // rationale as recomputing K/C per trial above) -- previously reused M_global from
+                // the top of the iteration for every trial, silently stale once a trial actually
+                // moves a node.
+                Eigen::SparseMatrix<double> M_trial = assemble_mass();
+                Eigen::SparseMatrix<double> C_trial = alpha_rayleigh * M_trial + beta_rayleigh * trial_state.K_global;
+                Eigen::VectorXd Residual_trial = trial_state.F_ext - trial_state.F_int - M_trial * A_trial - C_trial * V_trial;
                 double norm_trial = Residual_trial.norm();
 
                 if (norm_trial <= res_norm * 2.0 || bt == max_backtracks) break;

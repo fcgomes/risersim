@@ -737,9 +737,30 @@ passo do caso Far transiente). Por decisão do usuário, troquei pra instrumenta
   touchdown) apertado demais pro detector de 1e-4 pegar -- não é mais o "slack line" simples
   documentado antes (tração levemente negativa), é uma dinâmica de contato mais rica que ainda não
   tem causa raiz identificada. Próxima hipótese, se valer a pena: expandir o detector de
-  período-2 pra período-N genérico, ou investigar se o `du` de atrito devia também ser
-  recomputado com um `C_trial` fresco por tentativa (mesma classe de bug já corrigido nos passos
-  79/87, ver Atualização 6 acima) em vez de só ganhar snapshot/restore.
+  período-2 pra período-N genérico.
+
+**Atualização 11** (2026-08-16, quinta tentativa -- correção real de consistência, resultado nulo
+neste caso): pedido do usuário pra testar se `C_trial` recomputado por tentativa (a técnica que já
+fechou o chattering dos passos 79/87, Atualização 6) também se aplicava aqui. Ao reler o código com
+calma: **já se aplica** -- `C_trial` já é recalculado do zero a partir do `K_global` fresco de cada
+tentativa de backtracking desde a Atualização 6; o comentário logo acima é que tinha ficado
+desatualizado (dizia "reusa M_global/C_global... aproximação aceita", sem refletir mais o código
+abaixo). Mas essa releitura revelou um paralelo real que ninguém tinha notado: `M_global`
+(matriz de massa) era montada UMA VEZ no topo de cada iteração e reaproveitada em TODAS as
+tentativas de backtracking daquela iteração, com um comentário afirmando "não depende de Z" --
+falso: `local_mass_matrix()` (`element_beam.cpp`) usa `current_length()`, que muda com a posição
+dos nós tanto quanto a rigidez geométrica que já motivou recalcular `K`/`C` por tentativa. Extraído
+`assemble_mass()` (lambda, mesmo padrão de `assemble_at()`) e chamado tanto no topo da iteração
+quanto dentro do laço de backtracking, produzindo `M_trial` fresco por tentativa. Suíte sem
+regressão (405/405); Cross seguiu convergindo idêntico. **Resultado no caso Far**: nenhuma
+mudança -- passo de falha e resíduo final ficaram byte-idênticos ao baseline só-com-o-fix-de-atrito
+(passo 128, `res_norm=9.81756e6`), confirmando que a massa nunca diverge o bastante entre
+tentativas pra mudar uma decisão de aceitar/rejeitar neste caso específico (o comprimento dos
+elementos na zona de touchdown varia pouco demais, mesmo sob uma tentativa ruim, pra M pesar).
+**Mantida mesmo assim** (correção de consistência real e barata, sem regressão, mesmo padrão já
+validado pra K/C) -- resultado nulo aqui, mas pode importar em outro caso com deformação mais
+extrema por tentativa. O comentário desatualizado foi corrigido pra refletir que K/C/M são todos
+recalculados por tentativa agora.
 
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
