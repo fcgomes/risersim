@@ -72,13 +72,16 @@ def process_one_run(store: ProjectStore, exe_path: Path, solver_fingerprint: str
     SIGTERM and gives the solver a short time to exit on its own before forcing it with
     SIGKILL."""
     run_dir = store.run_dir(project_id, run_id)
-    input_json = run_dir / "input_simulation.json"
     stdout_log = run_dir / "stdout.log"
     abort_flag = run_dir / "abort_requested"
-    # Computed at creation time (ProjectStore.create_run(), project+case name already known then)
-    # -- passed to the solver binary below so it writes the results file under this name directly,
+    # Both computed at creation time (ProjectStore.create_run(), project+case name already known
+    # then) -- `input_filename` is just the name ProjectStore already wrote the snapshot under
+    # (`.get()` with a fallback for runs created before this field existed); `results_filename` is
+    # passed to the solver binary below so it writes the results file under this name directly,
     # instead of a fixed placeholder that would need renaming afterward.
     run = store.get_run(project_id, run_id)
+    input_filename = (run or {}).get("input_filename") or "input_simulation.json"
+    input_json = run_dir / input_filename
     results_filename = (run or {}).get("results_filename") or "catenary_results.h5"
     # No output-dir argument -- the binary always writes next to the input file (main.cpp derives
     # it from argv[1]'s own directory), and input_json is already inside run_dir.

@@ -15,4 +15,4 @@ independently, which is why they're three separate fields recorded in project.js
 risersim_projects.py).
 """
 
-WEB_VERSION = "1.5.0"
+WEB_VERSION = "1.6.0"

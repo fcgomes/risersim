@@ -45,7 +45,11 @@ class PreprocessorApp {
         this.bindEvents();
         this.applyProjectMode();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
-        await this.loadInput(this.resolveInputUrl());
+        try {
+            await this.loadInput(await this.resolveInputUrl());
+        } catch (err) {
+            console.error("Erro ao resolver a URL de entrada: ", err);
+        }
     }
 
     /** When opened with `?project=<id>` (embedded in project.html's Pre-processing tab, or
@@ -97,16 +101,19 @@ class PreprocessorApp {
      * Resolves which input file to load on startup, in priority order (mirrors
      * app.js::resolveResultsUrl()):
      *   1. `?file=<url>` -- explicit override, any URL/relative path.
-     *   2. `?project=<id>&run=<run-id>` -- the exact input_simulation.json snapshot that run
-     *      used, served by the run manager's generic per-run results route (run_server.py
-     *      RESULT_FILENAMES now includes "input_simulation.json").
+     *   2. `?project=<id>&run=<run-id>` -- the exact config snapshot that run used, under its own
+     *      case-identifiable name (`ProjectStore.create_run()`'s `input_filename`, e.g.
+     *      "Exemplo_01a_Far_input.json") -- written synchronously when the run is CREATED (unlike
+     *      the results file, no need to wait on `status`), served by the run manager's generic
+     *      per-run results route (run_server.py::api_run_results). Fetches the run's metadata
+     *      first to read the real filename, then builds the URL from it.
      *   3. `?project=<id>` (no run) -- the project's CURRENT input_simulation.json ("what the
      *      next run would use"), served by GET /api/projects/<id>/input.
      *   4. `../input_simulation.json` -- the historical hardcoded path, unchanged (manual use
      *      without the run manager keeps working).
-     * @returns {string}
+     * @returns {Promise<string>}
      */
-    resolveInputUrl() {
+    async resolveInputUrl() {
         const params = new URLSearchParams(window.location.search);
 
         const explicitFile = params.get('file');
@@ -115,7 +122,12 @@ class PreprocessorApp {
         const project = params.get('project');
         const run = params.get('run');
         if (project && run) {
-            return `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/results/input_simulation.json`;
+            const runInfoRes = await fetch(`/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}`);
+            if (!runInfoRes.ok) throw new Error(`Não foi possível obter informações da rodada (HTTP ${runInfoRes.status})`);
+            const runInfo = await runInfoRes.json();
+            if (!runInfo.input_filename) throw new Error('Esta rodada não tem um nome de arquivo de entrada registrado.');
+            const base = `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/results/`;
+            return base + encodeURIComponent(runInfo.input_filename);
         }
         if (project) {
             return `/api/projects/${encodeURIComponent(project)}/input`;

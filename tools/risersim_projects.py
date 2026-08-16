@@ -13,7 +13,7 @@ truth, exactly as designed in the spec:
         runs/
           run-YYYYMMDD-HHMMSS/
             run.json
-            input_simulation.json
+            <Project>_<Case>_input.json   (frozen config snapshot this run actually used)
             stdout.log
             <Project>_<Case>_results.h5   (name known from creation, file appears once finished)
 
@@ -348,6 +348,12 @@ class ProjectStore:
         field back and passes it to the solver binary as the exact filename to write, instead of
         the solver writing a fixed placeholder name that gets renamed afterward.
 
+        `input_filename` (`<Project>[_<Case>]_input.json`, same `<Project>[_<Case>]` stem as
+        `results_filename`, just a different suffix) names the frozen config snapshot written
+        below, instead of the old fixed `input_simulation.json` -- same reasoning as
+        `results_filename`: recognizable on screen/on disk once downloaded, no two files in
+        someone's Downloads folder both called "input_simulation.json".
+
         Raises `DuplicateRunError` (carrying the existing run) instead of creating a new one when
         a finished run with the same `model_hash` already exists and `force` isn't set -- moved
         here (from the caller) so the dedup check always hashes the bytes THIS run would actually
@@ -383,12 +389,6 @@ class ProjectStore:
             if dup is not None:
                 raise DuplicateRunError(dup)
 
-        run_id = generate_run_id(pdir)
-        rdir = self.run_dir(project_id, run_id)
-        rdir.mkdir(parents=True)
-        (rdir / "input_simulation.json").write_bytes(config_bytes)
-        (rdir / "stdout.log").touch()
-
         try:
             schema_version = json.loads(config_bytes).get("schema_version")
         except json.JSONDecodeError:
@@ -397,7 +397,15 @@ class ProjectStore:
         parts = [_sanitize_filename_component(project.get("name"))]
         if load_case_name:
             parts.append(_sanitize_filename_component(load_case_name))
-        results_filename = "_".join(p for p in parts if p) + "_results.h5"
+        stem = "_".join(p for p in parts if p)
+        input_filename = f"{stem}_input.json"
+        results_filename = f"{stem}_results.h5"
+
+        run_id = generate_run_id(pdir)
+        rdir = self.run_dir(project_id, run_id)
+        rdir.mkdir(parents=True)
+        (rdir / input_filename).write_bytes(config_bytes)
+        (rdir / "stdout.log").touch()
 
         run = {
             "id": run_id,
@@ -413,6 +421,7 @@ class ProjectStore:
             "load_case_name": load_case_name,
             "web_version": WEB_VERSION,
             "solver_fingerprint": None,
+            "input_filename": input_filename,
             "results_filename": results_filename,
         }
         self._write_run(project_id, run_id, run)
@@ -506,8 +515,8 @@ class ProjectStore:
         """Looks, among a project's runs, for the most recent already-FINISHED one
         (`status in (converged, failed)`) with the same `model_hash` -- used by
         `POST /api/projects/<id>/runs` to avoid accidentally triggering a duplicate run of the
-        same `input_simulation.json` (deterministic solver given the same binary: two runs of the
-        same model give the same result). `pending`/`running` runs don't count (the result isn't
+        same config bytes (deterministic solver given the same binary: two runs of the same model
+        give the same result). `pending`/`running` runs don't count (the result isn't
         known yet, and blocking the serial queue by accident isn't worth the risk). Returns the
         `run` (dict) or `None`. `list_runs` already returns most-recent-first."""
         for run in self.list_runs(project_id):

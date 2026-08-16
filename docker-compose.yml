@@ -34,7 +34,7 @@ services:
 
 volumes:
   # Layout: projects/<project-id>/{project.json,input_simulation.json,runs/<run-id>/{run.json,
-  # input_simulation.json,stdout.log,catenary_results.json,catenary_results.h5}}. Raiz nova,
-  # separada de risersim_results/ (usado pelo workflow manual `run_from_aml.py`, que continua
-  # funcionando fora do Docker Compose, sem volume nenhum).
+  # <Projeto>[_<Caso>]_input.json,stdout.log,<Projeto>[_<Caso>]_results.h5}}. Raiz nova, separada
+  # de risersim_results/ (usado pelo workflow manual `run_from_aml.py`, que continua funcionando
+  # fora do Docker Compose, sem volume nenhum).
   risersim_projects:
