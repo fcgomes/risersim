@@ -540,11 +540,28 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // (which risersim's static solver has previously found too strict in other contexts,
             // also documented in seabed.hpp) still leaves enough slack for normal iterations that
             // legitimately increase the residual a little before converging.
+            // node->friction_force is PERSISTENT, incrementally-updated state (analysis.cpp:
+            // `f_state += k_friction * du`, seabed.hpp::calculate_friction_1d/coupled) -- every
+            // assemble_at() call mutates it in place, including trials that get REJECTED below.
+            // Without snapshotting it here, a rejected trial's `du` (computed relative to the
+            // PREVIOUS trial's leftover node->disp, not to U_curr) gets baked in permanently, and
+            // the next trial's `du` compounds on top of that spurious increment instead of being
+            // computed relative to U_curr as intended -- across several backtracks this can drift
+            // the friction state far from anything physical. Static's equivalent function
+            // (StaticAnalysis::apply_newton_step_with_line_search()) already guards against this
+            // via its own NodeStateSnapshot/restore(); the dynamic loop never had it. Found via
+            // debug instrumentation tracing exactly this failure signature: touchdown-zone "tx"
+            // (axial, where friction acts) DOFs swinging to multi-MN-scale spurious tension
+            // (docs/roadmap.md, Eixo 1b item 3).
+            std::vector<Eigen::Vector2d> friction_snapshot(model->nodes.size());
+            for (size_t k = 0; k < model->nodes.size(); ++k) friction_snapshot[k] = model->nodes[k]->friction_force;
+
             constexpr int max_backtracks = 5;
             double trial_alpha = alpha_cap;
             Eigen::VectorXd U_trial, A_trial, V_trial;
             AssembledState trial_state;
             for (int bt = 0; bt <= max_backtracks; ++bt) {
+                for (size_t k = 0; k < model->nodes.size(); ++k) model->nodes[k]->friction_force = friction_snapshot[k];
                 U_trial = U_curr + trial_alpha * delta_U;
                 trial_state = assemble_at(U_trial, iter);
                 A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;

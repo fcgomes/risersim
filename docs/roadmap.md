@@ -687,13 +687,67 @@ Morison), mudança maior. **Mantido mesmo assim** (fisicamente real, correto na 
 mensurável, zero regressão) -- terceira tentativa seguida sem fechar o item 3 por completo, mas a
 primeira que de fato mudou o resultado na direção certa. Pausado aqui.
 
+**Atualização 10** (2026-08-16, quarta tentativa -- bug real achado e corrigido, mais dois
+mitigadores parciais explorados e deixados como decisão do usuário): antes de perseguir as duas
+pistas já anotadas (correlacionar a onda do topo com a do Morison; mapear os binários `.HIS`/`.MOV`
+reais), investiguei as duas primeiro -- ambas esbarraram em complicação antes de virar trabalho
+concreto (`.MOV` acabou sendo só um eco de texto da config do corpo flutuante, não histórico;
+`.HIS` é binário de verdade mas a rotina achada que escreve nele, `bpwrde.f`, é do módulo de
+análise em domínio da FREQUÊNCIA, não do domínio do tempo -- não serve pra comparar tração por
+passo do caso Far transiente). Por decisão do usuário, troquei pra instrumentar o próprio
+`risersim` no passo que falha.
+
+- **Achado**: o sinal do passo que falha é mais grave do que documentado até aqui -- tração
+  efetiva em elementos perto do touchdown chega a **±1-10 MN** entre iterações (a tração real de
+  topo é ~218 kN), fisicamente absurdo. Com `EA=360 MN` e elementos de ~1m, poucos centímetros de
+  deslocamento relativo entre nós vizinhos já geram isso.
+- **Bug real achado e corrigido**: `node->friction_force` (`seabed.hpp`) é estado PERSISTENTE
+  atualizado incrementalmente (`f_state += k*du`) -- mas o laço de backtracking do solver dinâmico
+  (`dynamic_analysis.cpp`, a mesma técnica que já existe no estático) chama `assemble_at()` uma vez
+  por tentativa de `alpha`, e cada chamada muta `friction_force` em definitivo, INCLUSIVE tentativas
+  REJEITADAS -- sem tirar/restaurar um snapshot antes de cada tentativa (o estático já faz isso,
+  via `NodeStateSnapshot`/`restore()`; o dinâmico nunca teve o equivalente). O `du` de uma tentativa
+  rejeitada é relativo ao estado deixado pela tentativa ANTERIOR (também rejeitada), não ao estado
+  realmente aceito no início da iteração -- cada backtrack composto contamina ainda mais o estado de
+  atrito. Corrigido: snapshot de `friction_force` de todos os nós antes do laço de backtracking,
+  restaurado no início de cada tentativa. Sem regressão (405/405; casos já validados como Cross
+  seguem convergindo idênticos -- a correção é matematicamente um no-op quando a primeira tentativa
+  já é aceita, só muda comportamento quando o backtracking de fato tenta mais de uma vez).
+  **Resultado isolado** (config padrão, sem mais nada): passo 116 → **128** (t=5,8s → 6,4s).
+- **Dois mitigadores parciais adicionais, testados mas NÃO mantidos no código** (efeito real, mas
+  com trade-offs que ficam pra decisão do usuário antes de tornar permanentes):
+  1. Cap de translação do limitador de passo dinâmico (hoje hardcoded 0,5m, nunca configurável)
+     mais apertado (0,01m) + orçamento de iteração maior (20→200-400): sozinho leva de 116 pro
+     **145**: mas combinado com a correção do atrito acima, NÃO soma (144, quase igual) --
+     indício de que o cap apertado já limita o dano que o bug de atrito causava, então corrigir os
+     dois juntos é redundante, não aditivo.
+  2. Tolerância do detector de chattering período-2 (`res_hist`, hoje `1e-4` relativo, nunca
+     configurável) mais frouxa: combinada com a correção do atrito (cap padrão, mais iterações),
+     `5%` leva de 156 pro passo **210** (t=10,5s, quase o dobro do baseline original) -- mas o
+     colapso final vira catastrófico (resíduo ~1e92) em vez de um estouro comum; `1%` dá resultado
+     PIOR (175) e também colapsa catastroficamente (~1e100) -- não é monotônico, sugere que uma
+     tolerância frouxa demais pode aceitar uma média de dois estados genuinamente diferentes (não
+     um par período-2 de verdade), plantando uma semente ruim que floresce em outro passo adiante.
+- **Estado atual do código**: só a correção do bug de atrito (item acima) ficou -- é a única das
+  três mudanças que é uma correção sem ambiguidade, não um trade-off. Os dois mitigadores foram
+  revertidos (ficam documentados aqui, com os números, caso o usuário queira reativá-los como
+  parâmetros configuráveis via JSON, no mesmo espírito do `enable_step_limiting` do estático).
+- **Ainda em aberto**: mesmo só com a correção do atrito, o passo 128 falha com um padrão de
+  chattering quase-período-2 (resíduo oscilando ~30mil↔226mil em DOFs laterais da zona de
+  touchdown) apertado demais pro detector de 1e-4 pegar -- não é mais o "slack line" simples
+  documentado antes (tração levemente negativa), é uma dinâmica de contato mais rica que ainda não
+  tem causa raiz identificada. Próxima hipótese, se valer a pena: expandir o detector de
+  período-2 pra período-N genérico, ou investigar se o `du` de atrito devia também ser
+  recomputado com um `C_trial` fresco por tentativa (mesma classe de bug já corrigido nos passos
+  79/87, ver Atualização 6 acima) em vez de só ganhar snapshot/restore.
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio
 comprimento) — nem `aml_reader.py` nem `xml_h5_reader.py` correlacionam isso hoje, ambos assumem
 solo único global. Só vale a pena se um caso de teste real desse tipo entrar em uso.
 
-### 2c. Suporte a múltiplas linhas (corpo flutuante compartilhado) — ✅ IMPLEMENTADO (motor + import), engine-verified
+### 2c. Suporte a múltiplas linhas (corpo flutuante compartilhado) — ✅ IMPLEMENTADO, convergência real verificada
 
 Pedido do usuário (prioridade explícita), movido do backlog. Caso real: `Multilinhas.aml` -- 7
 linhas presas ao MESMO corpo flutuante (`%FLOATING.SHIP`, 6 GDL) via 7 pontos de conexão locais
