@@ -35,8 +35,9 @@ public:
     bool success_dynamic = true;
 
     /**
-     * @brief Loads the model from `json_path`, falling back to the synthetic parabolic catenary
-     * test geometry if the path is empty or the file can't be opened/parsed. Prints every
+     * @brief Loads the model from `json_path`. Input is mandatory: if the path is empty or the
+     * file can't be opened/parsed, `parsed_from_json` is left false (with an error already
+     * printed) -- callers must check it before calling run()/export_results(). Prints every
      * warning ModelBuilder accumulated while loading.
      */
     void load(const std::string& json_path);
@@ -48,8 +49,13 @@ public:
      */
     void run();
 
-    /** @brief Exports static + dynamic results to `<output_dir>/catenary_results.{json,h5}`. */
-    void export_results(const std::string& output_dir) const;
+    /**
+     * @brief Exports static + dynamic results to `<output_dir>/<filename>`.
+     * @param filename Defaults to the generic `catenary_results.h5`; the run manager passes a
+     * case-identifiable name instead (e.g. "Exemplo_01a_Far_results.h5" -- see
+     * ProjectStore.create_run()/run_worker.py), known already at run creation time.
+     */
+    void export_results(const std::string& output_dir, const std::string& filename = "catenary_results.h5") const;
 
     /** @brief True if every phase that ran converged. */
     bool ok() const { return success_static && success_dynamic; }

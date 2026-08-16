@@ -5,37 +5,16 @@ import { FEASimulation } from '../models/FEASimulation.js';
 
 /**
  * DataLoaderService.js
- * Unified I/O service able to load result files in HDF5 (.h5) and JSON (.json) format.
+ * Loads simulation results from the sole results format, HDF5 (.h5) -- see
+ * SimulationExporter::export_hdf5.
  */
 export class DataLoaderService {
     /**
-     * Format-autodetecting loader (HDF5 or JSON)
      * @param {string|File} fileOrUrl
-     * @param {string} [fallbackUrl] URL to fall back to (as JSON) when the HDF5 loader fails --
-     *   defaults to the historical hardcoded path (manual `run_from_aml.py` CLI workflow), but
-     *   callers loading run-scoped results (see app.js's `resolveResultsUrl()`) pass the matching
-     *   run-scoped JSON URL instead, so the fallback doesn't silently jump to a different run's
-     *   (or no) data.
      * @returns {Promise<FEASimulation>}
      */
-    static async load(fileOrUrl, fallbackUrl = '../catenary_results.json') {
-        let isHDF5 = false;
-        if (typeof fileOrUrl === 'string') {
-            isHDF5 = fileOrUrl.endsWith('.h5') || fileOrUrl.endsWith('.hdf5');
-        } else if (fileOrUrl && fileOrUrl.name) {
-            isHDF5 = fileOrUrl.name.endsWith('.h5') || fileOrUrl.name.endsWith('.hdf5');
-        }
-
-        if (isHDF5) {
-            try {
-                return await DataLoaderService.loadHDF5(fileOrUrl);
-            } catch (err) {
-                console.warn("HDF5 loader falhou, tentando fallback para JSON: ", err);
-                return await DataLoaderService.loadJSON(fallbackUrl);
-            }
-        } else {
-            return await DataLoaderService.loadJSON(fileOrUrl);
-        }
+    static async load(fileOrUrl) {
+        return await DataLoaderService.loadHDF5(fileOrUrl);
     }
 
     static parseHDF5Group(group) {
@@ -145,51 +124,5 @@ export class DataLoaderService {
         } finally {
             h5file.close();
         }
-    }
-
-    static parseRawStepsArray(rawSteps) {
-        if (!rawSteps || !Array.isArray(rawSteps)) return [];
-        return rawSteps.map((rawStep, s) => {
-            const nodesList = (rawStep.nodes || []).map(n => new Node3D(n.id, n.x, n.y, n.z));
-            const elementsList = (rawStep.elements || []).map(e => new BeamElement3D(
-                e.id,
-                e.tension_effective_kN !== undefined ? e.tension_effective_kN : (e.tensionEffectiveKn || 0),
-                e.bending_moment_kNm !== undefined ? e.bending_moment_kNm : (e.bendingMomentKnm || 0),
-                e.curvature || 0,
-                e.von_mises_MPa !== undefined ? e.von_mises_MPa : (e.vonMisesMpa || 0),
-                e.mbr_safety_factor !== undefined ? e.mbr_safety_factor : (e.mbrSafetyFactor || 1.0)
-            ));
-            const loadFactor = rawStep.load_factor !== undefined ? rawStep.load_factor : (s / Math.max(1, rawSteps.length - 1));
-            return new SimulationStep(s, loadFactor, nodesList, elementsList);
-        });
-    }
-
-    /**
-     * Loads and parses JSON (.json) files.
-     */
-    static async loadJSON(fileOrUrl) {
-        let jsonObject;
-        if (typeof fileOrUrl === 'string') {
-            const cacheBusted = fileOrUrl + (fileOrUrl.includes('?') ? '&' : '?') + 'v=' + Date.now();
-            const res = await fetch(cacheBusted, { cache: 'no-cache' });
-            if (!res.ok) throw new Error(`HTTP ${res.status} ao carregar ${fileOrUrl}`);
-            jsonObject = await res.json();
-        } else {
-            const text = await fileOrUrl.text();
-            jsonObject = JSON.parse(text);
-        }
-
-        const defaultSteps = DataLoaderService.parseRawStepsArray(jsonObject.steps || (Array.isArray(jsonObject) ? jsonObject : [jsonObject]));
-        const staticSteps = DataLoaderService.parseRawStepsArray(jsonObject.static_steps || []);
-        const dynamicSteps = DataLoaderService.parseRawStepsArray(jsonObject.dynamic_steps || []);
-
-        return new FEASimulation(
-            jsonObject.simulation_type || "riserSim JSON Results",
-            jsonObject.seabed_depth ?? -100.0,
-            jsonObject.water_surface_z ?? 0.0,
-            defaultSteps,
-            staticSteps,
-            dynamicSteps
-        );
     }
 }

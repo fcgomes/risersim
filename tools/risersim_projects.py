@@ -15,8 +15,7 @@ truth, exactly as designed in the spec:
             run.json
             input_simulation.json
             stdout.log
-            catenary_results.json   (once finished)
-            catenary_results.h5     (once finished)
+            <Project>_<Case>_results.h5   (name known from creation, file appears once finished)
 
 Important: this is a NEW root (`risersim/projects/`), separate from the single-slot
 `risersim_results/` used by the manual `run_from_aml.py` workflow -- we don't touch that one.
@@ -57,6 +56,18 @@ def _now_iso():
 def _slugify(name):
     slug = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
     return slug or "projeto"
+
+
+def _sanitize_filename_component(name):
+    """Turns a display name (project name, load case name) into a safe results-filename
+    component -- whitespace becomes `_`, anything else outside `[A-Za-z0-9_.-]` is dropped.
+    Deliberately different from `_slugify()` above (which lowercases and uses dashes, for URL
+    project IDs): this keeps the name recognizable as-is -- "Far" stays "Far", not "far" -- since
+    it ends up in a filename the user actually sees (see `results_filename` in
+    ProjectStore.create_run())."""
+    component = re.sub(r"\s+", "_", (name or "").strip())
+    component = re.sub(r"[^A-Za-z0-9_.-]", "", component)
+    return component
 
 
 def generate_project_id(name, root):
@@ -330,6 +341,13 @@ class ProjectStore:
         `solver_fingerprint` starts as `None` -- only `run_worker.py` has access to the compiled
         binary (separate containers), so this field is only filled in once the run is executed.
 
+        `results_filename` (`<Project>[_<Case>]_results.h5`, sanitized via
+        `_sanitize_filename_component()`) is computed and recorded HERE too, even though the
+        actual file doesn't exist until the solver finishes -- project name + case name are both
+        already known at creation time, so there's no reason to wait: `run_worker.py` reads this
+        field back and passes it to the solver binary as the exact filename to write, instead of
+        the solver writing a fixed placeholder name that gets renamed afterward.
+
         Raises `DuplicateRunError` (carrying the existing run) instead of creating a new one when
         a finished run with the same `model_hash` already exists and `force` isn't set -- moved
         here (from the caller) so the dedup check always hashes the bytes THIS run would actually
@@ -376,6 +394,11 @@ class ProjectStore:
         except json.JSONDecodeError:
             schema_version = None
 
+        parts = [_sanitize_filename_component(project.get("name"))]
+        if load_case_name:
+            parts.append(_sanitize_filename_component(load_case_name))
+        results_filename = "_".join(p for p in parts if p) + "_results.h5"
+
         run = {
             "id": run_id,
             "project_id": project_id,
@@ -390,6 +413,7 @@ class ProjectStore:
             "load_case_name": load_case_name,
             "web_version": WEB_VERSION,
             "solver_fingerprint": None,
+            "results_filename": results_filename,
         }
         self._write_run(project_id, run_id, run)
         return run

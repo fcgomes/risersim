@@ -330,10 +330,14 @@ class ProjectPage {
         const resultsLink = run.status === 'converged'
             ? `<a class="link-btn" href="posprocessor.html?project=${encodeURIComponent(this.projectId)}&run=${encodeURIComponent(run.id)}" data-switch-view="post" data-run="${escapeHtml(run.id)}">Ver resultados</a>`
             : '';
-        // Download the raw results JSON (catenary_results.json) -- only exists for a converged
-        // run (same gate as resultsLink above; a failed/aborted run never generates this file).
+        // Download the raw results HDF5 -- only exists for a converged run (same gate as
+        // resultsLink above; a failed/aborted run never generates this file). Uses the run's own
+        // case-identifiable filename (`run.results_filename`, e.g. "Exemplo_01a_Far_results.h5" --
+        // known from the moment the run was created, see ProjectStore.create_run()), not a
+        // generic name, so downloading several runs' results doesn't collide in the browser's
+        // Downloads folder.
         const resultsDownload = run.status === 'converged'
-            ? `<a class="link-btn" href="/api/projects/${encodeURIComponent(this.projectId)}/runs/${encodeURIComponent(run.id)}/results/catenary_results.json?download=1">⬇ Resultados</a>`
+            ? `<a class="link-btn" href="/api/projects/${encodeURIComponent(this.projectId)}/runs/${encodeURIComponent(run.id)}/results/${encodeURIComponent(run.results_filename)}?download=1">⬇ Resultados</a>`
             : '';
         const isActive = run.status === 'pending' || run.status === 'running';
         // Aborting only makes sense for a run still in progress; deleting is only allowed for a

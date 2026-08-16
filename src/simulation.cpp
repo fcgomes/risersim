@@ -11,12 +11,7 @@ void Simulation::load(const std::string& json_path) {
     model_builder.print_warnings();
 
     if (!parsed_from_json) {
-        std::cout << "Generating default parabolic test geometry..." << std::endl;
-        // Parâmetros do modelo sintético de fallback (usado só quando não há JSON válido) --
-        // valores históricos do risersim, sem equivalente real de ANFLEX (é uma conveniência de
-        // teste, não um caso real).
-        BeamMaterialProps props;
-        model_builder.build_synthetic_fallback(props, /*num_elements=*/40, /*total_length=*/180.0);
+        std::cerr << "Erro: não foi possível carregar o arquivo de entrada '" << json_path << "'." << std::endl;
     }
 }
 
@@ -126,15 +121,13 @@ void Simulation::run() {
     }
 }
 
-void Simulation::export_results(const std::string& output_dir) const {
+void Simulation::export_results(const std::string& output_dir, const std::string& filename) const {
     const RiserModel* model = model_builder.get_model();
-    std::string json_out = output_dir + "/catenary_results.json";
-    std::string h5_out = output_dir + "/catenary_results.h5";
-    SimulationExporter::export_json(static_analysis, *dynamic_analysis, model->environmental.seabed_depth_z, model->environmental.water_surface_z, json_out);
+    std::string h5_out = output_dir + "/" + filename;
     SimulationExporter::export_hdf5(static_analysis, *dynamic_analysis, model->environmental.seabed_depth_z, model->environmental.water_surface_z, h5_out);
 
     std::cout << "\nResults exported to:" << std::endl;
-    std::cout << "   " << json_out << std::endl;
+    std::cout << "   " << h5_out << std::endl;
 }
 
 } // namespace risersim

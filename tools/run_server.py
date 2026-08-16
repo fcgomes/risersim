@@ -43,13 +43,16 @@ DEFAULT_EXEMPLOS_ROOT = _SCRIPT_DIR.parent.parent / "exemplos"
 EXEMPLOS_ROOT = Path(os.environ.get("RISERSIM_EXEMPLOS_ROOT", str(DEFAULT_EXEMPLOS_ROOT)))
 
 RESULT_FILENAMES = {
-    "catenary_results.json": "application/json",
-    "catenary_results.h5": "application/octet-stream",
     # Snapshot of the input this specific run actually used (frozen by ProjectStore.create_run()
     # -- see risersim_projects.py) -- reuses the same generic per-run results route instead of a
     # dedicated endpoint, since it's just one more file inside the run's directory. Consumed by
     # preprocessor_app.js (?project=&run=), see Axis 3b.
     "input_simulation.json": "application/json",
+    # The results file itself (produced by SimulationExporter::export_hdf5) is NOT listed here --
+    # its name is case-identifiable (ProjectStore.create_run()'s `results_filename`, e.g.
+    # "Exemplo_01a_Far_results.h5", known from run creation and passed to the solver binary as the
+    # exact filename to write), so there's no fixed name to allowlist. api_run_results() below
+    # validates it by checking against run.json's own `results_filename` field instead.
 }
 
 app = Flask(__name__, static_folder=None)
@@ -448,15 +451,30 @@ def api_stream_run(project_id, run_id):
 def api_run_results(project_id, run_id, filename):
     """`?download=1` -- the usual route, but with `Content-Disposition: attachment` (the
     "Download results" button in the run table); without the parameter, keeps serving inline
-    (normal posprocessor/preprocessor usage via fetch())."""
-    if filename not in RESULT_FILENAMES:
-        abort(404)
+    (normal posprocessor/preprocessor usage via fetch()).
+
+    `filename` is either a static entry in RESULT_FILENAMES (today, just `input_simulation.json`)
+    or the run's actual results filename -- a case-identifiable name
+    (`ProjectStore.create_run()`'s `results_filename`, e.g. "Exemplo_01a_Far_results.h5") that the
+    frontend already knows (it fetched `run.json`'s `results_filename` field first -- see
+    app.js::resolveResultsUrl()/project.js) rather than guessing a fixed name. Checking it against
+    `run.json` (not just "does this file exist in the run dir") also means only the one file the
+    solver actually produced for THIS run is servable, not an arbitrary filename someone dropped
+    in the directory."""
+    if filename in RESULT_FILENAMES:
+        mimetype = RESULT_FILENAMES[filename]
+    else:
+        run = store.get_run(project_id, run_id)
+        if run is None or filename != run.get("results_filename"):
+            abort(404)
+        mimetype = "application/octet-stream"
+
     run_dir = store.run_dir(project_id, run_id)
     file_path = run_dir / filename
     if not file_path.is_file():
         abort(404)
     as_attachment = request.args.get('download') is not None
-    return send_from_directory(str(run_dir), filename, mimetype=RESULT_FILENAMES[filename], as_attachment=as_attachment)
+    return send_from_directory(str(run_dir), filename, mimetype=mimetype, as_attachment=as_attachment)
 
 
 # ---------------------------------------------------------------------------

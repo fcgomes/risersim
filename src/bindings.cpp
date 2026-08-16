@@ -443,16 +443,7 @@ Can be initialized from an already-solved StaticAnalysis:
     // SimulationExporter
     // =========================================================================
     py::class_<SimulationExporter>(m, "SimulationExporter",
-        "Exports simulation results to JSON and HDF5.")
-        .def_static("export_json",
-            [](const Analysis& sa, const Analysis& da, double seabed_depth, double water_surface_z, const std::string& fn) {
-                return SimulationExporter::export_json(sa, da, seabed_depth, water_surface_z, fn);
-            },
-            py::arg("static_analysis"), py::arg("dynamic_analysis"),
-            py::arg("seabed_depth") = -100.0, py::arg("water_surface_z") = 0.0,
-            py::arg("filename") = "catenary_results.json",
-            "Exports the full history (static + dynamic) to JSON, including the seabed/water-surface "
-            "plane Z levels used by the 3D viewer.")
+        "Exports simulation results to HDF5.")
         .def_static("export_hdf5",
             [](const Analysis& sa, const Analysis& da, double seabed_depth, double water_surface_z, const std::string& fn) {
                 return SimulationExporter::export_hdf5(sa, da, seabed_depth, water_surface_z, fn);

@@ -968,6 +968,144 @@ pra fora, histórico não muda (desacoplamento confirmado); selecionar nó → b
 confirmou visualmente a quebra de linha sem sobreposição e o título do gráfico totalmente visível
 abaixo das duas linhas da toolbar. Zero erros de console.
 
+#### Fase 4 — ✅ IMPLEMENTADA: aposentar JSON de resultados, completar/comprimir o H5, nomear pelo caso
+
+Usuário perguntou se os resultados iam todos pro H5 -- não iam (só posição+tração; momento/
+curvatura/von Mises/MBR só existiam no JSON, com o loader JS mascarando a ausência com `0.0`/`5.0`
+default). Ao discutir tamanho/performance (JSON de uma rodada pequena já media 5,38 MB nesta
+sessão, com os passos dinâmicos gravados EM DOBRO -- `dynamic_steps` + o array `steps` de
+compatibilidade), decisão do usuário: aposentar o JSON por completo, completar o schema do H5,
+ativar compressão gzip, e nomear o arquivo de resultados pelo projeto+caso em vez de um nome
+genérico.
+
+- **C++** (`simulation_exporter.cpp`): `write_hdf5_group()` passa a gravar os 5 campos por
+  elemento (antes só tração) e comprime todos os datasets (posições + elementos) com
+  `H5::DSetCreatPropList::setChunk()+setDeflate(6)` -- gzip é filtro padrão do HDF5, pesquisa
+  prévia confirmou que o h5wasm 0.4.10 (já usado no pós-processador) lê sem plugin nenhum.
+  `export_json()`/`write_snapshots_json_array()` removidos inteiros, junto com o binding pybind11
+  e a chamada em `Simulation::export_results()`.
+- **Nome do arquivo pelo caso**: o binário C++ não tem noção de "projeto"/"caso" (sem campo de
+  nome em `RiserModel`), então continua escrevendo `catenary_results.h5` fixo; `run_worker.py`
+  RENOMEIA pra `<Projeto>_<Caso>_results.h5` assim que o solver termina
+  (`ProjectStore.finalize_results_filename()`, novo, com `_sanitize_filename_component()` --
+  espaço vira `_`, preserva maiúsculas ao contrário do `_slugify()` já existente pro ID do
+  projeto), gravando o nome real em `run.json["results_filename"]`. Decisão do usuário: a
+  INTERFACE busca e usa esse nome real (não um nome estável traduzido por trás no servidor) --
+  `app.js::resolveResultsUrl()` virou assíncrona, busca `GET .../runs/<id>` primeiro pra ler
+  `results_filename` antes de montar a URL de resultados; `project.js`'s "⬇ Resultados" usa o
+  mesmo campo (já disponível, sem fetch extra). `run_server.py::api_run_results()` valida o nome
+  pedido contra `run.json["results_filename"]` em vez de um dicionário estático -- funciona como
+  controle de acesso también (só o arquivo real da rodada é servível). Fora de escopo, deliberado:
+  o workflow manual `run_from_aml.py` (sem `ProjectStore`) continua com nome fixo.
+- **JS**: `DataLoaderService.js` perde `loadJSON()`/`parseRawStepsArray()` e a lógica de
+  detecção de extensão + fallback pra JSON -- `load()` só chama `loadHDF5()`.
+- `WEB_VERSION`: `1.4.2` → `1.5.0`.
+
+**Bug real achado e corrigido durante a verificação, sem relação com o plano acima**: a URL do
+`<script>` do h5wasm em `posprocessor.html` sempre apontou pra
+`.../h5wasm@0.4.10/dist/h5wasm.js`, que **não existe** no pacote (404) -- o bundle real do browser
+fica em `dist/iife/h5wasm.js`. Como o caminho H5 nunca tinha sido de fato exercitado em produção
+(nada pedia `?format=h5` por padrão), esse 404 nunca foi notado -- o carregamento H5 estava
+quebrado desde sempre, silenciosamente. Só foi pego agora porque H5 virou o único formato e um
+harness headless real tentou carregar um resultado de verdade. Corrigido (path certo confirmado
+batendo `curl` contra o CDN antes de aplicar).
+
+**Verificação real** (2026-08-16, Docker + MSBuild): Catch2 361/361 sem regressão. CLI
+(`run_from_aml.py`, caso Cross): só `.h5` gerado, T_eff=217,29 kN batendo o valor já validado
+(217,3 kN); H5 inspecionado via h5py -- 6 datasets presentes (`node_positions` +
+5 campos de elemento), todos `compression=gzip`; tamanho **menor** que o H5 antigo mesmo com 4
+datasets a mais (533.440 → 404.640 bytes) graças à compressão. Pipeline web (rodada real do Far):
+`run.json` com `results_filename="Exemplo_01a_Far_results.h5"`; arquivo já nasce com esse nome
+dentro do diretório da rodada (confirmado via `docker compose exec`); API serve o nome real (200),
+rejeita o nome genérico antigo e o `.json` (404 nos dois), `Content-Disposition` do download traz
+o nome certo. Pós-processador carregado via harness headless real (não só screenshot) -- painel de
+detalhe mostra Momento/Curvatura/von Mises/MBR REAIS (antes viriam zerados sob o H5 incompleto),
+envoltória e histórico com seletor de grandeza funcionando sobre dado H5 de verdade. H5 desta
+rodada (920.787 bytes, 33 passos) vs. o JSON medido antes pra essa mesma rodada (5.382.923 bytes,
+com a duplicação) -- **~5,85x menor**, já confirma a direção esperada mesmo numa rodada pequena.
+Zero erros de console em todo o fluxo.
+
+#### Fase 5 — ✅ IMPLEMENTADA: escrever com o nome certo de saída, não renomear depois
+
+Usuário questionou o desenho da Fase 4 (renomear `catenary_results.h5` pra
+`<Projeto>_<Caso>_results.h5` DEPOIS que o solver termina) -- preferiu que o nome certo já nascesse
+junto com o arquivo. Projeto+caso já são conhecidos no momento em que a rodada é CRIADA (antes do
+solver sequer começar), então não havia motivo real pra esperar o fim da execução só pra renomear.
+
+- **C++**: `Simulation::export_results(output_dir, filename="catenary_results.h5")` ganhou um
+  segundo parâmetro (nome do arquivo, com default que preserva o comportamento do workflow manual
+  `run_from_aml.py`, que não passa esse argumento); `main()` (`main.cpp`) lê um 3º `argv` opcional
+  e repassa. `risersim_test_main <input.json> <output_dir> [nome_do_arquivo]`.
+- **`risersim_projects.py::create_run()`**: passa a calcular e gravar `results_filename` já na
+  criação da rodada (mesma fórmula `<Projeto>[_<Caso>]_results.h5` de antes), não mais depois que
+  o solver termina. Método `finalize_results_filename()` (Fase 4) removido inteiro -- não existe
+  mais rename, só escrita direta.
+- **`run_worker.py`**: lê `results_filename` do `run.json` (já preenchido desde a criação) e passa
+  como 3º argumento pro binário -- `cmd = [exe, input_json, run_dir, results_filename]`. O arquivo
+  nasce com o nome certo; nenhum `catenary_results.h5` intermediário chega a existir no disco.
+- **`app.js::resolveResultsUrl()`**: como `results_filename` agora está sempre presente (mesmo
+  numa rodada `pending`/`running`, já que o nome é conhecido antes do arquivo existir), a checagem
+  de "tá pronto pra carregar" passou a olhar `run.status` (`converged`/`failed`) em vez da
+  presença do campo.
+- `WEB_VERSION`: sem bump adicional (mesmo `1.5.0` da Fase 4 -- ainda não commitado).
+
+**Verificação real** (2026-08-16, Docker): rebuild C++ local confirmou o binário aceita o 3º
+argumento (com ele, escreve direto no nome pedido; sem ele, mantém `catenary_results.h5` -- CLI
+manual não quebrou). Catch2 361/361. Rodada real disparada via API (`Near`, `exemplo-01a`):
+`results_filename="Exemplo_01a_Near_results.h5"` já presente com `status:"pending"`, antes do
+solver começar; `stdout.log` do solver confirma que ele mesmo escreveu direto nesse caminho
+(`✅ ... exported to: .../Exemplo_01a_Near_results.h5`); diretório da rodada terminada só tem esse
+arquivo, nunca teve um `catenary_results.h5` intermediário. Pós-processador carregado via harness
+headless real sobre essa rodada -- 21 passos dinâmicos/12 estáticos, zero erros de console.
+
+#### Fase 6 — ✅ IMPLEMENTADA: entrada sempre obrigatória (sem fallback sintético), saída sempre ao
+lado da entrada
+
+Usuário perguntou se `main()` sempre recebe o arquivo de entrada -- na verdade não: sem `argv[1]`
+(ou com um JSON que falhasse ao carregar), `Simulation::load()` caía silenciosamente num modelo
+sintético de catenária parabólica (geometria de conveniência histórica do risersim, sem
+equivalente real de ANFLEX). Pediu pra remover essa opção -- entrada sempre via arquivo real -- e,
+já que o `<output_dir>` da Fase 5 sempre foi o mesmo diretório do arquivo de entrada em todo
+caminho de chamada existente (`run_worker.py`: `input_json = run_dir / "input_simulation.json"`;
+`run_from_aml.py`: `input_json_path = out_dir / "input_simulation.json"`), derivar esse diretório
+automaticamente a partir do próprio caminho de entrada em vez de recebê-lo como argumento
+separado.
+
+- **C++**: `Simulation::load()` perdeu o branch de fallback inteiro -- se o JSON não existir/não
+  parsear, `parsed_from_json` fica `false` (erro já impresso por `ModelBuilder::load_from_json()`)
+  e não há mais geometria sintética alternativa. `ModelBuilder::build_synthetic_fallback()` era
+  chamado só por esse branch (confirmado via grep -- zero outros call sites em produção ou
+  bindings Python) -- removido inteiro (declaração + definição), não só desligado.
+  `tests/test_static_analysis.cpp` tem sua própria cópia local da mesma geometria
+  (`build_synthetic_catenary_model()`, nunca chamou o método do ModelBuilder), então nenhum teste
+  foi afetado.
+- **`main.cpp`**: `argc < 2` agora é erro fatal (`Uso: ... <input.json> [nome_arquivo_resultado]`,
+  retorna 1) em vez de deixar `input_json_path` vazio pro fallback absorver. O antigo 2º argumento
+  (`output_dir`) foi removido -- `main()` deriva o diretório de saída direto do `parent_path()` do
+  caminho de entrada (`std::filesystem`); o antigo 3º argumento (nome do arquivo de resultado,
+  opcional) virou o 2º. Novo uso: `risersim_test_main <input.json> [nome_arquivo_resultado]`. Se
+  `sim.parsed_from_json` for `false` depois de `load()`, `main()` retorna 1 sem chamar
+  `run()`/`export_results()`.
+- **Python**: todo call site do binário precisou dropar o argumento de `output_dir` (posição
+  mudou -- passar a pasta ali agora seria interpretado como nome de arquivo de resultado):
+  `run_worker.py` (`cmd = [exe, input_json, results_filename]`, `run_dir` removido -- já era o
+  diretório do próprio `input_json`), `run_from_aml.py` (`cmd = [exe, input_json_path]`, já estava
+  dentro de `out_dir`), e `risersim_runner.py::run_simulation_subprocess()` (função exportada mas
+  sem call sites hoje -- corrigida por consistência, mesmo padrão).
+
+**Verificação real** (2026-08-16): rebuild local de `risersim_test_main` + `risersim_tests`,
+Catch2 361/361 sem regressão. CLI: sem argumentos → erro de uso, exit 1, sem geometria sintética;
+caminho inexistente → erro de carga, exit 1; caminho de entrada real (`Exemplo_01a`, estático,
+`T_eff≈217,3 kN` -- mesmo valor histórico já validado nesta sessão) com e sem nome de arquivo
+explícito, ambos gravando `.h5` no mesmo diretório do `input_simulation.json`, incluindo o caso de
+caminho relativo sem diretório (`has_parent_path() == false` → usa `.`). Docker rebuild +
+`docker compose up -d --build web worker`; rodada real disparada via API (`Near`, `exemplo-01a`,
+force=true por já existir uma rodada com o mesmo `model_hash`) convergiu normalmente --
+`Exemplo_01a_Near_results.h5` apareceu sozinho no diretório da rodada, junto de
+`input_simulation.json`, sem `output_dir` separado. `run_from_aml.py` (workflow manual, fora do
+Docker) testado contra o `.aml` real do Exemplo_01a com `--static-only`, reproduzindo
+`T_eff≈217,3 kN` e gerando `catenary_results.h5` ao lado do `input_simulation.json` gerado.
+
 ## Backlog de recursos faltantes do motor (não bloqueante — puxar sob demanda)
 
 Achados documentados em `mapa_aml_exemplos_e_web_interface.md`, nenhum implementado: múltiplas

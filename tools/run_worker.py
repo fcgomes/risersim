@@ -75,6 +75,13 @@ def process_one_run(store: ProjectStore, exe_path: Path, solver_fingerprint: str
     input_json = run_dir / "input_simulation.json"
     stdout_log = run_dir / "stdout.log"
     abort_flag = run_dir / "abort_requested"
+    # Computed at creation time (ProjectStore.create_run(), project+case name already known then)
+    # -- passed to the solver binary below so it writes the results file under this name directly,
+    # instead of a fixed placeholder that would need renaming afterward.
+    run = store.get_run(project_id, run_id)
+    results_filename = (run or {}).get("results_filename") or "catenary_results.h5"
+    # No output-dir argument -- the binary always writes next to the input file (main.cpp derives
+    # it from argv[1]'s own directory), and input_json is already inside run_dir.
 
     if abort_flag.is_file():
         # Aborted while still "pending" (the user cancelled before the worker even picked the run
@@ -88,7 +95,7 @@ def process_one_run(store: ProjectStore, exe_path: Path, solver_fingerprint: str
     print(f"[run_worker] iniciando rodada {project_id}/{run_id}", flush=True)
     store.update_run(project_id, run_id, status="running", started_at=_now_iso(), solver_fingerprint=solver_fingerprint)
 
-    cmd = [str(exe_path), str(input_json), str(run_dir)]
+    cmd = [str(exe_path), str(input_json), results_filename]
     try:
         log_f = open(stdout_log, "w", encoding="utf-8")
         proc = subprocess.Popen(cmd, cwd=str(run_dir), stdout=log_f, stderr=subprocess.STDOUT)
@@ -128,6 +135,8 @@ def process_one_run(store: ProjectStore, exe_path: Path, solver_fingerprint: str
 
     exit_code = proc.returncode
     status = "converged" if exit_code == 0 else "failed"
+    # `results_filename` was already recorded at creation time (see above) and the solver wrote
+    # directly under that name -- nothing to rename/re-record here.
     store.update_run(project_id, run_id, status=status, finished_at=_now_iso(), exit_code=exit_code)
     print(f"[run_worker] rodada {project_id}/{run_id} terminou: {status} (exit_code={exit_code})", flush=True)
 

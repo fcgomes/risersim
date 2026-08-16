@@ -1,12 +1,11 @@
 /**
  * @file simulation_exporter.cpp
- * @brief JSON and HDF5 serialization of Analysis::history for post-processing/visualization.
+ * @brief HDF5 serialization of Analysis::history for post-processing/visualization.
  */
 #include "risersim/simulation_exporter.hpp"
-#include <fstream>
 #include <iostream>
-#include <iomanip>
 #include <cmath>
+#include <algorithm>
 
 #ifdef RISERSIM_HAS_HDF5
 #include <H5Cpp.h>
@@ -14,75 +13,43 @@
 
 namespace risersim {
 
-/** @brief Replaces NaN/Inf with 0.0 so exported JSON/HDF5 stay valid for downstream consumers. */
+/** @brief Replaces NaN/Inf with 0.0 so exported HDF5 stays valid for downstream consumers. */
 static double safe_num(double val) {
     if (std::isnan(val) || std::isinf(val)) return 0.0;
     return val;
 }
 
-/** @brief Serializes a step history as a JSON array of `{step, load_factor, nodes[], elements[]}` objects. */
-static void write_snapshots_json_array(std::ofstream& ofs, const std::vector<StepSnapshot>& history) {
-    ofs << "[";
-    for (size_t s = 0; s < history.size(); ++s) {
-        const auto& snap = history[s];
-        ofs << "{\"step\":" << snap.step_index << ",\"load_factor\":" << safe_num(snap.load_factor) << ",\"nodes\":[";
-        for (size_t i = 0; i < snap.node_coords.size(); ++i) {
-            ofs << "{\"id\":" << (i + 1)
-                << ",\"x\":" << safe_num(snap.node_coords[i].x())
-                << ",\"y\":" << safe_num(snap.node_coords[i].y())
-                << ",\"z\":" << safe_num(snap.node_coords[i].z()) << "}";
-            if (i + 1 < snap.node_coords.size()) ofs << ",";
-        }
-        ofs << "],\"elements\":[";
-        for (size_t e = 0; e < snap.element_tensions_kN.size(); ++e) {
-            ofs << "{\"id\":" << (e + 1)
-                << ",\"tension_effective_kN\":" << safe_num(snap.element_tensions_kN[e])
-                << ",\"bending_moment_kNm\":" << safe_num(snap.element_bending_moments_kNm[e])
-                << ",\"curvature\":" << safe_num(snap.element_curvatures[e])
-                << ",\"von_mises_MPa\":" << safe_num(snap.element_von_mises_MPa[e])
-                << ",\"mbr_safety_factor\":" << safe_num(snap.element_mbr_safety_factors[e]) << "}";
-            if (e + 1 < snap.element_tensions_kN.size()) ofs << ",";
-        }
-        ofs << "]}";
-        if (s + 1 < history.size()) ofs << ",";
-    }
-    ofs << "]";
-}
-
-bool SimulationExporter::export_json(const Analysis& static_analysis, const Analysis& dynamic_analysis,
-                                      double seabed_depth, double water_surface_z, const std::string& filename) {
-    std::ofstream ofs(filename);
-    if (!ofs.is_open()) return false;
-
-    ofs << std::fixed << std::setprecision(5);
-    ofs << "{\n  \"seabed_depth\": " << safe_num(seabed_depth)
-        << ",\n  \"water_surface_z\": " << safe_num(water_surface_z);
-    ofs << ",\n  \"static_steps\": ";
-    write_snapshots_json_array(ofs, static_analysis.history);
-
-    ofs << ",\n  \"dynamic_steps\": ";
-    write_snapshots_json_array(ofs, dynamic_analysis.history);
-
-    // Backward Compatibility Fallback Array
-    ofs << ",\n  \"steps\": ";
-    if (!dynamic_analysis.history.empty()) {
-        write_snapshots_json_array(ofs, dynamic_analysis.history);
-    } else {
-        write_snapshots_json_array(ofs, static_analysis.history);
-    }
-
-    ofs << "\n}\n";
-    ofs.close();
-
-    std::cout << "✅ Full simulation history exported to JSON: " << filename
-              << " (Static: " << static_analysis.history.size() 
-              << " steps, Dynamic: " << dynamic_analysis.history.size() << " steps)" << std::endl;
-    return true;
-}
-
 #ifdef RISERSIM_HAS_HDF5
 
-/** @brief Writes a step history to an HDF5 group as `node_positions` (steps x nodes x 3) and `element_tensions_kN` (steps x elements) datasets. */
+/**
+ * @brief Writes one gzip-compressed, chunked dataset. Chunked along the step axis (dims[0]) --
+ * up to 50 steps per chunk, or the whole extent if smaller -- since every consumer today reads a
+ * dataset's full `.value` at once (see DataLoaderService.js::parseHDF5Group), so chunk size
+ * mainly affects compression ratio (each chunk compresses independently; ~50 steps' worth of a
+ * smooth engineering time series compresses well) rather than partial-read performance.
+ */
+static void write_compressed_dataset(H5::Group& group, const std::string& name, const std::vector<double>& buf,
+                                      int rank, const hsize_t* dims) {
+    H5::DataSpace space(rank, dims);
+    std::vector<hsize_t> chunk_dims(dims, dims + rank);
+    chunk_dims[0] = std::min<hsize_t>(dims[0], 50);
+
+    H5::DSetCreatPropList plist;
+    plist.setChunk(rank, chunk_dims.data());
+    plist.setDeflate(6);
+
+    H5::DataSet dataset = group.createDataSet(name, H5::PredType::NATIVE_DOUBLE, space, plist);
+    dataset.write(buf.data(), H5::PredType::NATIVE_DOUBLE);
+}
+
+/**
+ * @brief Writes a step history to an HDF5 group: `node_positions` (steps x nodes x 3) and, per
+ * element (steps x elements), `element_tensions_kN`/`element_bending_moments_kNm`/
+ * `element_curvatures`/`element_von_mises_MPa`/`element_mbr_safety_factors` -- full parity with
+ * what the JSON exporter used to write (see git history), so nothing the post-processor reads
+ * (envelope/detail-panel/time-history) silently defaults to 0.0/5.0 anymore. All datasets
+ * chunked+gzip-compressed (see write_compressed_dataset).
+ */
 static void write_hdf5_group(H5::H5File& file, const std::string& group_name, const std::vector<StepSnapshot>& history) {
     if (history.empty()) return;
 
@@ -93,9 +60,7 @@ static void write_hdf5_group(H5::H5File& file, const std::string& group_name, co
 
     // Node Positions Dataset (num_steps x num_nodes x 3)
     hsize_t dims_pos[3] = { num_steps, num_nodes, 3 };
-    H5::DataSpace space_pos(3, dims_pos);
     std::vector<double> buf_pos(num_steps * num_nodes * 3);
-
     for (size_t s = 0; s < num_steps; ++s) {
         for (size_t n = 0; n < num_nodes; ++n) {
             size_t idx = (s * num_nodes + n) * 3;
@@ -104,23 +69,31 @@ static void write_hdf5_group(H5::H5File& file, const std::string& group_name, co
             buf_pos[idx + 2] = safe_num(history[s].node_coords[n].z());
         }
     }
+    write_compressed_dataset(group, "node_positions", buf_pos, 3, dims_pos);
 
-    H5::DataSet dataset_pos = group.createDataSet("node_positions", H5::PredType::NATIVE_DOUBLE, space_pos);
-    dataset_pos.write(buf_pos.data(), H5::PredType::NATIVE_DOUBLE);
-
-    // Tension Dataset (num_steps x num_elements)
+    // Per-element datasets (num_steps x num_elements), one buffer/dataset per field.
     hsize_t dims_elem[2] = { num_steps, num_elements };
-    H5::DataSpace space_elem(2, dims_elem);
-    std::vector<double> buf_tens(num_steps * num_elements);
-
-    for (size_t s = 0; s < num_steps; ++s) {
-        for (size_t e = 0; e < num_elements; ++e) {
-            buf_tens[s * num_elements + e] = safe_num(history[s].element_tensions_kN[e]);
+    struct ElementField {
+        const char* name;
+        std::vector<double> StepSnapshot::* member;
+    };
+    static const ElementField fields[] = {
+        { "element_tensions_kN", &StepSnapshot::element_tensions_kN },
+        { "element_bending_moments_kNm", &StepSnapshot::element_bending_moments_kNm },
+        { "element_curvatures", &StepSnapshot::element_curvatures },
+        { "element_von_mises_MPa", &StepSnapshot::element_von_mises_MPa },
+        { "element_mbr_safety_factors", &StepSnapshot::element_mbr_safety_factors },
+    };
+    for (const auto& field : fields) {
+        std::vector<double> buf(num_steps * num_elements);
+        for (size_t s = 0; s < num_steps; ++s) {
+            const std::vector<double>& src = history[s].*(field.member);
+            for (size_t e = 0; e < num_elements; ++e) {
+                buf[s * num_elements + e] = safe_num(src[e]);
+            }
         }
+        write_compressed_dataset(group, field.name, buf, 2, dims_elem);
     }
-
-    H5::DataSet dataset_tens = group.createDataSet("element_tensions_kN", H5::PredType::NATIVE_DOUBLE, space_elem);
-    dataset_tens.write(buf_tens.data(), H5::PredType::NATIVE_DOUBLE);
 }
 
 bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Analysis& dynamic_analysis,
@@ -137,7 +110,7 @@ bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Anal
         write_hdf5_group(file, "/dynamic_analysis", dynamic_analysis.history);
 
         std::cout << "✅ Binary HDF5 simulation history successfully exported to: " << filename
-                  << " (Static: " << static_analysis.history.size() 
+                  << " (Static: " << static_analysis.history.size()
                   << " steps, Dynamic: " << dynamic_analysis.history.size() << " steps)" << std::endl;
         return true;
     } catch (const H5::Exception& e) {

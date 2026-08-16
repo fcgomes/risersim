@@ -433,46 +433,8 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         return true;
 
     } catch (const std::exception& e) {
-        std::cerr << "Error parsing structured JSON: " << e.what() << ". Falling back to the default synthetic model." << std::endl;
+        std::cerr << "Error parsing structured JSON: " << e.what() << std::endl;
         return false;
-    }
-}
-
-void ModelBuilder::build_synthetic_fallback(const BeamMaterialProps& props, int num_elements, double total_length) {
-    const int num_nodes = num_elements + 1;
-    double h_water = std::abs(model.environmental.seabed_depth_z); // 100.0 m (EnvironmentalConfig default)
-    double L_total = total_length;            // 180.0 m
-
-    double S_susp = std::min(L_total * 0.70, 310.0);
-    double X_tdp = std::sqrt(std::max(1.0, S_susp * S_susp - h_water * h_water));
-
-    for (int i = 0; i < num_nodes; ++i) {
-        double s = (static_cast<double>(i) / static_cast<double>(num_elements)) * L_total;
-        double x = 0.0;
-        double z = 0.0;
-
-        if (s <= S_susp) {
-            double ratio = s / S_susp;
-            x = ratio * X_tdp;
-            z = -h_water * (2.0 * ratio - ratio * ratio);
-        } else {
-            double s_seabed = s - S_susp;
-            x = X_tdp + s_seabed;
-            z = -h_water;
-        }
-        model.add_node(i + 1, x, 0.0, z);
-    }
-
-    model.nodes.front()->eq_numbers = std::vector<int>(6, -1);
-    model.nodes.back()->eq_numbers = std::vector<int>(6, -1);
-
-    for (size_t i = 1; i < model.nodes.size() - 1; ++i) {
-        model.nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
-    }
-
-    const double L_unstretched = total_length / static_cast<double>(num_elements);
-    for (int i = 0; i < num_elements; ++i) {
-        model.add_element(i + 1, model.nodes[i].get(), model.nodes[i + 1].get(), props, L_unstretched);
     }
 }
 

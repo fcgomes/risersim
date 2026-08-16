@@ -344,17 +344,20 @@ def build_config_from_aml(aml_path, line_index=0, num_elements_override=None, lo
 
 def run_simulation_subprocess(exe_path, input_json_path, out_dir, stdout_file=None):
     """Invokes the `risersim_test_main` binary -- the same `subprocess` pattern `run_from_aml.py`
-    already used (`[exe, input_json, out_dir]`, cwd=out_dir), with the optional addition of
-    redirecting stdout/stderr to a file (used by `run_worker.py`: `stdout.log` is the source of
-    truth for a run's live progress, since the C++ binary already prints per iteration via
-    `std::cout`/`std::endl`, with no change needed in the C++).
+    already used (`[exe, input_json]`, cwd=out_dir), with the optional addition of redirecting
+    stdout/stderr to a file (used by `run_worker.py`: `stdout.log` is the source of truth for a
+    run's live progress, since the C++ binary already prints per iteration via `std::cout`/
+    `std::endl`, with no change needed in the C++).
+
+    No output-dir CLI argument -- the binary always writes results next to `input_json_path`'s own
+    directory (main.cpp derives it from argv[1]), which must already be `out_dir`.
 
     `stdout_file`: path (str/Path) to redirect combined stdout+stderr to, or `None` to inherit
     the calling Python process's stdout/stderr (the original CLI's behavior).
 
     Returns the process's exit code.
     """
-    cmd = [str(exe_path), str(input_json_path), str(out_dir)]
+    cmd = [str(exe_path), str(input_json_path)]
     if stdout_file is not None:
         with open(stdout_file, 'w', encoding='utf-8') as log_f:
             result = subprocess.run(cmd, cwd=str(out_dir), stdout=log_f, stderr=subprocess.STDOUT)

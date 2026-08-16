@@ -1,9 +1,9 @@
 /**
  * @file model_builder.hpp
- * @brief Builds a RiserModel from a structured input JSON (or a synthetic fallback), mirroring
- * real ANFLEX's cModelBuilderDAT (owns a cDomain, has load_* methods that populate it from the
- * AML/XML reader) -- risersim's RiserModel/cDomain equivalent stays a pure data aggregate, with
- * all parsing/construction concerns living here instead.
+ * @brief Builds a RiserModel from a structured input JSON, mirroring real ANFLEX's
+ * cModelBuilderDAT (owns a cDomain, has load_* methods that populate it from the AML/XML reader)
+ * -- risersim's RiserModel/cDomain equivalent stays a pure data aggregate, with all parsing/
+ * construction concerns living here instead.
  */
 #ifndef RISERSIM_MODEL_BUILDER_HPP
 #define RISERSIM_MODEL_BUILDER_HPP
@@ -60,16 +60,9 @@ public:
     /**
      * @brief Loads nodes/elements/boundary-conditions/warm-start/environmental/analysis_options
      * from a structured input JSON into the owned model.
-     * @return false (with an error already printed) if the file couldn't be opened or parsed --
-     * callers should fall back to build_synthetic_fallback() in that case.
+     * @return false (with an error already printed) if the file couldn't be opened or parsed.
      */
     bool load_from_json(const std::string& input_json_path);
-
-    /**
-     * @brief Builds risersim's original synthetic parabolic catenary test geometry, used only
-     * when no valid input JSON was provided/parsed.
-     */
-    void build_synthetic_fallback(const BeamMaterialProps& props, int num_elements, double total_length);
 
     /** @brief Prints every accumulated warning to the console, prefixed by its level. */
     void print_warnings() const;

@@ -52,37 +52,55 @@ class RiserSimApp {
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
         initPanelResizer(() => this.renderer3D && this.renderer3D.onWindowResize());
-        const { url, fallbackUrl } = this.resolveResultsUrl();
-        await this.loadSimulationData(url, fallbackUrl);
+        try {
+            const { url } = await this.resolveResultsUrl();
+            await this.loadSimulationData(url);
+        } catch (err) {
+            console.error("Erro ao resolver a URL de resultados: ", err);
+        }
     }
 
     /**
      * Resolves which results file to load on startup, in priority order:
      *   1. `?file=<url>` -- explicit override, any URL/relative path.
-     *   2. `?project=<id>&run=<run-id>[&format=h5]` -- run-scoped results served by the run
-     *      manager's API (run_server.py), e.g. after triggering a run from project.html.
-     *   3. `../catenary_results.json` -- the historical hardcoded path, still populated by the
-     *      manual `run_from_aml.py` CLI workflow (it copies results next to tools/ on completion)
-     *      so opening posprocessor.html by hand keeps working unchanged.
-     * @returns {{url: string, fallbackUrl: string}}
+     *   2. `?project=<id>&run=<run-id>` -- run-scoped results served by the run manager's API
+     *      (run_server.py), e.g. after triggering a run from project.html. The results filename
+     *      is case-identifiable (`ProjectStore.create_run()`'s `results_filename`, e.g.
+     *      "Exemplo_01a_Far_results.h5") and known from the moment the run is CREATED (the solver
+     *      binary is told to write directly under that name -- see run_worker.py/main.cpp), so
+     *      it's always present in run.json even before the run finishes -- readiness is
+     *      determined by `status` instead (only `converged`/`failed` actually have a file on
+     *      disk to fetch). This fetches the run's metadata first to check that, then builds the
+     *      results URL from the real filename.
+     *   3. `../catenary_results.h5` -- the historical hardcoded path, still populated by the
+     *      manual `run_from_aml.py` CLI workflow (it copies results next to tools/ on completion,
+     *      always under that fixed name -- that workflow has no "project"/"case" concept to name
+     *      it after) so opening posprocessor.html by hand keeps working unchanged.
+     * @returns {Promise<{url: string}>}
      */
-    resolveResultsUrl() {
+    async resolveResultsUrl() {
         const params = new URLSearchParams(window.location.search);
 
         const explicitFile = params.get('file');
         if (explicitFile) {
-            return { url: explicitFile, fallbackUrl: '../catenary_results.json' };
+            return { url: explicitFile };
         }
 
         const project = params.get('project');
         const run = params.get('run');
         if (project && run) {
+            const runInfoRes = await fetch(`/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}`);
+            if (!runInfoRes.ok) throw new Error(`Não foi possível obter informações da rodada (HTTP ${runInfoRes.status})`);
+            const runInfo = await runInfoRes.json();
+            if (runInfo.status !== 'converged' && runInfo.status !== 'failed') {
+                throw new Error(`Esta rodada ainda não terminou (status: ${runInfo.status}) -- sem resultado pra carregar ainda.`);
+            }
+            if (!runInfo.results_filename) throw new Error('Esta rodada não tem um nome de arquivo de resultados registrado.');
             const base = `/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(run)}/results/`;
-            const format = params.get('format') === 'h5' ? 'catenary_results.h5' : 'catenary_results.json';
-            return { url: base + format, fallbackUrl: base + 'catenary_results.json' };
+            return { url: base + encodeURIComponent(runInfo.results_filename) };
         }
 
-        return { url: '../catenary_results.json', fallbackUrl: '../catenary_results.json' };
+        return { url: '../catenary_results.h5' };
     }
 
     /** Switches between the side data-panel tabs (Visualization/Table). */
@@ -252,9 +270,9 @@ class RiserSimApp {
         this.render();
     }
 
-    async loadSimulationData(fileOrUrl, fallbackUrl) {
+    async loadSimulationData(fileOrUrl) {
         try {
-            this.simulation = await DataLoaderService.load(fileOrUrl, fallbackUrl);
+            this.simulation = await DataLoaderService.load(fileOrUrl);
 
             const modeSelect = document.getElementById('analysis-mode-select');
             if (modeSelect) {

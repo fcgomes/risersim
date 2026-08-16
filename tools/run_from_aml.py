@@ -177,7 +177,9 @@ def main():
         sys.exit(1)
 
     print(f"\n🚀 Executando riserSim engine: {exe}")
-    cmd = [str(exe), str(input_json_path), str(out_dir)]
+    # No output-dir argument -- the binary always writes next to the input file, which is already
+    # inside out_dir (written above).
+    cmd = [str(exe), str(input_json_path)]
 
     try:
         result = subprocess.run(cmd, cwd=str(out_dir))
@@ -193,10 +195,9 @@ def main():
         viewer_path = _SCRIPT_DIR / 'web' / 'posprocessor.html'
         if viewer_path.exists():
             root_dir = _SCRIPT_DIR.parent
-            for res_file in ['catenary_results.json', 'catenary_results.h5']:
-                src = out_dir / res_file
-                if src.exists():
-                    shutil.copy2(src, root_dir / res_file)
+            src = out_dir / 'catenary_results.h5'
+            if src.exists():
+                shutil.copy2(src, root_dir / 'catenary_results.h5')
 
             print(f"\n🌐 Abrindo visualizador Web 3D: {viewer_path}")
             webbrowser.open(viewer_path.as_uri())

@@ -7,10 +7,9 @@
  * two-phase assembly/static solve, etc.) can be validated against "this didn't change by accident".
  *
  * Note: the synthetic geometry below locks the rotations of all intermediate nodes
- * (`eq_numbers = {0,1,2,-1,-1,-1}`, matching `ModelBuilder::build_synthetic_fallback()`), so this
- * case doesn't exercise
- * bending/rotation of the corotational element -- it's a regression test of the pipeline
- * (assembly/load stepping/convergence), not a validation of the beam formulation itself.
+ * (`eq_numbers = {0,1,2,-1,-1,-1}`), so this case doesn't exercise bending/rotation of the
+ * corotational element -- it's a regression test of the pipeline (assembly/load stepping/
+ * convergence), not a validation of the beam formulation itself.
  */
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -25,9 +24,9 @@
 namespace {
 
 /**
- * @brief Reproduces exactly the fallback parabolic geometry from
- * `risersim::ModelBuilder::build_synthetic_fallback()` (risersim/src/model_builder.cpp, used when
- * no input JSON is provided), to keep the two in sync.
+ * @brief risersim's original synthetic parabolic catenary test geometry (no longer reachable
+ * from the production CLI, which now requires a real input JSON -- see Simulation::load()), kept
+ * here as a self-contained known-geometry fixture for this regression test.
  */
 risersim::RiserModel* build_synthetic_catenary_model() {
     constexpr int num_elements = 40;
