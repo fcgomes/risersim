@@ -276,6 +276,12 @@ VesselMotion::VesselMotion(const VesselMotionConfig& config, double wave_heading
     int max_dof = static_cast<int>(config.maximization_dof);
     omega_eq_ = (amp_max[max_dof] > 0.0) ? std::sqrt(std::max(0.0, acel_max[max_dof] / amp_max[max_dof])) : 0.0;
 
+    // 2 full periods of the equivalent harmonic -- see ramp_time_s()'s doc comment for how this
+    // was confirmed against real data (and what it replaced).
+    if (omega_eq_ > 0.0) {
+        ramp_time_s_ = 2.0 * (2.0 * std::numbers::pi / omega_eq_);
+    }
+
     for (int dof = 0; dof < 6; ++dof) {
         amplitude_[dof] = amp_max[dof];
         phase_rad_[dof] = curve_at(config.frequencies_rad_s, re[dof], im[dof], omega_eq_).second;

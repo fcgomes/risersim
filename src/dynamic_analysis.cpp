@@ -74,7 +74,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             lr.motion = &vessel_motions.back();
             std::cout << "  Vessel motion (RAO+JONSWAP equivalent harmonic), nó " << att.top_node->id
                       << ": freq=" << lr.motion->frequency_rad_s()
-                      << " rad/s (T=" << (2.0 * std::numbers::pi / lr.motion->frequency_rad_s()) << " s)" << std::endl;
+                      << " rad/s (T=" << (2.0 * std::numbers::pi / lr.motion->frequency_rad_s()) << " s)"
+                      << " ramp=" << lr.motion->ramp_time_s() << " s" << std::endl;
             std::cout << "    surge=" << lr.motion->amplitude(VesselDof::Surge) << " m"
                       << " sway=" << lr.motion->amplitude(VesselDof::Sway) << " m"
                       << " heave=" << lr.motion->amplitude(VesselDof::Heave) << " m"

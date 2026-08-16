@@ -127,7 +127,18 @@ public:
      */
     void get_motion(double time, Eigen::Vector3d& disp, Eigen::Vector3d& rot) const;
 
-    /** @brief Ramp duration (s) applied by get_motion(). */
+    /**
+     * @brief Ramp duration (s) applied by get_motion() -- 2 full periods of the equivalent
+     * harmonic (`2 * 2*pi/omega_eq_`), computed by the constructor. Confirmed against a real
+     * `.SAI`'s "JOINT MOVEMENTS" table (`RAMP` column, exactly `2 * PERIOD` in all 4 real load
+     * cases checked -- Cross/Near/Transverse/Far, 4 different periods). An earlier version of
+     * this used a fixed 5.0s constant, and a later attempt tried the analysis' own
+     * `0.10 * duration_s` (ANFLEX's default for a WAVE's ramp when a load has no explicit
+     * override, `model_builder_dat.cpp:461-480`) -- ruled out by the real 70s Far run's total
+     * time not matching its 30.7s ramp (30.7/70 = 0.44, not 0.10); period-based is what the real
+     * data actually shows, and unlike duration-based it doesn't depend on an unrelated analysis
+     * setting (a model with a longer/shorter simulated duration shouldn't ramp faster/slower).
+     */
     double ramp_time_s() const { return ramp_time_s_; }
 
     /// JONSWAP spectral density S(omega) -- see `jonswap_spectrum.cpp`. Public (not just an
@@ -146,7 +157,7 @@ private:
     std::array<double, 6> amplitude_{};
     std::array<double, 6> phase_rad_{};
     double refsys_angle_rad_ = 0.0;
-    double ramp_time_s_ = 5.0;
+    double ramp_time_s_ = 0.0; ///< Computed by the constructor -- see ramp_time_s()'s doc comment.
 };
 
 } // namespace risersim

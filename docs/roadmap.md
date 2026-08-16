@@ -762,6 +762,53 @@ validado pra K/C) -- resultado nulo aqui, mas pode importar em outro caso com de
 extrema por tentativa. O comentário desatualizado foi corrigido pra refletir que K/C/M são todos
 recalculados por tentativa agora.
 
+**Atualização 12** (2026-08-16, sexta tentativa -- achado grande, causa raiz provável do gap
+inteiro): usuário pediu pra verificar os dados/cálculo do movimento em vez de continuar mexendo no
+solver. Reli `vessel_motion.cpp::get_motion()`: a rampa que traz o movimento de zero até a
+amplitude plena usa `ramp_time_s_ = 5.0` FIXO, nunca ligado a nenhum dado real.
+
+- **Achado real**: a tabela real "JOINT MOVEMENTS - WAVE AND MOVEMENT CORRELATED" de um `.SAI`
+  real (`Exemplo_01c_A1_FarDI.SAI:811-818`) imprime, por GDL, `AMPLITUDE`, `PERIOD`, `PHASE` E
+  **`RAMP`** -- uma coluna nunca conferida até agora. Pro Far: `PERIOD=15,348s` (nosso cálculo:
+  15,24s, ~0,7% de diferença -- confirma que a frequência equivalente em si já estava correta),
+  `RAMP=30,696s`. Conferido nos outros 3 casos reais também (Cross: período 11,022/rampa 22,044;
+  Near: 10,717/21,434; Transverse: 10,325/20,650) -- em TODOS, **rampa = 2 × período**, exato.
+- **Tentativa 1, descartada**: ler o C++ real (`model_builder_dat.cpp:461-480/5223-5225`,
+  `cWave::get_wave_ramp()`) mostrou que o default real É `0,10 × duração total da análise
+  dinâmica` -- implementei isso (`ramp_time_s = 0.10 * duration_s`, threaded desde
+  `dynamic_analysis.cpp` até o construtor de `VesselMotion`). **Quebrou o caso Cross** (que sempre
+  convergiu limpo): `%ANALYSIS_CASE.TIME_DOMAIN.TOTAL_TIME` do `Exemplo_01a.aml` é só 1,0s (valor
+  de teste/exemplo), então a rampa virou 0,1s -- amplitude plena em 2 passos de tempo, choque
+  imediato na estrutura. Revertido antes de qualquer commit.
+- **Investigação da duração real por trás do `.SAI`**: achei `TOTAL TIME = 70.0000` impresso no
+  próprio `FarDI.SAI` -- mas veio de `Exemplo_01c.aml` (não `Exemplo_01a.aml`, que só tem o valor
+  de 1,0s de brinquedo -- são dois arquivos de exemplo diferentes sobre o mesmo modelo físico).
+  Com duração real = 70s, a fórmula "10% da duração" daria rampa=7,0s -- não bate com os 30,696s
+  reais (30,7/70=0,44, não 0,10). **A fórmula "10% da duração" está confirmada no código real, mas
+  não é o que gerou ESSES dados específicos** -- não achei o campo/cálculo exato de onde
+  `get_wave_ramp()` tirou 30,696s pra esse caso (não é um campo exportado no `.aml`, que não tem
+  nenhuma ocorrência de "RAMP" em lugar nenhum). O padrão "2×período" continua batendo exato nos 4
+  casos reais, então é essa relação (baseada no período do próprio movimento equivalente, não na
+  duração total escolhida pra rodar a simulação) que foi implementada.
+- **Implementado**: `ramp_time_s_` agora é calculado DENTRO do construtor de `VesselMotion`
+  (`2 * (2*pi/omega_eq_)`), depois que a frequência equivalente é conhecida -- não depende mais de
+  nenhum parâmetro externo (`dynamic_analysis.cpp` não passa mais rampa nenhuma, só o construtor
+  resolve sozinho). Suíte sem regressão (405/405). Cross convergeu limpo com rampa calculada
+  =22,17s (bate com o real 22,044s). Near e Transverse também sem regressão.
+- **Resultado no caso Far**: o passo de falha foi de **t=5,8s pro passo 442, t=22,1s** -- quase
+  4x mais simulação, com um resíduo final pequeno (776 N, não mais explosões de milhões) --
+  claramente o maior salto de todo esse eixo de investigação, e resultado IDÊNTICO rodando com
+  duração total de 30s ou 70s (confirma que a rampa agora é intrínseca ao movimento, não à duração
+  escolhida pra rodar). Testado orçamento maior de iterações (20→100): melhora um pouco mais
+  (passo 453, t=22,65s) mas não fecha -- resíduo na explosão final ficou maior (100687 N), sinal
+  de que o que resta pode ser um problema genuinamente diferente do que já foi caçado até aqui,
+  não mais o mesmo padrão de chattering pequeno.
+- **Em aberto**: ainda não converge o run completo, mas a causa provável do gap inteiro (rampa
+  fixa de 5s completamente desconectada da física real, aplicando o movimento pleno rápido demais)
+  parece ter sido a principal — o restante que falta agora, no novo ponto de falha (t≈22s, perto
+  de onde a excursão do topo atinge seu primeiro extremo, dado T≈15,3s), precisa de investigação
+  própria, sem a distorção anterior.
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio
