@@ -19,8 +19,12 @@ export class ProfileChartsController {
      * Updates all 3 profile charts for the active step.
      * @param {SimulationStep} step
      * @param {'dark'|'light'} currentTheme
+     * @param {{tension: {min:number[],max:number[]}, moment: {min:number[],max:number[]}, vonmises: {min:number[],max:number[]}}|null} [envelope]
+     *   Min/max-over-time per element ordinal (see FEASimulation::getElementEnvelope), aligned
+     *   index-for-index with this step's own elements -- when present, overlaid as dashed
+     *   min/max traces on top of the current step's profile.
      */
-    updateCharts(step, currentTheme = 'dark') {
+    updateCharts(step, currentTheme = 'dark', envelope = null) {
         if (typeof Plotly === 'undefined' || !step || !step.elements || step.elements.length === 0) return;
 
         // 1. Compute the cumulative arc length s along the line
@@ -61,15 +65,47 @@ export class ProfileChartsController {
         const textColor = currentTheme === 'dark' ? '#f1f0f6' : '#17151f';
         const gridColor = currentTheme === 'dark' ? '#2a2a38' : '#e4e1f1';
 
+        // Envelope overlay traces (dashed min/max) -- optional, built once per field when
+        // `envelope` is provided. Fixed colors, deliberately NOT derived from the main series'
+        // own color (as an earlier version did): the envelope's min (or max) can legitimately
+        // equal the currently-displayed step's own value (e.g. in dynamic mode, right after
+        // switching modes the visible step is often exactly where the historical minimum occurs)
+        // -- same-color traces drawn on top of each other in that case become visually
+        // indistinguishable from the main curve, making the overlay look "missing" even though the
+        // data is correct. Magenta/cyan are picked to stay distinct from every main-series color
+        // used across the 3 charts (tension blue, moment orange, curvature green, von Mises red).
+        const ENVELOPE_MAX_COLOR = '#ec4899';
+        const ENVELOPE_MIN_COLOR = '#06b6d4';
+        const envelopeTraces = (fieldEnvelope, label) => {
+            if (!fieldEnvelope) return [];
+            return [
+                {
+                    x: elementS, y: fieldEnvelope.max, type: 'scatter', mode: 'lines',
+                    name: `${label} máx. (envoltória)`, line: { color: ENVELOPE_MAX_COLOR, width: 1.5, dash: 'dot' }
+                },
+                {
+                    x: elementS, y: fieldEnvelope.min, type: 'scatter', mode: 'lines',
+                    name: `${label} mín. (envoltória)`, line: { color: ENVELOPE_MIN_COLOR, width: 1.5, dash: 'dot' }
+                }
+            ];
+        };
+
+        // Title and legend both pinned to "container" coordinates (the whole chart div, not just
+        // the plot area) so their stacking order is predictable -- title nearest the top, legend
+        // just below it -- instead of Plotly's default "paper" (plot-area-relative) coordinates,
+        // where a legend y > 1 could render ABOVE the title depending on the title's own auto
+        // position. margin.t reserves room for both stacked above the plot area.
         const layoutBase = {
             autosize: true,
-            margin: { l: 70, r: 70, t: 55, b: 55 },
+            margin: { l: 70, r: 70, t: 95, b: 55 },
             paper_bgcolor: bgColor,
             plot_bgcolor: bgColor,
             font: { color: textColor, family: 'Segoe UI, sans-serif', size: 13 },
             xaxis: { title: 'Comprimento da Linha s (m)', gridcolor: gridColor, zerolinecolor: gridColor, font: { size: 13 } },
-            yaxis: { gridcolor: gridColor, zerolinecolor: gridColor, font: { size: 13 } }
+            yaxis: { gridcolor: gridColor, zerolinecolor: gridColor, font: { size: 13 } },
+            legend: { orientation: 'h', x: 0.5, xanchor: 'center', xref: 'container', y: 0.9, yanchor: 'top', yref: 'container' }
         };
+        const titleLayout = (text) => ({ text, font: { size: 16, color: textColor }, x: 0.5, xanchor: 'center', y: 0.98, yanchor: 'top', yref: 'container' });
 
         // --- CHART 1: EFFECTIVE TENSION vs s ---
         const traceTension = {
@@ -84,11 +120,12 @@ export class ProfileChartsController {
 
         const layoutTension = {
             ...layoutBase,
-            title: { text: `<b>Perfil de Tração Efetiva T<sub>eff</sub> (kN) ao Longo do Riser</b>`, font: { size: 16, color: textColor } },
+            title: titleLayout(`<b>Perfil de Tração Efetiva T<sub>eff</sub> (kN) ao Longo do Riser</b>`),
             yaxis: { ...layoutBase.yaxis, title: 'Tração Efetiva (kN)' }
         };
 
-        Plotly.react(this.tensionDiv, [traceTension], layoutTension, { responsive: true, displayModeBar: true });
+        const tensionTraces = [traceTension, ...envelopeTraces(envelope && envelope.tension, 'Tração')];
+        Plotly.react(this.tensionDiv, tensionTraces, layoutTension, { responsive: true, displayModeBar: true });
 
         // --- CHART 2: BENDING MOMENT & CURVATURE vs s ---
         const traceMoment = {
@@ -114,7 +151,7 @@ export class ProfileChartsController {
 
         const layoutMomentCurv = {
             ...layoutBase,
-            title: { text: `<b>Distribuição de Momento Fletor (kN.m) & Curvatura 3D (1/m)</b>`, font: { size: 16, color: textColor } },
+            title: titleLayout(`<b>Distribuição de Momento Fletor (kN.m) & Curvatura 3D (1/m)</b>`),
             yaxis: { ...layoutBase.yaxis, title: 'Momento Fletor (kN.m)' },
             yaxis2: {
                 title: 'Curvatura (1/m)',
@@ -122,11 +159,13 @@ export class ProfileChartsController {
                 side: 'right',
                 gridcolor: gridColor,
                 font: { color: '#10b981', size: 13 }
-            },
-            legend: { orientation: 'h', x: 0.2, y: 1.12 }
+            }
         };
 
-        Plotly.react(this.momentCurvDiv, [traceMoment, traceCurvature], layoutMomentCurv, { responsive: true, displayModeBar: true });
+        // Envelope overlay applies only to moment (primary y-axis) -- curvature has no field key
+        // in FEASimulation::getElementEnvelope's scalar set here, so it's left off the overlay.
+        const momentTraces = [traceMoment, traceCurvature, ...envelopeTraces(envelope && envelope.moment, 'Momento')];
+        Plotly.react(this.momentCurvDiv, momentTraces, layoutMomentCurv, { responsive: true, displayModeBar: true });
 
         // --- CHART 3: VON MISES STRESS vs s ---
         const traceVonMises = {
@@ -155,12 +194,12 @@ export class ProfileChartsController {
 
         const layoutVonMises = {
             ...layoutBase,
-            title: { text: `<b>Envelope de Tensão Combinada de von Mises σ<sub>vm</sub> (MPa)</b>`, font: { size: 16, color: textColor } },
-            yaxis: { ...layoutBase.yaxis, title: 'von Mises (MPa)' },
-            legend: { orientation: 'h', x: 0.2, y: 1.12 }
+            title: titleLayout(`<b>Envelope de Tensão Combinada de von Mises σ<sub>vm</sub> (MPa)</b>`),
+            yaxis: { ...layoutBase.yaxis, title: 'von Mises (MPa)' }
         };
 
-        Plotly.react(this.vonMisesDiv, [traceVonMises, traceYield], layoutVonMises, { responsive: true, displayModeBar: true });
+        const vonMisesTraces = [traceVonMises, traceYield, ...envelopeTraces(envelope && envelope.vonmises, 'von Mises')];
+        Plotly.react(this.vonMisesDiv, vonMisesTraces, layoutVonMises, { responsive: true, displayModeBar: true });
     }
 
     resizeCharts() {

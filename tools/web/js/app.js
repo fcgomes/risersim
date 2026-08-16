@@ -3,6 +3,7 @@ import { ColorMapService } from './services/ColorMapService.js';
 import { Riser3DRenderer } from './renderers/Riser3DRenderer.js';
 import { CameraViewController } from './renderers/CameraViewController.js';
 import { ProfileChartsController } from './charts/ProfileChartsController.js';
+import { TimeHistoryChartController } from './charts/TimeHistoryChartController.js';
 import { initPanelResizer } from './ui/PanelResizer.js';
 import { ZoomWindowController } from './ui/ZoomWindowController.js';
 import { bindCameraToolbar } from './ui/CameraToolbar.js';
@@ -22,6 +23,10 @@ class RiserSimApp {
         this.currentTheme = 'dark';
         this.activeTab = 'table'; // 'table' or 'charts'
         this.tableViewMode = 'elements'; // 'elements' or 'nodes'
+        this.selectedPoint = null; // {type: 'node'|'element', id: number} -- picked from a table row, see selectPoint()
+        this.tableSortKey = null; // 'id' | 'status' | 'tension' | null (natural/by-id order) -- see setSortKey()
+        this.tableSortDir = 'asc';
+        this.historyField = 'tension'; // field plotted for an ELEMENT's time-history -- independent from #scalar-field-select (3D coloring)
 
         this.initUI();
     }
@@ -42,6 +47,7 @@ class RiserSimApp {
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
         this.zoomWindow = new ZoomWindowController(this.cameraController, this.renderer3D);
         this.chartsController = new ProfileChartsController();
+        this.historyChartsController = new TimeHistoryChartController();
 
         this.activeViewportView = '3d'; // '3d', 'tension', 'moment', 'vm'
         this.bindEvents();
@@ -90,7 +96,8 @@ class RiserSimApp {
             { id: 'vtab-3d-btn', view: '3d' },
             { id: 'vtab-tension-btn', view: 'tension' },
             { id: 'vtab-moment-btn', view: 'moment' },
-            { id: 'vtab-vm-btn', view: 'vm' }
+            { id: 'vtab-vm-btn', view: 'vm' },
+            { id: 'vtab-history-btn', view: 'history' }
         ];
 
         vtabs.forEach(item => {
@@ -135,6 +142,11 @@ class RiserSimApp {
         document.getElementById('table-view-elements-btn').addEventListener('click', () => this.setTableViewMode('elements'));
         document.getElementById('table-view-nodes-btn').addEventListener('click', () => this.setTableViewMode('nodes'));
 
+        // Sortable column headers in the (now compact) Elements table
+        document.getElementById('th-sort-id').addEventListener('click', () => this.setSortKey('id'));
+        document.getElementById('th-sort-status').addEventListener('click', () => this.setSortKey('status'));
+        document.getElementById('th-sort-tension').addEventListener('click', () => this.setSortKey('tension'));
+
         // Analysis mode selector (Static / Dynamic)
         const modeSelect = document.getElementById('analysis-mode-select');
         if (modeSelect) {
@@ -150,12 +162,15 @@ class RiserSimApp {
             });
         }
 
-        // Scalar field selector
+        // Scalar field selector (3D coloring -- independent from the history chart's own field,
+        // see historyFieldSelect below). Only auto-navigates away from a PROFILE chart tab (so the
+        // user sees the field they just picked); doesn't touch 'history', which has its own field
+        // and shouldn't be yanked away from just because the 3D coloring field changed.
         const scalarSelect = document.getElementById('scalar-field-select');
         if (scalarSelect) {
             scalarSelect.addEventListener('change', (e) => {
                 const val = e.target.value;
-                if (this.activeViewportView !== '3d') {
+                if (this.activeViewportView !== '3d' && this.activeViewportView !== 'history') {
                     if (val === 'tension') this.switchViewportView('tension');
                     else if (val === 'moment' || val === 'curvature' || val === 'mbr') this.switchViewportView('moment');
                     else if (val === 'vonmises') this.switchViewportView('vm');
@@ -166,6 +181,19 @@ class RiserSimApp {
 
         // Colormap
         document.getElementById('colormap-select').addEventListener('change', () => this.render());
+
+        // Envelope overlay toggle (min/max over the active mode's whole time series)
+        const envelopeToggle = document.getElementById('envelope-toggle');
+        if (envelopeToggle) envelopeToggle.addEventListener('change', () => this.render());
+
+        // Time-history chart's own field selector (independent from #scalar-field-select above)
+        const historyFieldSelect = document.getElementById('history-field-select');
+        if (historyFieldSelect) {
+            historyFieldSelect.addEventListener('change', (e) => {
+                this.historyField = e.target.value;
+                this.render();
+            });
+        }
 
         // Light/dark theme
         initThemeToggle(this);
@@ -185,25 +213,29 @@ class RiserSimApp {
         const tensionChart = document.getElementById('tension-chart');
         const momentChart = document.getElementById('moment-curv-chart');
         const vmChart = document.getElementById('vonmises-chart');
+        const historyChart = document.getElementById('history-chart');
         const colorbarLegend = document.getElementById('colorbar-legend');
 
         const btn3D = document.getElementById('vtab-3d-btn');
         const btnTension = document.getElementById('vtab-tension-btn');
         const btnMoment = document.getElementById('vtab-moment-btn');
         const btnVM = document.getElementById('vtab-vm-btn');
+        const btnHistory = document.getElementById('vtab-history-btn');
 
-        [btn3D, btnTension, btnMoment, btnVM].forEach(b => { if (b) b.className = 'btn-tab'; });
+        [btn3D, btnTension, btnMoment, btnVM, btnHistory].forEach(b => { if (b) b.className = 'btn-tab'; });
 
         if (canvas3D) canvas3D.style.display = view === '3d' ? 'block' : 'none';
         if (tensionChart) tensionChart.style.display = view === 'tension' ? 'block' : 'none';
         if (momentChart) momentChart.style.display = view === 'moment' ? 'block' : 'none';
         if (vmChart) vmChart.style.display = view === 'vm' ? 'block' : 'none';
+        if (historyChart) historyChart.style.display = view === 'history' ? 'block' : 'none';
         if (colorbarLegend) colorbarLegend.style.display = view === '3d' ? 'block' : 'none';
 
         if (view === '3d' && btn3D) btn3D.className = 'btn-tab active';
         if (view === 'tension' && btnTension) btnTension.className = 'btn-tab active';
         if (view === 'moment' && btnMoment) btnMoment.className = 'btn-tab active';
         if (view === 'vm' && btnVM) btnVM.className = 'btn-tab active';
+        if (view === 'history' && btnHistory) btnHistory.className = 'btn-tab active';
 
         if (view === '3d') {
             setTimeout(() => {
@@ -213,6 +245,7 @@ class RiserSimApp {
             setTimeout(() => {
                 window.dispatchEvent(new Event('resize'));
                 if (this.chartsController) this.chartsController.resizeCharts();
+                if (this.historyChartsController) this.historyChartsController.resize();
             }, 50);
         }
 
@@ -320,13 +353,75 @@ class RiserSimApp {
         this.updateColorbar(colormap, minVal, maxVal, scalarField);
 
         // Render the 3D scene
-        this.renderer3D.renderStep(step, colormap, scalarRange, this.currentTheme, scalarField, ...this.getEnvBounds());
+        this.renderer3D.renderStep(step, colormap, scalarRange, this.currentTheme, scalarField, ...this.getEnvBounds(), this.selectedPoint);
         this.updateTable(step);
 
-        // Update the 2D profile charts
-        if (this.chartsController) {
-            this.chartsController.updateCharts(step, this.currentTheme);
+        // Update the 2D profile charts, optionally overlaid with the min/max-over-time envelope
+        // (see FEASimulation::getElementEnvelope) when the user has the toggle checked.
+        const envelopeToggle = document.getElementById('envelope-toggle');
+        let envelope = null;
+        if (envelopeToggle && envelopeToggle.checked && this.simulation) {
+            envelope = {
+                tension: this.simulation.getElementEnvelope('tension'),
+                moment: this.simulation.getElementEnvelope('moment'),
+                vonmises: this.simulation.getElementEnvelope('vonmises')
+            };
         }
+        if (this.chartsController) {
+            this.chartsController.updateCharts(step, this.currentTheme, envelope);
+        }
+
+        // Update the time-history chart for whatever point is currently selected in the table,
+        // using its OWN field selector (this.historyField) -- independent from `scalarField`
+        // above, which only drives the 3D coloring. The field bar itself only makes sense for an
+        // element selection (a node's history is always X/Y/Z) and only while that chart is
+        // visible, so it's shown/hidden here alongside every render, not just on tab switch.
+        const historyFieldBar = document.getElementById('history-field-bar');
+        const showFieldBar = this.activeViewportView === 'history' && this.selectedPoint && this.selectedPoint.type === 'element';
+        if (historyFieldBar) historyFieldBar.style.display = showFieldBar ? 'flex' : 'none';
+        // The field bar can wrap to its own line below #viewport-tabs on a narrow canvas (see
+        // #viewport-toolbar in posprocessor.html) -- reserve extra top clearance on the chart
+        // itself whenever the bar is visible at all, so a wrapped line never lands on the title.
+        const historyChartDiv = document.getElementById('history-chart');
+        if (historyChartDiv) historyChartDiv.classList.toggle('with-field-bar', showFieldBar);
+        const historyFieldSelect = document.getElementById('history-field-select');
+        if (historyFieldSelect) historyFieldSelect.value = this.historyField;
+
+        if (this.historyChartsController) {
+            this.historyChartsController.updateChart(this.simulation, this.selectedPoint, this.historyField, this.currentStepIdx, this.currentTheme);
+        }
+    }
+
+    /**
+     * Selects a node/element as the "point of interest" for the time-history chart, picked from a
+     * row in the results table (see updateTable()) -- also drives the 3D highlight marker
+     * (Riser3DRenderer::updateSelectionHighlight).
+     * @param {'node'|'element'} type
+     * @param {number} id
+     */
+    selectPoint(type, id) {
+        if (this.selectedPoint && this.selectedPoint.type === type && this.selectedPoint.id === id) {
+            this.selectedPoint = null; // clicking the same row again deselects it
+        } else {
+            this.selectedPoint = { type, id };
+        }
+        this.render();
+    }
+
+    /**
+     * Sorts the (compact) Elements table by the given column -- clicking the same column again
+     * flips direction, a different column resets to ascending. `null` key means the natural/by-id
+     * order (the table's original behavior, also the riser's physical order along its length).
+     * @param {'id'|'status'|'tension'} key
+     */
+    setSortKey(key) {
+        if (this.tableSortKey === key) {
+            this.tableSortDir = this.tableSortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+            this.tableSortKey = key;
+            this.tableSortDir = 'asc';
+        }
+        this.render();
     }
 
     updateColorbar(colormap, minVal, maxVal, scalarField = 'tension') {
@@ -386,8 +481,10 @@ class RiserSimApp {
         const nodeTable = document.getElementById('nodes-table');
         const elBtn = document.getElementById('table-view-elements-btn');
         const nodeBtn = document.getElementById('table-view-nodes-btn');
+        const detailCard = document.getElementById('element-detail-card');
         if (elTable) elTable.style.display = mode === 'elements' ? 'table' : 'none';
         if (nodeTable) nodeTable.style.display = mode === 'nodes' ? 'table' : 'none';
+        if (detailCard) detailCard.style.display = mode === 'elements' ? '' : 'none';
         if (elBtn) elBtn.className = mode === 'elements' ? 'btn-tab active' : 'btn-tab';
         if (nodeBtn) nodeBtn.className = mode === 'nodes' ? 'btn-tab active' : 'btn-tab';
     }
@@ -404,64 +501,128 @@ class RiserSimApp {
         const nodes = step.nodes;
         const elements = step.elements;
 
-        // Elements table (tension, moment, curvature, von Mises, MBR, section status)
+        // Elements table -- compact (ID/Nó/Status/Tração only; the rest lives in the detail panel,
+        // see updateElementDetailCard()). Seabed detected from this simulation's real depth (not a
+        // fixed value), since the element index/range varies from model to model. There's no way
+        // to detect buoyancy modules (Lazy Wave) from the exported data -- the exporter doesn't
+        // include per-element diameter/module metadata (see simulation_exporter.cpp), so that
+        // status was removed instead of "guessed".
+        const seabedDepth = this.simulation ? this.simulation.seabedDepth : -100.0;
+        const isSeabedElement = (elem) => {
+            const ordinalIdx = elem.id - 1;
+            const n2 = nodes[ordinalIdx + 1] || nodes[ordinalIdx];
+            return !!(n2 && n2.z <= seabedDepth + 0.5);
+        };
+
+        // Sorted on a COPY so element/node lookups elsewhere (3D highlight, history chart) stay
+        // keyed by `elem.id`, unaffected by display order -- ids are contiguous 1-indexed ordinals
+        // (simulation_exporter.cpp), so `elem.id - 1` always finds the right node pair regardless
+        // of where the row ends up in the sorted table.
+        let orderedElements = elements.slice();
+        if (this.tableSortKey) {
+            const dir = this.tableSortDir === 'asc' ? 1 : -1;
+            orderedElements.sort((a, b) => {
+                let cmp = 0;
+                if (this.tableSortKey === 'id') {
+                    cmp = a.id - b.id;
+                } else if (this.tableSortKey === 'tension') {
+                    cmp = this.simulation.getElementScalar(a, 'tension') - this.simulation.getElementScalar(b, 'tension');
+                } else if (this.tableSortKey === 'status') {
+                    cmp = (isSeabedElement(a) ? 1 : 0) - (isSeabedElement(b) ? 1 : 0);
+                }
+                return cmp * dir;
+            });
+        }
+
+        ['id', 'status', 'tension'].forEach(key => {
+            const indicator = document.querySelector(`#th-sort-${key} .sort-indicator`);
+            if (!indicator) return;
+            indicator.innerText = this.tableSortKey === key ? (this.tableSortDir === 'asc' ? '▲' : '▼') : '⇅';
+        });
+
         const elTbody = document.getElementById('elements-tbody');
         if (elTbody) {
             elTbody.innerHTML = '';
-            elements.forEach((elem, idx) => {
+            orderedElements.forEach((elem) => {
                 const tr = document.createElement('tr');
+                const ordinalIdx = elem.id - 1;
 
-                const n2 = nodes[idx + 1] || nodes[idx];
+                const statusBadge = isSeabedElement(elem)
+                    ? `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`
+                    : `<span class="status-water">🌊 Suspenso</span>`;
 
-                // Seabed detected from this simulation's real depth (not a fixed value), since the
-                // element index/range varies from model to model. There's no way to detect
-                // buoyancy modules (Lazy Wave) from the exported data -- the exporter doesn't
-                // include per-element diameter/module metadata (see simulation_exporter.cpp), so
-                // that status was removed instead of "guessed".
-                let statusBadge = `<span class="status-water">🌊 Suspenso</span>`;
-                const seabedDepth = this.simulation ? this.simulation.seabedDepth : -100.0;
-                if (n2 && n2.z <= seabedDepth + 0.5) {
-                    statusBadge = `<span class="status-seabed">🏖️ Fundo do Mar (TDZ)</span>`;
-                }
-
-                // Effective tension and von Mises in scientific notation (typically large values
-                // or a wide dynamic range); the other quantities stay in fixed-point. Units only
-                // appear in the column header, not repeated in every cell.
+                // Scientific notation matches the tension column's original formatting (typically
+                // large values or a wide dynamic range).
                 const tensionStr = elem.tensionEffectiveKn !== undefined ? elem.tensionEffectiveKn.toExponential(2) : "0.00e+0";
-                const momentStr = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm.toFixed(2) : "0.00";
-                const curvStr = elem.curvature !== undefined ? elem.curvature.toExponential(3) : "0.000e+00";
-                const vmStr = elem.vonMisesMpa !== undefined ? elem.vonMisesMpa.toExponential(2) : "0.00e+0";
-                const mbrStr = elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor.toFixed(2) : "1.00";
 
                 tr.innerHTML = `
                     <td style="font-weight:bold;">Elemento ${elem.id}</td>
-                    <td>Nó ${idx + 1} ➔ Nó ${idx + 2}</td>
+                    <td>Nó ${ordinalIdx + 1} ➔ Nó ${ordinalIdx + 2}</td>
                     <td>${statusBadge}</td>
                     <td class="tension-val">${tensionStr}</td>
-                    <td>${momentStr}</td>
-                    <td style="font-family:monospace;">${curvStr}</td>
-                    <td style="font-weight:bold; color:#e11d48;">${vmStr}</td>
-                    <td style="font-weight:bold; color:#7c6ce0;">${mbrStr}</td>
                 `;
+                if (this.selectedPoint && this.selectedPoint.type === 'element' && this.selectedPoint.id === elem.id) {
+                    tr.classList.add('selected-row');
+                }
+                tr.addEventListener('click', () => this.selectPoint('element', elem.id));
                 elTbody.appendChild(tr);
             });
         }
+
+        this.updateElementDetailCard(step);
 
         // Nodes table (coordinates)
         const nodeTbody = document.getElementById('nodes-tbody');
         if (nodeTbody) {
             nodeTbody.innerHTML = '';
             nodes.forEach((node, idx) => {
+                const nodeId = node.id !== undefined ? node.id : idx + 1;
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td style="font-weight:bold;">Nó ${node.id !== undefined ? node.id : idx + 1}</td>
+                    <td style="font-weight:bold;">Nó ${nodeId}</td>
                     <td>${node.x.toFixed(2)}</td>
                     <td>${node.y.toFixed(2)}</td>
                     <td>${node.z.toFixed(2)}</td>
                 `;
+                if (this.selectedPoint && this.selectedPoint.type === 'node' && this.selectedPoint.id === nodeId) {
+                    tr.classList.add('selected-row');
+                }
+                tr.addEventListener('click', () => this.selectPoint('node', nodeId));
                 nodeTbody.appendChild(tr);
             });
         }
+    }
+
+    /**
+     * Fills the "🔍 Detalhe do Elemento" panel above the Elements table with the fields the
+     * compact table itself no longer shows (Momento/Curvatura/von Mises/MBR) -- see
+     * updateTable(), Proposta C. Shows a placeholder when nothing (or a node) is selected.
+     * @param {SimulationStep} step
+     */
+    updateElementDetailCard(step) {
+        const emptyEl = document.getElementById('element-detail-empty');
+        const statsEl = document.getElementById('element-detail-stats');
+        const titleEl = document.getElementById('element-detail-title');
+        if (!emptyEl || !statsEl || !titleEl) return;
+
+        const elem = (this.selectedPoint && this.selectedPoint.type === 'element')
+            ? step.elements[this.selectedPoint.id - 1]
+            : null;
+
+        if (!elem) {
+            titleEl.innerText = '🔍 DETALHE DO ELEMENTO';
+            emptyEl.style.display = '';
+            statsEl.style.display = 'none';
+            return;
+        }
+
+        titleEl.innerText = `🔍 DETALHE DO ELEMENTO ${elem.id}`;
+        document.getElementById('detail-moment').innerText = elem.bendingMomentKnm !== undefined ? elem.bendingMomentKnm.toFixed(2) : '0.00';
+        document.getElementById('detail-curvature').innerText = elem.curvature !== undefined ? elem.curvature.toExponential(3) : '0.000e+00';
+        document.getElementById('detail-vonmises').innerText = elem.vonMisesMpa !== undefined ? elem.vonMisesMpa.toExponential(2) : '0.00e+0';
+        document.getElementById('detail-mbr').innerText = elem.mbrSafetyFactor !== undefined ? elem.mbrSafetyFactor.toFixed(2) : '1.00';
+        emptyEl.style.display = 'none';
+        statsEl.style.display = '';
     }
 }
 

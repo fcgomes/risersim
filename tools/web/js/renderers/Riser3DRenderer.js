@@ -88,8 +88,11 @@ export class Riser3DRenderer {
      * @param {string} scalarField - 'tension' | 'moment' | 'curvature' | 'vonmises' | 'mbr'
      * @param {number|null} seabedDepth - Seabed Z elevation (null/absent = plane not drawn)
      * @param {number|null} waterSurfaceZ - Water surface Z elevation (null/absent = plane not drawn)
+     * @param {{type:'node'|'element', id:number}|null} [selectedPoint] - Point picked in the
+     *   results table (see app.js::selectPoint), highlighted here so it's visible in the 3D scene
+     *   too, not just the table row / time-history chart.
      */
-    renderStep(step, colormap = 'Jet', scalarRange = { min: 0, max: 10 }, currentTheme = 'dark', scalarField = 'tension', seabedDepth = null, waterSurfaceZ = null) {
+    renderStep(step, colormap = 'Jet', scalarRange = { min: 0, max: 10 }, currentTheme = 'dark', scalarField = 'tension', seabedDepth = null, waterSurfaceZ = null, selectedPoint = null) {
         if (!step) return;
 
         // Fully clear previous geometry
@@ -183,6 +186,50 @@ export class Riser3DRenderer {
             mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
 
             this.riserGroup.add(mesh);
+        }
+
+        this.updateSelectionHighlight(selectedPoint, nodes, outerRadius);
+    }
+
+    /**
+     * Draws a highlight marker for the point selected in the results table (see
+     * app.js::selectPoint) -- a bright sphere at the node's position, or a slightly larger
+     * wireframe cylinder overlaid on the element's tube. Reuses `nodesGroup`, already cleared at
+     * the top of every renderStep() call.
+     * @param {{type:'node'|'element', id:number}|null} selectedPoint
+     * @param {Node3D[]} nodes
+     * @param {number} outerRadius - This step's tube radius (see renderStep), used to size the marker proportionally.
+     */
+    updateSelectionHighlight(selectedPoint, nodes, outerRadius) {
+        if (!selectedPoint) return;
+
+        const highlightColor = 0xffa64d; // --brand-accent-strong (dark theme), fixed hex since Three.js doesn't read CSS custom properties
+        const idx = selectedPoint.id - 1; // ids are contiguous 1-indexed ordinals (simulation_exporter.cpp)
+
+        if (selectedPoint.type === 'node') {
+            const n = nodes[idx];
+            if (!n) return;
+            const sphereGeo = new THREE.SphereGeometry(outerRadius * 2.2, 16, 16);
+            const sphereMat = new THREE.MeshStandardMaterial({ color: highlightColor, emissive: highlightColor, emissiveIntensity: 0.6 });
+            const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+            sphere.position.set(n.x, n.z, n.y);
+            this.nodesGroup.add(sphere);
+        } else if (selectedPoint.type === 'element') {
+            const n1 = nodes[idx];
+            const n2 = nodes[idx + 1];
+            if (!n1 || !n2) return;
+            const p1 = new THREE.Vector3(n1.x, n1.z, n1.y);
+            const p2 = new THREE.Vector3(n2.x, n2.z, n2.y);
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+            const len = dir.length();
+            if (len <= 0.001) return;
+
+            const highlightGeo = new THREE.CylinderGeometry(outerRadius * 1.6, outerRadius * 1.6, len, 12, 1, true);
+            const highlightMat = new THREE.MeshBasicMaterial({ color: highlightColor, wireframe: true, transparent: true, opacity: 0.85 });
+            const highlightMesh = new THREE.Mesh(highlightGeo, highlightMat);
+            highlightMesh.position.copy(p1).add(p2).multiplyScalar(0.5);
+            highlightMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+            this.nodesGroup.add(highlightMesh);
         }
     }
 

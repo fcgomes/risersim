@@ -93,4 +93,33 @@ export class FEASimulation {
         if (min === max) max = min + 1.0;
         return { min, max };
     }
+
+    /**
+     * Envelope (min/max over the whole active-mode time series) of a scalar field, per element
+     * ordinal position -- mirrors the real ANFLEX's envelope concept (see
+     * `anf_analysis/src/post_processor.cpp::save_env()`: min/max per element/node, over a step
+     * range), computed here client-side since the full step history is already resident in memory
+     * (`activeSteps`, same source `getScalarRange()` uses). Indexed by element ordinal `i`, not
+     * element `id` -- topology/element count is constant across steps in this solver, so `i`
+     * always refers to the same physical element.
+     * @param {string} field
+     * @returns {{min: number[], max: number[]}}
+     */
+    getElementEnvelope(field = 'tension') {
+        const steps = this.activeSteps;
+        const numElements = steps.length > 0 ? steps[0].elements.length : 0;
+        const min = new Array(numElements).fill(Infinity);
+        const max = new Array(numElements).fill(-Infinity);
+
+        steps.forEach(step => {
+            step.elements.forEach((elem, i) => {
+                if (i >= numElements) return;
+                const val = this.getElementScalar(elem, field);
+                if (val < min[i]) min[i] = val;
+                if (val > max[i]) max[i] = val;
+            });
+        });
+
+        return { min, max };
+    }
 }

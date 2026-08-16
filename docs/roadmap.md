@@ -853,6 +853,121 @@ aqui é integrar com o conceito de "projeto/rodada" do item 3b (carregar resulta
 específica do histórico, em vez de sempre apontar para um arquivo fixo) — depende de 3b existir
 primeiro para fazer sentido completo, mas a base de visualização já não precisa de retrabalho.
 
+#### Fase 1 — ✅ IMPLEMENTADA: envoltórias + histórico no tempo
+
+Puxada pelo usuário comparando com o que o ANFLEX real oferece no pós-processamento. Pesquisa no
+C++ real (`anf_analysis/src/post_processor.cpp`/`results_structs.h`/`results_variables.h`)
+confirmou que envoltória (mín/máx por nó de elemento, sobre um range de passos) e histórico no
+tempo (série completa por nó/elemento escolhido pelo usuário) são recursos de primeira classe lá —
+e que toda a série temporal do `risersim` já vive na memória do navegador
+(`FEASimulation.staticSteps`/`.dynamicSteps`, populados por `DataLoaderService.js`), então os dois
+recursos foram implementados **só no frontend**, sem tocar em C++/exportação.
+
+- **Envoltória**: `FEASimulation::getElementEnvelope(field)` (novo método) itera `activeSteps` e
+  retorna mín/máx por posição ordinal do elemento. Checkbox "📉 Mostrar envoltória" (aba
+  Visualização) sobrepõe 2 traces tracejados (mín/máx) aos 3 gráficos de perfil já existentes
+  (Tração/Momento/von Mises) — decisão do usuário: overlay nos gráficos existentes, não uma aba
+  separada.
+- **Histórico no tempo**: nova aba de viewport "🕒 Histórico no Tempo" +
+  `TimeHistoryChartController.js` (novo). Seleção do ponto de interesse é feita clicando numa linha
+  da tabela de Elementos/Nós já existente (aba "📊 Tabela") — decisão do usuário, em vez de um
+  dropdown — o que também destaca o nó/elemento escolhido na cena 3D
+  (`Riser3DRenderer::updateSelectionHighlight()`, reaproveitando o `nodesGroup`, existente mas
+  nunca antes populado). Nó selecionado mostra X/Y/Z vs. tempo; elemento selecionado mostra o campo
+  escalar atualmente escolhido em "🎯 Grandeza para Colorir" vs. tempo, com uma linha vertical
+  marcando o passo ativo do slider.
+- `WEB_VERSION`: `1.3.1` → `1.4.0`.
+
+**Verificação real** (2026-08-16, Docker): rebuild de `web` OK; testado via um harness HTML
+same-origin (mesma técnica já usada na Fase 2 do Eixo 3b, já que não há Playwright/Selenium no
+ambiente) contra uma rodada real convergida do caso Far (`Exemplo_01a`, 21 passos dinâmicos, 501
+nós/500 elementos): clique em linha de elemento → `selectedPoint` correto, classe `selected-row`
+aplicada, marcador 3D criado; clique em linha de nó → histórico com 3 traces (X/Y/Z); clique de
+novo na mesma linha → deseleciona; toggle de envoltória → Tração 1→3 traces, Momento+Curvatura
+3→4, von Mises 2→4, todos os traces extras corretos. Zero erros de console capturados em todo o
+fluxo. Confirmado visualmente por screenshot (tema escuro) que o layout/cores seguem o padrão
+visual já estabelecido.
+
+#### Fase 2 — ✅ IMPLEMENTADA: correções de layout dos gráficos + tabela de Elementos compacta
+
+Puxada pelo usuário usando a Fase 1 na prática. Três achados de layout, seguidos de uma
+reorganização da tabela de Resultados.
+
+- **Título/legenda sobrepostos pelas barras flutuantes**: os 4 `div`s de gráfico (`.viewport-layer`)
+  preenchiam 100% da altura do `#canvas-container` desde y=0, ficando por baixo de
+  `#viewport-tabs` (topo) e `#playback-overlay` (base), ambos `position:absolute`. Tentativa 1
+  (`padding-top`/`padding-bottom` no CSS) não funcionou -- `clientHeight`, que o Plotly lê pra se
+  dimensionar, INCLUI padding, então o gráfico continuava se desenhando no tamanho cheio e o
+  excesso (onde ficava o eixo X) era cortado pelo `overflow:hidden` do container, fazendo o eixo
+  sumir por completo. Corrigido de vez trocando pra `position:absolute` com `top`/`bottom` (mesmo
+  padrão dos outros overlays) -- isso sim encolhe a caixa real antes do Plotly medir.
+- **Legenda acima do título** (ordem invertida): a legenda usava coordenadas `paper` (relativas à
+  área do gráfico, `y:1.12`) enquanto o título usava posição automática do Plotly -- a legenda
+  acabava renderizando mais alto que o título. Corrigido fixando os dois em coordenadas
+  `container` (`yref:'container'`) com o título mais perto do topo e a legenda abaixo dele, em
+  `ProfileChartsController.js` e `TimeHistoryChartController.js`.
+- **Envoltória mín. "invisível"**: as curvas de mín./máx. usavam a mesma cor da série principal (só
+  com opacidade reduzida) -- quando o valor mínimo histórico de um elemento coincidia com o do
+  passo atualmente exibido (comum logo após trocar de modo estático/dinâmico), a curva tracejada
+  ficava desenhada exatamente por baixo da sólida, parecendo ausente. Corrigido com cores fixas e
+  distintas (`#ec4899` máx./`#06b6d4` mín.) em vez de derivadas da cor de cada série, garantindo
+  contraste mesmo quando os valores coincidem.
+- **Tabela de Elementos compacta (Proposta C, escolhida entre 3 propostas apresentadas)**: a tabela
+  de 8 colunas (ID/Nó/Status/Tração/Momento/Curvatura/von Mises/MBR) já exigia scroll horizontal no
+  painel lateral. Reduzida a 4 colunas "manchete" (ID/Nó/Status/Tração); as 4 grandezas restantes
+  (Momento/Curvatura/von Mises/MBR) passam a aparecer num painel de detalhe (`#element-detail-card`,
+  reaproveitando as classes `control-group`/`stat-card` já existentes) que se popula ao clicar numa
+  linha -- o mesmo mecanismo de seleção (`selectPoint()`) já usado pelo destaque 3D e pelo histórico
+  no tempo da Fase 1. Para não perder a capacidade de achar rapidamente "o pior elemento" que a
+  tabela larga dava de graça, os 3 cabeçalhos restantes ganharam ordenação por clique (▲/▼/⇅),
+  persistente durante a navegação entre passos. Decisão do usuário: uma "tabelão com tudo" pode ser
+  adicionada depois, sob demanda -- não faz parte deste incremento.
+- `WEB_VERSION`: `1.4.0` → `1.4.1`.
+
+**Verificação real** (2026-08-16, mesmo harness HTML same-origin contra a mesma rodada Far):
+gráficos conferidos visualmente por screenshot em cada etapa (título acima da legenda, eixo X
+visível, barra de playback sem sobrepor nada; envoltória mín./máx. com cores distintas em dois
+passos diferentes, inclusive um onde mín.==passo atual). Tabela: 4 colunas confirmadas, ordenação
+ascendente/descendente testada na coluna Tração (elemento 1, maior tração, ordena primeiro em
+descendente; elementos da zona de touchdown, menor tração, primeiro em ascendente) com indicador
+correto; clique em linha popula o painel de detalhe com os valores corretos, mantém destaque 3D e
+histórico no tempo funcionando; painel de detalhe some ao trocar para a visão de Nós. Zero erros de
+console em todo o fluxo.
+
+#### Fase 3 — ✅ IMPLEMENTADA: seletor de grandeza dedicado pro histórico no tempo
+
+Usuário perguntou se dava pra escolher a grandeza do histórico. Até aqui, o histórico de um
+elemento reaproveitava o valor de "🎯 Grandeza para Colorir" (aba Visualização, campo que também
+colore a cena 3D) -- funcionava, mas escondido, e com um bug real: trocar aquele seletor enquanto
+a aba "Histórico no Tempo" estava ativa forçava a navegação de volta pra aba de perfil
+correspondente (`switchViewportView()`'s condição `activeViewportView !== '3d'` não excluía
+`'history'`), tirando o usuário da aba sem pedir.
+
+- Novo seletor `#history-field-select`, independente do de coloração 3D (`this.historyField`,
+  novo estado em `app.js`, default `'tension'`), numa barra flutuante (`#history-field-bar`) só
+  visível durante a aba Histórico e só quando o selecionado é um ELEMENTO (nó não tem grandeza --
+  histórico de nó já é X/Y/Z fixo).
+- Bug de navegação corrigido: `activeViewportView !== '3d' && activeViewportView !== 'history'`.
+- **Achado de layout, pego só depois de screenshot** (não pela suíte funcional): a barra flutuante
+  original, ancorada `position:absolute` no canto direito da mesma linha das abas, colava direto
+  em cima do texto "🕒 Histórico no Tempo" assim que a 5ª aba entrou na fileira -- espaço
+  insuficiente pra ambos convivirem numa tela de largura comum. Corrigido reestruturando as duas
+  (`#viewport-tabs` + `#history-field-bar`) como filhos de um `#viewport-toolbar` com
+  `flex-wrap:wrap`, então a barra de grandeza cai pra uma segunda linha em vez de sobrepor. Isso
+  por sua vez expôs um segundo problema (mesma categoria da Fase 2: espaço reservado insuficiente
+  pra um overlay externo) -- com 2 linhas de toolbar, o topo reservado de 52px não bastava mais,
+  a barra invadia o título do gráfico. Corrigido com uma classe `with-field-bar` (alternada via JS
+  junto com a visibilidade da própria barra) que só aumenta o `top` do `#history-chart`
+  especificamente quando a barra pode estar visível, sem afetar os outros 3 gráficos.
+- `WEB_VERSION`: `1.4.1` → `1.4.2`.
+
+**Verificação real** (2026-08-16, mesmo harness): selecionar elemento → trocar grandeza do
+histórico (própria barra) → título do gráfico muda, aba continua em "Histórico" (bug corrigido);
+trocar a grandeza de COLORAÇÃO 3D (seletor não relacionado) enquanto na aba Histórico → não navega
+pra fora, histórico não muda (desacoplamento confirmado); selecionar nó → barra some. Screenshot
+confirmou visualmente a quebra de linha sem sobreposição e o título do gráfico totalmente visível
+abaixo das duas linhas da toolbar. Zero erros de console.
+
 ## Backlog de recursos faltantes do motor (não bloqueante — puxar sob demanda)
 
 Achados documentados em `mapa_aml_exemplos_e_web_interface.md`, nenhum implementado: múltiplas

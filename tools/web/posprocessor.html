@@ -55,12 +55,30 @@
         }
 
         table.excel-table { text-align: center; }
+        table.excel-table tbody tr { cursor: pointer; }
+        table.excel-table th.sortable { cursor: pointer; user-select: none; }
+        table.excel-table th.sortable:hover { color: var(--brand-accent); }
+        .sort-indicator { margin-left: 4px; font-size: 10px; opacity: 0.6; }
+        #element-detail-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        body.dark-mode table.excel-table tbody tr.selected-row,
+        body.light-mode table.excel-table tbody tr.selected-row { background: color-mix(in srgb, var(--brand-accent) 28%, transparent); }
+        #envelope-toggle-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
         .tension-val { font-weight: bold; color: #047857; }
         .status-seabed { background: #ffedd5; color: #c2410c; font-weight: bold; padding: 2px 6px; border-radius: 4px; }
         .status-water { background: #dbeafe; color: #1e40af; padding: 2px 6px; border-radius: 4px; }
 
-        /* Static styling for markup below that has no dynamic JS-driven style toggles. */
-        #viewport-tabs { position: absolute; top: 10px; left: 10px; z-index: 25; display: flex; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px); }
+        /* Static styling for markup below that has no dynamic JS-driven style toggles. Both the
+           tabs pill and the history field-picker pill (below) live inside #viewport-toolbar, a
+           wrapping flex row -- so on a narrow canvas the field picker drops to its own line
+           instead of overlapping the tab labels (a fixed-position pill anchored to the right edge
+           did exactly that once the "Histórico no Tempo" tab made the row long enough). */
+        #viewport-toolbar { position: absolute; top: 10px; left: 10px; right: 25px; z-index: 25; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+        #viewport-tabs { display: flex; flex-wrap: wrap; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px; border-radius: 8px; backdrop-filter: blur(4px); }
+
+        /* Field picker for the "Histórico no Tempo" chart. Only shown for an element selection (a
+           node's history is fixed X/Y/Z, no field to pick) -- toggled via app.js::render(). */
+        #history-field-bar { display: none; align-items: center; gap: 6px; background: rgba(17, 17, 27, 0.75); padding: 4px 10px; border-radius: 8px; backdrop-filter: blur(4px); font-size: 12px; }
+        #history-field-bar label { color: #f1f0f6; font-weight: bold; white-space: nowrap; }
 
         /* Floating playback bar (video-player style), anchored to the bottom of the 3D viewport. */
         #playback-overlay {
@@ -96,7 +114,20 @@
         /* Full-bleed viewport layers (the 3D canvas and the 3 chart overlays) -- app.js's
            switchViewportView() toggles each one's `display` individually via inline style
            (kept inline below); everything else about their sizing is static and shared here. */
-        .viewport-layer { width: 100%; height: 100%; box-sizing: border-box; }
+        /* Absolute + top/bottom inset (not padding) clears #viewport-tabs (absolute, top:10px,
+           ~31px tall) and #playback-overlay (absolute, bottom:16px, ~34px tall) -- Plotly sizes
+           its SVG from the div's `clientHeight`, which INCLUDES padding, so a padding-based inset
+           doesn't actually shrink what Plotly thinks it has: it still renders full-height content
+           starting after the padding, overflowing past the div's true bottom edge, clipped away by
+           #canvas-container's overflow:hidden (this is what made the x-axis disappear). An inset
+           via top/bottom instead makes the div's actual box (and therefore clientHeight) already
+           the shrunk size, so Plotly sizes itself correctly the first time. */
+        .viewport-layer { position: absolute; top: 52px; left: 0; right: 0; bottom: 62px; box-sizing: border-box; }
+        /* #history-field-bar can wrap to its own line below #viewport-tabs on a narrow canvas
+           (see #viewport-toolbar above) -- when that's possible (the field bar is visible at
+           all), #history-chart needs extra top clearance so a wrapped bar doesn't sit on top of
+           the chart's own title. Toggled via app.js::render() alongside the field bar itself. */
+        #history-chart.with-field-bar { top: 90px; }
         .step-label-value { font-weight: bold; }
         .table-tab-heading-controls { font-size: 11px; padding: 3px 8px; }
         #table-view-elements-btn { margin-left: 8px; }
@@ -146,12 +177,31 @@
         </div>
 
         <div id="canvas-container">
-            <!-- Floating top tabs over the viewport (3D scene vs. 2D charts) -->
-            <div id="viewport-tabs">
-                <button class="btn-tab active" id="vtab-3d-btn">🧊 Cena 3D WebGL</button>
-                <button class="btn-tab" id="vtab-tension-btn">📈 Tração Efetiva T_eff</button>
-                <button class="btn-tab" id="vtab-moment-btn">📐 Momento & Curvatura</button>
-                <button class="btn-tab" id="vtab-vm-btn">⚡ Tensão von Mises</button>
+            <!-- Floating top toolbar over the viewport: tabs (3D scene vs. 2D charts) + the
+                 history chart's own field picker. A single wrapping flex row (#viewport-toolbar)
+                 so the field picker drops to its own line on a narrow canvas instead of
+                 overlapping the tabs. -->
+            <div id="viewport-toolbar">
+                <div id="viewport-tabs">
+                    <button class="btn-tab active" id="vtab-3d-btn">🧊 Cena 3D WebGL</button>
+                    <button class="btn-tab" id="vtab-tension-btn">📈 Tração Efetiva T_eff</button>
+                    <button class="btn-tab" id="vtab-moment-btn">📐 Momento & Curvatura</button>
+                    <button class="btn-tab" id="vtab-vm-btn">⚡ Tensão von Mises</button>
+                    <button class="btn-tab" id="vtab-history-btn">🕒 Histórico no Tempo</button>
+                </div>
+
+                <!-- Field picker for the history chart, independent from "🎯 Grandeza para Colorir"
+                     (the 3D scene's own field) -- see app.js::historyField. -->
+                <div id="history-field-bar">
+                    <label for="history-field-select">Grandeza:</label>
+                    <select id="history-field-select">
+                        <option value="tension" selected>⚡ Tração Efetiva (kN)</option>
+                        <option value="moment">🌀 Momento Fletor (kN·m)</option>
+                        <option value="curvature">📐 Curvatura (1/m)</option>
+                        <option value="vonmises">💥 Tensão von Mises (MPa)</option>
+                        <option value="mbr">🛡️ Fator de Segurança MBR (SF)</option>
+                    </select>
+                </div>
             </div>
 
             <!-- 1. Canvas 3D -->
@@ -167,6 +217,7 @@
             <div id="tension-chart" class="viewport-layer" style="display:none;"></div>
             <div id="moment-curv-chart" class="viewport-layer" style="display:none;"></div>
             <div id="vonmises-chart" class="viewport-layer" style="display:none;"></div>
+            <div id="history-chart" class="viewport-layer" style="display:none;"></div>
 
             <div id="zoom-rect"></div>
 
@@ -229,6 +280,14 @@
                 </div>
 
                 <div class="control-group">
+                    <div class="control-title">📉 ENVOLTÓRIA (MÍN/MÁX NO TEMPO)</div>
+                    <div id="envelope-toggle-row">
+                        <input type="checkbox" id="envelope-toggle">
+                        <label for="envelope-toggle">Mostrar envoltória sobre os gráficos de perfil</label>
+                    </div>
+                </div>
+
+                <div class="control-group">
                     <div class="control-title">🎯 GRANDEZA PARA COLORIR (CAMPO ESCALAR)</div>
                     <select id="scalar-field-select">
                         <option value="tension" selected>⚡ Tração Efetiva (kN)</option>
@@ -260,18 +319,36 @@
                     </span>
                     <span class="table-step-status">Passo Ativo: <span id="table-step-title">Passo 20 (100%)</span></span>
                 </h3>
+                <div class="control-group" id="element-detail-card">
+                    <div class="control-title" id="element-detail-title">🔍 DETALHE DO ELEMENTO</div>
+                    <div id="element-detail-empty" class="table-step-status">Clique numa linha da tabela de Elementos para ver o detalhe completo (momento, curvatura, von Mises, MBR).</div>
+                    <div id="element-detail-stats" style="display:none;">
+                        <div class="stat-card">
+                            <div class="stat-title">Momento Fletor (kN.m)</div>
+                            <div class="stat-value" id="detail-moment">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">Curvatura (1/m)</div>
+                            <div class="stat-value" id="detail-curvature">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">Tensão von Mises (MPa)</div>
+                            <div class="stat-value" id="detail-vonmises">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">Fator MBR (SF)</div>
+                            <div class="stat-value" id="detail-mbr">-</div>
+                        </div>
+                    </div>
+                </div>
                 <div class="scrollable-table-wrap">
                     <table class="excel-table" id="elements-table">
                         <thead>
                             <tr>
-                                <th>Elemento ID</th>
+                                <th class="sortable" id="th-sort-id">Elemento ID <span class="sort-indicator">⇅</span></th>
                                 <th>Nó Origem ➔ Destino</th>
-                                <th>Status da Seção</th>
-                                <th>Tração Efetiva (kN)</th>
-                                <th>Momento Fletor (kN.m)</th>
-                                <th>Curvatura (1/m)</th>
-                                <th>Tensão von Mises (MPa)</th>
-                                <th>Fator MBR (SF)</th>
+                                <th class="sortable" id="th-sort-status">Status da Seção <span class="sort-indicator">⇅</span></th>
+                                <th class="sortable" id="th-sort-tension">Tração Efetiva (kN) <span class="sort-indicator">⇅</span></th>
                             </tr>
                         </thead>
                         <tbody id="elements-tbody">
