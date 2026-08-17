@@ -196,21 +196,6 @@ struct LineInfo {
  */
 class RiserModel {
 public:
-    std::vector<std::unique_ptr<Node3D>> nodes;
-    std::vector<std::unique_ptr<CorotationalBeam3D>> elements;
-    EnvironmentalConfig environmental;
-    AnalysisOptionsConfig analysis_options;
-
-    /// Multi-line support (docs/roadmap.md, backlog "múltiplas linhas com corpo flutuante
-    /// compartilhado") -- empty on every single-line model (see LineInfo's doc comment for the
-    /// backward-compat contract). `nodes`/`elements` stay ONE flat list regardless (matching
-    /// `cDomain`/the HDF5 exporter/RCM equation numbering, all already line-agnostic) -- these
-    /// three vectors only add GROUPING metadata on top, they don't change how nodes/elements are
-    /// stored.
-    std::vector<ReferenceInfo> references;
-    std::vector<ConnectionInfo> connections;
-    std::vector<LineInfo> lines;
-
     RiserModel() = default;
 
     // Copy disabled (unique_ptr members aren't copyable); move is the implicitly-generated
@@ -221,13 +206,44 @@ public:
     RiserModel& operator=(RiserModel&&) noexcept = default;
 
     /**
+     * @brief The model's owned nodes. Read-only: the only ways to grow/empty this are
+     * add_node()/clear() -- see the class-level doc comment about the raw pointers other code
+     * (e.g. `CorotationalBeam3D::node1`/`node2`) holds into this storage.
+     */
+    const std::vector<std::unique_ptr<Node3D>>& nodes() const { return nodes_; }
+
+    /** @brief The model's owned elements. Read-only -- see nodes()'s doc comment, same reasoning. */
+    const std::vector<std::unique_ptr<CorotationalBeam3D>>& elements() const { return elements_; }
+
+    /** @brief Environmental configuration (seabed/current/wave/water) -- see EnvironmentalConfig. */
+    const EnvironmentalConfig& environmental() const { return environmental_; }
+    EnvironmentalConfig& environmental() { return environmental_; }
+
+    /** @brief Static/dynamic solver options -- see AnalysisOptionsConfig. */
+    const AnalysisOptionsConfig& analysis_options() const { return analysis_options_; }
+    AnalysisOptionsConfig& analysis_options() { return analysis_options_; }
+
+    /// Multi-line support (docs/roadmap.md, backlog "múltiplas linhas com corpo flutuante
+    /// compartilhado") -- empty on every single-line model (see LineInfo's doc comment for the
+    /// backward-compat contract). `nodes()`/`elements()` stay ONE flat list regardless (matching
+    /// `cDomain`/the HDF5 exporter/RCM equation numbering, all already line-agnostic) -- these
+    /// three accessors only add GROUPING metadata on top, they don't change how nodes/elements
+    /// are stored.
+    const std::vector<ReferenceInfo>& references() const { return references_; }
+    std::vector<ReferenceInfo>& references() { return references_; }
+    const std::vector<ConnectionInfo>& connections() const { return connections_; }
+    std::vector<ConnectionInfo>& connections() { return connections_; }
+    const std::vector<LineInfo>& lines() const { return lines_; }
+    std::vector<LineInfo>& lines() { return lines_; }
+
+    /**
      * @brief Constructs a Node3D owned by this model and returns a non-owning pointer to it.
      * @param args Forwarded to Node3D's constructor.
      */
     template <typename... Args>
     Node3D* add_node(Args&&... args) {
-        nodes.push_back(std::make_unique<Node3D>(std::forward<Args>(args)...));
-        return nodes.back().get();
+        nodes_.push_back(std::make_unique<Node3D>(std::forward<Args>(args)...));
+        return nodes_.back().get();
     }
 
     /**
@@ -236,14 +252,14 @@ public:
      */
     template <typename... Args>
     CorotationalBeam3D* add_element(Args&&... args) {
-        elements.push_back(std::make_unique<CorotationalBeam3D>(std::forward<Args>(args)...));
-        return elements.back().get();
+        elements_.push_back(std::make_unique<CorotationalBeam3D>(std::forward<Args>(args)...));
+        return elements_.back().get();
     }
 
     /** @brief Destroys all owned nodes and elements and empties both containers. */
     void clear() {
-        elements.clear();
-        nodes.clear();
+        elements_.clear();
+        nodes_.clear();
     }
 
     /**
@@ -275,27 +291,27 @@ public:
      */
     std::vector<LineAttachment> resolve_line_attachments() {
         std::vector<LineAttachment> result;
-        if (lines.empty()) {
-            if (!nodes.empty()) {
-                result.push_back({nodes.front().get(), &environmental.vessel_motion});
+        if (lines_.empty()) {
+            if (!nodes_.empty()) {
+                result.push_back({nodes_.front().get(), &environmental_.vessel_motion});
             }
             return result;
         }
 
         std::map<int, Node3D*> node_by_id;
-        for (const auto& n : nodes) node_by_id[n->id] = n.get();
+        for (const auto& n : nodes_) node_by_id[n->id] = n.get();
         std::map<int, const ConnectionInfo*> conn_by_id;
-        for (const auto& c : connections) conn_by_id[c.id] = &c;
+        for (const auto& c : connections_) conn_by_id[c.id] = &c;
         std::map<int, const ReferenceInfo*> ref_by_id;
-        for (const auto& r : references) ref_by_id[r.id] = &r;
+        for (const auto& r : references_) ref_by_id[r.id] = &r;
 
-        for (const auto& line : lines) {
+        for (const auto& line : lines_) {
             auto cit = conn_by_id.find(line.top_connection_id);
             if (cit == conn_by_id.end()) continue;
             auto nit = node_by_id.find(cit->second->node_id);
             if (nit == node_by_id.end()) continue;
 
-            const VesselMotionConfig* cfg = &environmental.vessel_motion;
+            const VesselMotionConfig* cfg = &environmental_.vessel_motion;
             auto rit = ref_by_id.find(cit->second->reference_id);
             if (rit != ref_by_id.end() && rit->second->type == ReferenceType::Floating) {
                 cfg = &rit->second->vessel_motion;
@@ -304,6 +320,15 @@ public:
         }
         return result;
     }
+
+private:
+    std::vector<std::unique_ptr<Node3D>> nodes_;
+    std::vector<std::unique_ptr<CorotationalBeam3D>> elements_;
+    EnvironmentalConfig environmental_;
+    AnalysisOptionsConfig analysis_options_;
+    std::vector<ReferenceInfo> references_;
+    std::vector<ConnectionInfo> connections_;
+    std::vector<LineInfo> lines_;
 };
 
 } // namespace risersim

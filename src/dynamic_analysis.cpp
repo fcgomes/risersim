@@ -36,11 +36,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     std::cout << "  Duration: " << duration_s << " s | dt: " << dt_s << " s | Wave Amp: " << wave_amplitude << " m | Wave Period: " << wave_period << " s" << std::endl;
     std::cout << "=========================================================================\n" << std::endl;
 
-    if (!model || model->nodes.empty()) return false;
+    if (!model || model->nodes().empty()) return false;
 
     // Resolve every line's top attachment ONCE, here -- suporte multi-linha (docs/roadmap.md,
     // backlog "múltiplas linhas com corpo flutuante compartilhado"). Um modelo single-line
-    // (model->lines vazio) resolve pra exatamente um attachment, {nodes.front(),
+    // (model->lines() vazio) resolve pra exatamente um attachment, {nodes.front(),
     // environmental.vessel_motion} -- comportamento de hoje, inalterado. `vessel_motions` (membro,
     // dynamic_analysis.hpp) só recebe uma entrada por linha cuja config resolvida tem
     // `enabled=true`; `line_runtimes` abaixo guarda, por linha, um ponteiro pra essa entrada (ou
@@ -50,7 +50,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     if (attachments.empty()) return false;
 
     std::map<const Node3D*, size_t> node_array_index;
-    for (size_t i = 0; i < model->nodes.size(); ++i) node_array_index[model->nodes[i].get()] = i;
+    for (size_t i = 0; i < model->nodes().size(); ++i) node_array_index[model->nodes()[i].get()] = i;
 
     vessel_motions.clear();
     size_t enabled_count = 0;
@@ -128,28 +128,28 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     // none). One realization for the whole run (not regenerated per step), same convention as a
     // real irregular sea state.
     std::optional<AiryWaveKinematics> wave_kinematics;
-    const double wave_heading_rad = model->environmental.wave_angle_deg * std::numbers::pi / 180.0;
-    if (model->environmental.wave_type == "JONSWAP") {
+    const double wave_heading_rad = model->environmental().wave_angle_deg * std::numbers::pi / 180.0;
+    if (model->environmental().wave_type == "JONSWAP") {
         double Hs = 2.0 * wave_amplitude; // wave_amplitude_m is height_m/2.0 (see model_builder.cpp)
-        double depth = model->environmental.water_surface_z - current.seabed_depth;
-        JONSWAPSpectrum spectrum(Hs, wave_period, depth, model->environmental.wave_gamma);
+        double depth = model->environmental().water_surface_z - current.seabed_depth();
+        JONSWAPSpectrum spectrum(Hs, wave_period, depth, model->environmental().wave_gamma);
         wave_kinematics.emplace(spectrum.generate_wave_components(), depth);
     }
 
-    // HHT-alpha (Alfa-Method) integration constants, derived from model->analysis_options.hht_alpha
+    // HHT-alpha (Alfa-Method) integration constants, derived from model->analysis_options().hht_alpha
     // (default 0.0 -- plain Newmark average acceleration; real ANFLEX's own default is -0.1,
     // bldanagr3.f:77/bcalfa.f:100-101, but tested directly against the Far load case and found to
     // make its known non-convergence slightly WORSE, not better -- see docs/roadmap.md, Eixo 2a,
     // Atualização 16 -- so defaulted to 0.0 instead; -0.1 remains available via JSON config).
     // gamma=0.5-alpha, beta=0.25*(1-alpha)^2 (bcalfa.f:100-101).
-    const double hht_alpha = model->analysis_options.hht_alpha;
+    const double hht_alpha = model->analysis_options().hht_alpha;
     const double gamma_newmark = 0.5 - hht_alpha;
     const double beta_newmark = 0.25 * (1.0 - hht_alpha) * (1.0 - hht_alpha);
 
     // Save Initial Equilibrium Displacements
     std::vector<Eigen::Vector3d> static_disps;
     std::vector<Eigen::Vector3d> static_rots;
-    for (const auto& node : model->nodes) {
+    for (const auto& node : model->nodes()) {
         static_disps.push_back(node->disp);
         static_rots.push_back(node->rot);
     }
@@ -178,7 +178,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         lr.prescribed->dof_active = {true, true, true, true, true, true};
     }
 
-    // Reconciles model->nodes[*]->disp/rot/tension_effective with a given system-DOF vector --
+    // Reconciles model->nodes()[*]->disp/rot/tension_effective with a given system-DOF vector --
     // extracted so it can be called both from inside assemble_at() (every Newton trial) AND once
     // from the outer step loop after try_advance() returns, to resync node state with the FINAL
     // committed U when a step exhausted its retry budget without converging (try_advance rewinds
@@ -186,8 +186,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     // last, now-superseded trial left them at -- this closes that gap before the snapshot/export
     // step below reads node state).
     auto sync_node_state = [&](const Eigen::VectorXd& U_trial) {
-        for (size_t i = 0; i < model->nodes.size(); ++i) {
-            auto* node = model->nodes[i].get();
+        for (size_t i = 0; i < model->nodes().size(); ++i) {
+            auto* node = model->nodes()[i].get();
 
             Eigen::Vector3d dyn_rot_perturbation = Eigen::Vector3d::Zero();
             bool has_rot_dof = false;
@@ -209,7 +209,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         }
 
         // Update Element Effective Tensions based on deformed geometry
-        for (const auto& elem : model->elements) {
+        for (const auto& elem : model->elements()) {
             elem->update_effective_tension();
         }
     };
@@ -227,7 +227,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     auto assemble_mass = [&]() -> Eigen::SparseMatrix<double> {
         Eigen::SparseMatrix<double> M(num_dofs, num_dofs);
         std::vector<Eigen::Triplet<double>> m_triplets;
-        for (const auto& elem : model->elements) {
+        for (const auto& elem : model->elements()) {
             Eigen::MatrixXd m_elem = elem->mass_matrix(water_density_for_mass);
             int n_dof = elem->num_nodes() * 6;
             std::vector<int> eq_map(n_dof);
@@ -256,7 +256,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     // run used throughout this investigation (docs/roadmap.md, Eixo 2a, Atualização 16) -- so
     // unlike HHT-alpha, this isn't a replay of what made the reference run robust, it's a genuine
     // (real, not invented) robustness mechanism being tried on its own merits. Bounded by
-    // model->analysis_options.dynamic_max_step_halvings (0 = no retry, immediate failure,
+    // model->analysis_options().dynamic_max_step_halvings (0 = no retry, immediate failure,
     // matching pre-retry behavior exactly). Returns true with U/V/A/F_static_prev committed to
     // t_start+dt_sub; false with U/V/A/F_static_prev rewound to their value on entry (state
     // unchanged from the caller's perspective, so a parent-level retry starts clean).
@@ -324,11 +324,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
 
             // 1. External Load Vector F_ext
             st.F_ext = Eigen::VectorXd::Zero(num_dofs);
-            for (const auto& elem : model->elements) {
-                double L = elem->initial_length;
+            for (const auto& elem : model->elements()) {
+                double L = elem->initial_length();
                 double g = 9.81;
 
-                double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
+                double w_dry = (elem->props().rho * elem->props().A + elem->props().rho_fluid * elem->inner_area()) * g;
                 // Submersion-scaled buoyancy (see hydrostatics.hpp, docs/roadmap.md item 1b) --
                 // this is the fix for the divergence traced to a node crossing the water surface
                 // mid-simulation: buoyancy used to be a CONSTANT per element regardless of Z,
@@ -336,23 +336,23 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 // at the crossing. Re-evaluated every Newton iteration (this whole F_ext block
                 // already re-runs per iteration), so it tracks the node's CURRENT position, not
                 // just its position at the start of the time step.
-                double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
-                Hydrostatics hydro(elem->props.D_outer, L, water_density);
-                hydro.compute(zc, model->environmental.water_surface_z);
+                double zc[2] = {elem->node1()->current_coords().z(), elem->node2()->current_coords().z()};
+                Hydrostatics hydro(elem->props().D_outer, L, water_density);
+                hydro.compute(zc, model->environmental().water_surface_z);
 
-                int eq1_z = elem->node1->eq_numbers[2];
-                int eq2_z = elem->node2->eq_numbers[2];
+                int eq1_z = elem->node1()->eq_numbers[2];
+                int eq2_z = elem->node2()->eq_numbers[2];
 
                 if (eq1_z >= 0) st.F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
                 if (eq2_z >= 0) st.F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
 
                 if (enable_current) {
-                    double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
-                    Eigen::Vector3d cur_elem_axis = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
-                    Eigen::Vector3d f_drag = current.get_drag_force_per_length(avg_z, elem->props.D_outer, water_density_for_mass, cur_elem_axis);
+                    double avg_z = 0.5 * (elem->node1()->current_coords().z() + elem->node2()->current_coords().z());
+                    Eigen::Vector3d cur_elem_axis = (elem->node2()->current_coords() - elem->node1()->current_coords()).normalized();
+                    Eigen::Vector3d f_drag = current.get_drag_force_per_length(avg_z, elem->props().D_outer, water_density_for_mass, cur_elem_axis);
 
-                    int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
-                    int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
+                    int eq1_x = elem->node1()->eq_numbers[0]; int eq2_x = elem->node2()->eq_numbers[0];
+                    int eq1_y = elem->node1()->eq_numbers[1]; int eq2_y = elem->node2()->eq_numbers[1];
 
                     if (eq1_x >= 0) st.F_ext[eq1_x] += f_drag.x() * L * 0.5;
                     if (eq2_x >= 0) st.F_ext[eq2_x] += f_drag.x() * L * 0.5;
@@ -363,8 +363,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 }
 
                 if (wave_kinematics.has_value()) {
-                    Eigen::Vector3d p1 = elem->node1->current_coords();
-                    Eigen::Vector3d p2 = elem->node2->current_coords();
+                    Eigen::Vector3d p1 = elem->node1()->current_coords();
+                    Eigen::Vector3d p2 = elem->node2()->current_coords();
                     Eigen::Vector3d elem_axis = (p2 - p1).normalized();
                     Eigen::Vector3d mid = 0.5 * (p1 + p2);
 
@@ -375,7 +375,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     // origin, not tied to any real ANFLEX reference -- a simplification, doesn't
                     // affect the force's magnitude/spectral content, just its phase along the line.
                     double x_wave = mid.x() * std::cos(wave_heading_rad) + mid.y() * std::sin(wave_heading_rad);
-                    double z_wave = mid.z() - model->environmental.water_surface_z;
+                    double z_wave = mid.z() - model->environmental().water_surface_z;
 
                     Eigen::Vector3d v_fluid, a_fluid;
                     wave_kinematics->calculate_fluid_kinematics(x_wave, z_wave, time, v_fluid, a_fluid);
@@ -386,8 +386,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     // not recomputed per trial U_trial.
                     Eigen::Vector3d v_struct = Eigen::Vector3d::Zero();
                     for (int k = 0; k < 3; ++k) {
-                        int eq1v = elem->node1->eq_numbers[k];
-                        int eq2v = elem->node2->eq_numbers[k];
+                        int eq1v = elem->node1()->eq_numbers[k];
+                        int eq2v = elem->node2()->eq_numbers[k];
                         double v1 = (eq1v >= 0) ? V_curr[eq1v] : 0.0;
                         double v2 = (eq2v >= 0) ? V_curr[eq2v] : 0.0;
                         v_struct[k] = 0.5 * (v1 + v2);
@@ -401,14 +401,14 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     // real structural acceleration here would double-count that term (once via
                     // M_global, once via F_ext). Zeroing it makes calculate_force_per_length()
                     // return exactly `drag(v_rel) + Cm*rho*A*a_fluid`, the genuinely EXTERNAL part.
-                    double Cm = 1.0 + elem->props.Ca;
-                    MorisonForce morison(elem->props.Cd, Cm, elem->props.D_outer, water_density);
+                    double Cm = 1.0 + elem->props().Ca;
+                    MorisonForce morison(elem->props().Cd, Cm, elem->props().D_outer, water_density);
                     Eigen::Vector3d f_morison = morison.calculate_force_per_length(
                         v_fluid, a_fluid, v_struct, Eigen::Vector3d::Zero(), elem_axis);
 
-                    int eq1_xm = elem->node1->eq_numbers[0]; int eq2_xm = elem->node2->eq_numbers[0];
-                    int eq1_ym = elem->node1->eq_numbers[1]; int eq2_ym = elem->node2->eq_numbers[1];
-                    int eq1_zm = elem->node1->eq_numbers[2]; int eq2_zm = elem->node2->eq_numbers[2];
+                    int eq1_xm = elem->node1()->eq_numbers[0]; int eq2_xm = elem->node2()->eq_numbers[0];
+                    int eq1_ym = elem->node1()->eq_numbers[1]; int eq2_ym = elem->node2()->eq_numbers[1];
+                    int eq1_zm = elem->node1()->eq_numbers[2]; int eq2_zm = elem->node2()->eq_numbers[2];
                     if (eq1_xm >= 0) st.F_ext[eq1_xm] += f_morison.x() * L * 0.5;
                     if (eq2_xm >= 0) st.F_ext[eq2_xm] += f_morison.x() * L * 0.5;
                     if (eq1_ym >= 0) st.F_ext[eq1_ym] += f_morison.y() * L * 0.5;
@@ -554,7 +554,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             constexpr double max_translation_step = 0.5;
             constexpr double max_rotation_step = 0.3;
             double alpha_cap = 1.0;
-            for (const auto& node : model->nodes) {
+            for (const auto& node : model->nodes()) {
                 for (int i = 0; i < 3; ++i) {
                     int eq = node->eq_numbers[i];
                     if (eq >= 0) {
@@ -611,15 +611,15 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // debug instrumentation tracing exactly this failure signature: touchdown-zone "tx"
             // (axial, where friction acts) DOFs swinging to multi-MN-scale spurious tension
             // (docs/roadmap.md, Eixo 1b item 3).
-            std::vector<Eigen::Vector2d> friction_snapshot(model->nodes.size());
-            for (size_t k = 0; k < model->nodes.size(); ++k) friction_snapshot[k] = model->nodes[k]->friction_force;
+            std::vector<Eigen::Vector2d> friction_snapshot(model->nodes().size());
+            for (size_t k = 0; k < model->nodes().size(); ++k) friction_snapshot[k] = model->nodes()[k]->friction_force;
 
             constexpr int max_backtracks = 5;
             double trial_alpha = alpha_cap;
             Eigen::VectorXd U_trial, A_trial, V_trial;
             AssembledState trial_state;
             for (int bt = 0; bt <= max_backtracks; ++bt) {
-                for (size_t k = 0; k < model->nodes.size(); ++k) model->nodes[k]->friction_force = friction_snapshot[k];
+                for (size_t k = 0; k < model->nodes().size(); ++k) model->nodes()[k]->friction_force = friction_snapshot[k];
                 U_trial = U_curr + trial_alpha * delta_U;
                 trial_state = assemble_at(U_trial, iter);
                 A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_sub)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
@@ -654,7 +654,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // tolerance would), not a special case for seabed contact specifically.
             {
                 double max_transl_inc = 0.0, max_rot_inc = 0.0;
-                for (const auto& node : model->nodes) {
+                for (const auto& node : model->nodes()) {
                     for (int i = 0; i < 3; ++i) {
                         int eq = node->eq_numbers[i];
                         if (eq >= 0) max_transl_inc = std::max(max_transl_inc, std::abs(trial_alpha * delta_U[eq]));
@@ -695,7 +695,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             return true;
         }
 
-        if (depth >= model->analysis_options.dynamic_max_step_halvings) {
+        if (depth >= model->analysis_options().dynamic_max_step_halvings) {
             U = U_before; V = V_before; A = A_before; F_static_prev = F_static_prev_before; // rewind, not garbage
             return false;
         }
@@ -720,7 +720,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         if (!step_converged && step > 0) {
             std::cerr << "  ⚠️ Dynamic NR did not converge at step " << step << " (t=" << time << "s)"
                        << " even after retrying with dt halved down to "
-                       << (dt_s / (1 << model->analysis_options.dynamic_max_step_halvings)) << "s." << std::endl;
+                       << (dt_s / (1 << model->analysis_options().dynamic_max_step_halvings)) << "s." << std::endl;
             all_steps_converged = false;
             if (stop_on_first_non_convergence) {
                 std::cerr << "  ⏹️ Stopping (stop_on_first_non_convergence=true) instead of running "
@@ -741,21 +741,21 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             snap.step_index = step;
             snap.load_factor = time;
 
-            for (const auto& node : model->nodes) {
+            for (const auto& node : model->nodes()) {
                 snap.node_coords.push_back(node->current_coords());
             }
 
-            for (size_t i = 0; i < model->elements.size(); ++i) {
-                auto* elem = model->elements[i].get();
+            for (size_t i = 0; i < model->elements().size(); ++i) {
+                auto* elem = model->elements()[i].get();
                 // Vizinho REAL (compartilha o nó), não só adjacente no array -- com múltiplas
                 // linhas, elementos de linhas diferentes ficam lado a lado no array plano sem se
                 // tocar; usar i-1/i+1 cegamente misturaria curvatura/momento entre linhas
                 // desconexas na fronteira.
-                const auto* prev = (i > 0 && model->elements[i - 1]->node2 == elem->node1) ? model->elements[i - 1].get() : nullptr;
-                const auto* next = (i + 1 < model->elements.size() && model->elements[i + 1]->node1 == elem->node2) ? model->elements[i + 1].get() : nullptr;
+                const auto* prev = (i > 0 && model->elements()[i - 1]->node2() == elem->node1()) ? model->elements()[i - 1].get() : nullptr;
+                const auto* next = (i + 1 < model->elements().size() && model->elements()[i + 1]->node1() == elem->node2()) ? model->elements()[i + 1].get() : nullptr;
 
                 auto sc = elem->compute_stress_and_curvature(prev, next, 350.0);
-                snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                snap.element_tensions_kN.push_back(elem->tension_effective() / 1000.0);
                 snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
                 snap.element_curvatures.push_back(sc.curvature);
                 snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);

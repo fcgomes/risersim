@@ -85,17 +85,49 @@ struct BeamMaterialProps {
  */
 class CorotationalBeam3D : public Element {
 public:
-    int id;
-    Node3D* node1;
-    Node3D* node2;
-    BeamMaterialProps props;
+    CorotationalBeam3D(int elem_id, Node3D* n1, Node3D* n2, const BeamMaterialProps& p, double L_unstretched = 0.0)
+        : id_(elem_id), node1_(n1), node2_(n2), props_(p), tension_true_(0.0), tension_effective_(0.0),
+          p_i_(0.0), p_e_(0.0), net_upward_buoyancy_(0.0) {
+        initial_length_ = (L_unstretched > 0.0) ? L_unstretched : (node2_->coords - node1_->coords).norm();
+        Eigen::Vector3d ex0 = (node2_->coords - node1_->coords).normalized();
+        node1_init_triad_ = build_frame_from_chord(ex0);
+        node2_init_triad_ = node1_init_triad_;
+    }
 
-    double initial_length;
-    double tension_true;      ///< True axial wall tension T_true.
-    double tension_effective; ///< T_eff = T_true + p_e*A_e - p_i*A_i.
-    double p_i;               ///< Internal fluid pressure (Pa).
-    double p_e;               ///< External hydrostatic pressure (Pa).
-    double net_upward_buoyancy; ///< Net upward buoyancy force per meter from modules (N/m).
+    /** @brief Element ID, set at construction. */
+    int id() const { return id_; }
+
+    /** @brief This element's first node. Never reassigned after construction. */
+    Node3D* node1() const { return node1_; }
+    /** @brief This element's second node. Never reassigned after construction. */
+    Node3D* node2() const { return node2_; }
+
+    /** @brief Cross-section and material properties, set at construction. Mutable overload for
+     * localized in-place property modifiers (see BuoyancyModule/BendRestrictor,
+     * buoyancy_and_restrictor.hpp) that overwrite specific fields (e.g. D_outer, IY/IZ) on an
+     * already-built element -- BeamMaterialProps itself stays a plain public-field struct. */
+    const BeamMaterialProps& props() const { return props_; }
+    BeamMaterialProps& props() { return props_; }
+
+    /** @brief Unstretched length (m), set at construction. */
+    double initial_length() const { return initial_length_; }
+
+    /** @brief True axial wall tension T_true (N). Only updated by update_effective_tension(). */
+    double tension_true() const { return tension_true_; }
+    /** @brief T_eff = T_true + p_e*A_e - p_i*A_i (N). Only updated by update_effective_tension(). */
+    double tension_effective() const { return tension_effective_; }
+
+    /** @brief Internal fluid pressure (Pa). */
+    double p_i() const { return p_i_; }
+    void set_p_i(double p) { p_i_ = p; }
+
+    /** @brief External hydrostatic pressure (Pa). */
+    double p_e() const { return p_e_; }
+    void set_p_e(double p) { p_e_ = p; }
+
+    /** @brief Net upward buoyancy force per meter from modules (N/m, e.g. lazy wave). */
+    double net_upward_buoyancy() const { return net_upward_buoyancy_; }
+    void set_net_upward_buoyancy(double b) { net_upward_buoyancy_ = b; }
 
     /**
      * @brief Fixed reference triads at both ends, computed once in the initial (t=0) configuration.
@@ -109,30 +141,22 @@ public:
      * feeding the total accumulated rotation into the bending stiffness collapses convergence far
      * earlier than ANFLEX for long chains.
      */
-    Eigen::Matrix3d node1_init_triad;
-    Eigen::Matrix3d node2_init_triad;
-
-    CorotationalBeam3D(int elem_id, Node3D* n1, Node3D* n2, const BeamMaterialProps& p, double L_unstretched = 0.0)
-        : id(elem_id), node1(n1), node2(n2), props(p), tension_true(0.0), tension_effective(0.0), p_i(0.0), p_e(0.0), net_upward_buoyancy(0.0) {
-        initial_length = (L_unstretched > 0.0) ? L_unstretched : (node2->coords - node1->coords).norm();
-        Eigen::Vector3d ex0 = (node2->coords - node1->coords).normalized();
-        node1_init_triad = build_frame_from_chord(ex0);
-        node2_init_triad = node1_init_triad;
-    }
+    const Eigen::Matrix3d& node1_init_triad() const { return node1_init_triad_; }
+    const Eigen::Matrix3d& node2_init_triad() const { return node2_init_triad_; }
 
     /** @brief Current (deformed) element length: distance between the current node positions. */
     double current_length() const {
-        return (node2->current_coords() - node1->current_coords()).norm();
+        return (node2_->current_coords() - node1_->current_coords()).norm();
     }
 
     /** @brief Cross-sectional area enclosed by the outer diameter (m^2). */
     double outer_area() const {
-        return std::numbers::pi * props.D_outer * props.D_outer / 4.0;
+        return std::numbers::pi * props_.D_outer * props_.D_outer / 4.0;
     }
 
     /** @brief Cross-sectional area enclosed by the inner (bore) diameter (m^2). */
     double inner_area() const {
-        return std::numbers::pi * props.D_inner * props.D_inner / 4.0;
+        return std::numbers::pi * props_.D_inner * props_.D_inner / 4.0;
     }
 
     /**
@@ -140,24 +164,25 @@ public:
      * @param rho_water Seawater density used for the added-mass term (kg/m^3).
      */
     double total_linear_mass(double rho_water = 1025.0) const {
-        double m_pipe = props.rho_structural * props.A;
-        double m_fluid = props.rho_fluid * inner_area();
-        double m_added = rho_water * outer_area() * props.Ca;
+        double m_pipe = props_.rho_structural * props_.A;
+        double m_fluid = props_.rho_fluid * inner_area();
+        double m_added = rho_water * outer_area() * props_.Ca;
         return m_pipe + m_fluid + m_added;
     }
 
     /**
      * @brief Recomputes and returns the effective tension T_eff = T_true + p_e*A_e - p_i*A_i.
      *
-     * `T_true` is derived from engineering axial strain (`current_length()` vs. `initial_length`)
-     * times `E*A`. Updates tension_true and tension_effective as a side effect.
+     * `T_true` is derived from engineering axial strain (`current_length()` vs. `initial_length()`)
+     * times `E*A`. Updates tension_true()/tension_effective() as a side effect -- the only place
+     * either is mutated after construction.
      */
     double update_effective_tension() {
-        double delta_L = current_length() - initial_length;
-        double strain = delta_L / initial_length;
-        tension_true = props.E * props.A * strain;
-        tension_effective = tension_true + p_e * outer_area() - p_i * inner_area();
-        return tension_effective;
+        double delta_L = current_length() - initial_length_;
+        double strain = delta_L / initial_length_;
+        tension_true_ = props_.E * props_.A * strain;
+        tension_effective_ = tension_true_ + p_e_ * outer_area() - p_i_ * inner_area();
+        return tension_effective_;
     }
 
     /** @brief Local (element-frame) material (elastic) stiffness matrix (12x12), standard 3D Euler-Bernoulli beam. */
@@ -235,8 +260,8 @@ public:
     /** @brief Always 2 for a beam element. */
     int num_nodes() const override { return 2; }
 
-    /** @brief `node(0)` is node1, `node(1)` is node2. */
-    Node3D* node(int local_index) const override { return local_index == 0 ? node1 : node2; }
+    /** @brief `node(0)` is node1(), `node(1)` is node2(). */
+    Node3D* node(int local_index) const override { return local_index == 0 ? node1_ : node2_; }
 
     /**
      * @brief Element::assemble() implementation: thin dynamically-sized wrapper around compute_corotational_forces().
@@ -273,6 +298,22 @@ public:
         const CorotationalBeam3D* prev_elem = nullptr,
         const CorotationalBeam3D* next_elem = nullptr,
         double yield_stress_MPa = 350.0) const;
+
+private:
+    int id_;
+    Node3D* node1_;
+    Node3D* node2_;
+    BeamMaterialProps props_;
+
+    double initial_length_;
+    double tension_true_;      ///< True axial wall tension T_true.
+    double tension_effective_; ///< T_eff = T_true + p_e*A_e - p_i*A_i.
+    double p_i_;               ///< Internal fluid pressure (Pa).
+    double p_e_;               ///< External hydrostatic pressure (Pa).
+    double net_upward_buoyancy_; ///< Net upward buoyancy force per meter from modules (N/m).
+
+    Eigen::Matrix3d node1_init_triad_;
+    Eigen::Matrix3d node2_init_triad_;
 };
 
 } // namespace risersim

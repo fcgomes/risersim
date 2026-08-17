@@ -34,15 +34,15 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     // sem relação nenhuma com a física, tipo o tamanho de alocações de heap anteriores, mudavam o
     // lixo lido aqui e por consequência a convergência).
     std::unordered_map<Node3D*, Eigen::Vector3d> node_tangent_sum;
-    for (const auto& elem : model->elements) {
-        Eigen::Vector3d ex = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
-        node_tangent_sum.try_emplace(elem->node1, Eigen::Vector3d::Zero());
-        node_tangent_sum.try_emplace(elem->node2, Eigen::Vector3d::Zero());
-        node_tangent_sum[elem->node1] += ex;
-        node_tangent_sum[elem->node2] += ex;
+    for (const auto& elem : model->elements()) {
+        Eigen::Vector3d ex = (elem->node2()->current_coords() - elem->node1()->current_coords()).normalized();
+        node_tangent_sum.try_emplace(elem->node1(), Eigen::Vector3d::Zero());
+        node_tangent_sum.try_emplace(elem->node2(), Eigen::Vector3d::Zero());
+        node_tangent_sum[elem->node1()] += ex;
+        node_tangent_sum[elem->node2()] += ex;
     }
 
-    for (const auto& elem : model->elements) {
+    for (const auto& elem : model->elements()) {
         elem->update_effective_tension();
 
         // Stiffness and internal force from the consistent corotational state (each
@@ -80,7 +80,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     }
 
     // Apply Seabed Interaction (Bilinear Soil Springs at TDZ)
-    for (const auto& node_ptr : model->nodes) {
+    for (const auto& node_ptr : model->nodes()) {
         Node3D* node = node_ptr.get();
         double f_seabed = 0.0, k_seabed = 0.0;
         seabed.calculate_seabed_reaction(node->current_coords().z(), f_seabed, k_seabed);
@@ -117,7 +117,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             double du_lateral = node->delta_disp_xy.x() * lateral_dir.x() + node->delta_disp_xy.y() * lateral_dir.y();
 
             double k_ax = 0.0, k_lat = 0.0;
-            if (seabed.soil_model == SoilModel::Coupled) {
+            if (seabed.soil_model() == SoilModel::Coupled) {
                 // Combined axial+lateral yield surface (real ANFLEX's cCoupledSoil, e.g.
                 // Exemplo_02a's %OPTION.SOIL.COUPLED) -- see seabed.hpp:calculate_friction_coupled.
                 seabed.calculate_friction_coupled(f_seabed, du_axial, du_lateral,
@@ -126,9 +126,9 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
             } else {
                 // Independent per-axis caps (real ANFLEX's cUncoupledSoil, e.g. Exemplo_01a's
                 // %SOIL.UNCOUPLED) -- see seabed.hpp:calculate_friction_1d.
-                seabed.calculate_friction_1d(seabed.axial_friction, seabed.axial_elastic_deflection_limit,
+                seabed.calculate_friction_1d(seabed.axial_friction(), seabed.axial_elastic_deflection_limit(),
                                              f_seabed, du_axial, node->friction_force[0], k_ax);
-                seabed.calculate_friction_1d(seabed.lateral_friction, seabed.lateral_elastic_deflection_limit,
+                seabed.calculate_friction_1d(seabed.lateral_friction(), seabed.lateral_elastic_deflection_limit(),
                                              f_seabed, du_lateral, node->friction_force[1], k_lat);
             }
 
@@ -168,7 +168,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     // default, so this is a no-op unless a caller (e.g. solve_vessel_offset()) populates it.
     if (!prescribed_motions.empty()) {
         double big_number = 0.0;
-        for (const auto& elem : model->elements) big_number = std::max(big_number, elem->props.E);
+        for (const auto& elem : model->elements()) big_number = std::max(big_number, elem->props().E);
         for (const auto& pm : prescribed_motions) pm.apply(big_number, triplets, F_int);
     }
 
@@ -179,17 +179,17 @@ Eigen::SparseMatrix<double> Analysis::assemble_buoyancy_stiffness() const {
     Eigen::SparseMatrix<double> K_buoyancy(num_dofs, num_dofs);
     if (!model) return K_buoyancy;
 
-    double water_surface_z = model->environmental.water_surface_z;
+    double water_surface_z = model->environmental().water_surface_z;
     double g = 9.81;
     std::vector<Eigen::Triplet<double>> triplets;
 
-    for (const auto& elem : model->elements) {
-        double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
-        Hydrostatics hydro(elem->props.D_outer, elem->initial_length, water_density);
+    for (const auto& elem : model->elements()) {
+        double zc[2] = {elem->node1()->current_coords().z(), elem->node2()->current_coords().z()};
+        Hydrostatics hydro(elem->props().D_outer, elem->initial_length(), water_density);
         hydro.compute(zc, water_surface_z);
 
-        int eq1_z = elem->node1->eq_numbers[2];
-        int eq2_z = elem->node2->eq_numbers[2];
+        int eq1_z = elem->node1()->eq_numbers[2];
+        int eq2_z = elem->node2()->eq_numbers[2];
         // d(F_int)/dz == -d(F_ext_buoyancy)/dz -- F_ext's buoyancy term REDUCES the downward
         // weight as an end rises toward the surface, so its own Z-derivative is already the
         // right-signed restoring stiffness for the residual (F_ext - F_int); since the caller

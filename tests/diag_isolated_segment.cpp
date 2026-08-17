@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
         model->add_element(eid, node_by_id[n1_id], node_by_id[n2_id], props, L_unstretched);
     }
 
-    if (model->nodes.size() < 2) {
+    if (model->nodes().size() < 2) {
         std::cerr << "No elements found in range [" << start_elem_id << ", " << end_elem_id << "]" << std::endl;
         delete model;
         return 2;
@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
     risersim::Node3D* last_node = node_by_id[node_order.back()];
     first_node->eq_numbers = std::vector<int>(6, -1);
     if (fix_mode == 0) last_node->eq_numbers = std::vector<int>(6, -1);
-    for (const auto& node_ptr : model->nodes) {
+    for (const auto& node_ptr : model->nodes()) {
         risersim::Node3D* node = node_ptr.get();
         if (node != first_node && (fix_mode == 0 ? node != last_node : true)) {
             node->eq_numbers = {0, 1, 2, 3, 4, 5};
@@ -149,13 +149,13 @@ int main(int argc, char** argv) {
     std::cout << "  Diagnostic: isolated segment from the real mesh (Exemplo_01a)" << std::endl;
     std::cout << "=========================================================" << std::endl;
     std::cout << "Elements " << start_elem_id << ".." << end_elem_id
-              << " (" << model->elements.size() << " elements, " << model->nodes.size() << " nodes)" << std::endl;
+              << " (" << model->elements().size() << " elements, " << model->nodes().size() << " nodes)" << std::endl;
     std::cout << "End node 1 (id " << first_node->id << "): "
               << first_node->coords.x() << ", " << first_node->coords.y() << ", " << first_node->coords.z() << std::endl;
     std::cout << "End node 2 (id " << last_node->id << "): "
               << last_node->coords.x() << ", " << last_node->coords.y() << ", " << last_node->coords.z() << std::endl;
     double L_total = 0.0;
-    for (const auto& e : model->elements) L_total += e->initial_length;
+    for (const auto& e : model->elements()) L_total += e->initial_length();
     std::cout << "Total segment length: " << L_total << " m" << std::endl;
 
     risersim::StaticAnalysis sa;
@@ -173,10 +173,10 @@ int main(int argc, char** argv) {
         // axial and lateral are quite different from each other, and from the
         // isotropic default (0.05m) used previously.
         sa.seabed = risersim::SeabedInteraction(-1.52608e-05, 800000.0, 0.95, 0.279);
-        sa.seabed.axial_friction = 0.92;
-        sa.seabed.axial_elastic_deflection_limit = 0.03;
-        sa.seabed.lateral_friction = 0.95;
-        sa.seabed.lateral_elastic_deflection_limit = 0.279;
+        sa.seabed.set_axial_friction(0.92);
+        sa.seabed.set_axial_elastic_deflection_limit(0.03);
+        sa.seabed.set_lateral_friction(0.95);
+        sa.seabed.set_lateral_elastic_deflection_limit(0.279);
         std::cout << "REAL seabed enabled (z=" << -1.52608e-05
                   << ", k=800000, axial mu/u=0.92/0.03, lateral mu/u=0.95/0.279)" << std::endl;
     } else {

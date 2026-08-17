@@ -9,14 +9,14 @@ namespace risersim {
 Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_material_stiffness() const {
     Eigen::Matrix<double, 12, 12> K = Eigen::Matrix<double, 12, 12>::Zero();
     double L = current_length();
-    if (L <= 0.0) L = initial_length;
+    if (L <= 0.0) L = initial_length();
 
-    double E = props.E;
-    double G = props.G;
-    double A = props.A;
-    double Iy = props.IY;
-    double Iz = props.IZ;
-    double J = props.J;
+    double E = props().E;
+    double G = props().G;
+    double A = props().A;
+    double Iy = props().IY;
+    double Iz = props().IZ;
+    double J = props().J;
 
     double EA_L = E * A / L;
     double GJ_L = G * J / L;
@@ -57,10 +57,10 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_material_stiffness() con
 Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_geometric_stiffness() const {
     Eigen::Matrix<double, 12, 12> Kg = Eigen::Matrix<double, 12, 12>::Zero();
     double L = current_length();
-    if (L <= 0.0) L = initial_length;
+    if (L <= 0.0) L = initial_length();
 
     // Use Effective Tension T_eff = T_true + p_e*A_e - p_i*A_i
-    double P = tension_effective;
+    double P = tension_effective();
     double P_L = P / L;
 
     double c1 = 6.0 / 5.0 * P_L;
@@ -86,7 +86,7 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_geometric_stiffness() co
 Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_mass_matrix(double rho_water) const {
     Eigen::Matrix<double, 12, 12> M = Eigen::Matrix<double, 12, 12>::Zero();
     double L = current_length();
-    if (L <= 0.0) L = initial_length;
+    if (L <= 0.0) L = initial_length();
 
     double m_lin = total_linear_mass(rho_water);
     double mL_420 = m_lin * L / 420.0;
@@ -135,7 +135,7 @@ Eigen::Matrix3d CorotationalBeam3D::build_frame_from_chord(const Eigen::Vector3d
 
 Eigen::Matrix<double, 12, 12> CorotationalBeam3D::transformation_matrix() const {
     Eigen::Matrix<double, 12, 12> T = Eigen::Matrix<double, 12, 12>::Zero();
-    Eigen::Vector3d dx = node2->current_coords() - node1->current_coords();
+    Eigen::Vector3d dx = node2()->current_coords() - node1()->current_coords();
     double L = dx.norm();
     Eigen::Vector3d ex = dx / L;
     Eigen::Matrix3d R = build_frame_from_chord(ex);
@@ -167,15 +167,15 @@ static Eigen::Vector3d extract_relative_rotation(const Eigen::Matrix3d& A, const
 
 void CorotationalBeam3D::compute_corotational_forces(Eigen::Matrix<double, 12, 12>& K_global,
                                                        Eigen::Matrix<double, 12, 1>& F_int_global) const {
-    Eigen::Vector3d dx = node2->current_coords() - node1->current_coords();
+    Eigen::Vector3d dx = node2()->current_coords() - node1()->current_coords();
     double L = dx.norm();
     Eigen::Vector3d ex = L > 0.0 ? (dx / L).eval() : Eigen::Vector3d(1, 0, 0);
 
     // Each node's current triad = fixed reference triad (t=0) composed with the node's
     // TOTAL accumulated rotation (real ANFLEX's calc_init_rot_mt + update_transformations_matrices:
     // m_node_tm = m_node_init_tm * trans(gen_mat_3d(rot_total))).
-    Eigen::Matrix3d node1_tm = node1_init_triad * rodrigues(node1->rot).transpose();
-    Eigen::Matrix3d node2_tm = node2_init_triad * rodrigues(node2->rot).transpose();
+    Eigen::Matrix3d node1_tm = node1_init_triad() * rodrigues(node1()->rot).transpose();
+    Eigen::Matrix3d node2_tm = node2_init_triad() * rodrigues(node2()->rot).transpose();
 
     // Crisfield's ghost frame: the "mean" rotation between the two nodes' triads,
     // re-orthogonalized so its x-axis coincides exactly with the current chord
@@ -204,7 +204,7 @@ void CorotationalBeam3D::compute_corotational_forces(Eigen::Matrix<double, 12, 1
     Eigen::Matrix<double, 12, 1> local_disp = Eigen::Matrix<double, 12, 1>::Zero();
     local_disp.segment<3>(3) = local_rot1;
     local_disp.segment<3>(9) = local_rot2;
-    local_disp[6] = L - initial_length;
+    local_disp[6] = L - initial_length();
 
     Eigen::Matrix<double, 12, 12> T = Eigen::Matrix<double, 12, 12>::Zero();
     T.block<3, 3>(0, 0) = ghost;
@@ -237,15 +237,15 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     StressAndCurvatureResults res;
 
     double L = current_length();
-    if (L <= 0.0) L = initial_length;
+    if (L <= 0.0) L = initial_length();
 
     // 1. Calculate 3D Geometric Curvature from adjacent element orientation vectors
-    Eigen::Vector3d ex_curr = (node2->current_coords() - node1->current_coords()).normalized();
+    Eigen::Vector3d ex_curr = (node2()->current_coords() - node1()->current_coords()).normalized();
     double kappa_geom = 0.0;
     int count = 0;
 
     if (prev_elem) {
-        Eigen::Vector3d ex_prev = (prev_elem->node2->current_coords() - prev_elem->node1->current_coords()).normalized();
+        Eigen::Vector3d ex_prev = (prev_elem->node2()->current_coords() - prev_elem->node1()->current_coords()).normalized();
         double dot_val = std::max(-1.0, std::min(1.0, ex_prev.dot(ex_curr)));
         double d_theta = std::acos(dot_val);
         double L_avg = 0.5 * (prev_elem->current_length() + L);
@@ -256,7 +256,7 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     }
 
     if (next_elem) {
-        Eigen::Vector3d ex_next = (next_elem->node2->current_coords() - next_elem->node1->current_coords()).normalized();
+        Eigen::Vector3d ex_next = (next_elem->node2()->current_coords() - next_elem->node1()->current_coords()).normalized();
         double dot_val = std::max(-1.0, std::min(1.0, ex_curr.dot(ex_next)));
         double d_theta = std::acos(dot_val);
         double L_avg = 0.5 * (L + next_elem->current_length());
@@ -273,7 +273,7 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     res.curvature = kappa_geom;
 
     // Bending stiffness EI (N.m^2)
-    double EI_eff = (props.EI > 0.0) ? props.EI : (props.E * props.IY);
+    double EI_eff = (props().EI > 0.0) ? props().EI : (props().E * props().IY);
 
     // Bending moment M = EI * kappa (N.m)
     double M_total_Nm = EI_eff * res.curvature;
@@ -286,23 +286,23 @@ CorotationalBeam3D::StressAndCurvatureResults CorotationalBeam3D::compute_stress
     }
 
     double yield_Pa = yield_stress_MPa * 1.0e6;
-    res.mbr_min = (props.E * props.D_outer) / (2.0 * yield_Pa);
+    res.mbr_min = (props().E * props().D_outer) / (2.0 * yield_Pa);
     res.mbr_safety_factor = res.bend_radius / (res.mbr_min > 0.01 ? res.mbr_min : 1.0);
 
-    double A_struct = (props.A > 0.0) ? props.A : (std::numbers::pi * (props.D_outer * props.D_outer - props.D_inner * props.D_inner) / 4.0);
-    double sigma_axial = tension_effective / A_struct;  // Can be positive (tension) or negative (compression)
-    double r_outer = props.D_outer / 2.0;
+    double A_struct = (props().A > 0.0) ? props().A : (std::numbers::pi * (props().D_outer * props().D_outer - props().D_inner * props().D_inner) / 4.0);
+    double sigma_axial = tension_effective() / A_struct;  // Can be positive (tension) or negative (compression)
+    double r_outer = props().D_outer / 2.0;
 
     // Bending stress at the outer fiber (My/I)
-    double I_geom = std::numbers::pi * (std::pow(props.D_outer, 4) - std::pow(props.D_inner, 4)) / 64.0;
+    double I_geom = std::numbers::pi * (std::pow(props().D_outer, 4) - std::pow(props().D_inner, 4)) / 64.0;
     double sigma_bending = (M_total_Nm * r_outer) / (I_geom > 1.0e-12 ? I_geom : 1.0e-5);
 
     // Hoop stress for a thin-walled pipe: sigma_h = (p_i * r_i - p_e * r_o) / t
-    double r_inner = props.D_inner / 2.0;
+    double r_inner = props().D_inner / 2.0;
     double wall_thickness = r_outer - r_inner;
     double sigma_hoop = 0.0;
     if (wall_thickness > 1.0e-6) {
-        sigma_hoop = (p_i * r_inner - p_e * r_outer) / wall_thickness;
+        sigma_hoop = (p_i() * r_inner - p_e() * r_outer) / wall_thickness;
     }
 
     // Combined axial stress at both extreme fibers (tension and compression from bending)

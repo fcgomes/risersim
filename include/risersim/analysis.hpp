@@ -56,18 +56,18 @@ public:
     virtual ~Analysis() = default;
 
     /**
-     * @brief Numbers global DOF equations following Reverse Cuthill-McKee (RCM) order, not `model->nodes` order.
+     * @brief Numbers global DOF equations following Reverse Cuthill-McKee (RCM) order, not `model->nodes()` order.
      *
      * Reduces the bandwidth of the assembled global stiffness matrix, mirroring ANFLEX's real
      * default (`model_builder_dat.cpp`: reorderer default = `"reverse_cuthill_mckee"`, applied
      * before assembly regardless of the chosen solver). Only affects equation numbering --
-     * `model->nodes` stays in its original order for everything else (output, iteration, etc.).
+     * `model->nodes()` stays in its original order for everything else (output, iteration, etc.).
      */
     virtual void assign_equation_numbers() {
         num_dofs = 0;
         if (!model) return;
         for (int idx : compute_rcm_order(*model)) {
-            Node3D* node = model->nodes[idx].get();
+            Node3D* node = model->nodes()[idx].get();
             for (int i = 0; i < 6; ++i) {
                 if (node->eq_numbers[i] >= 0) {
                     node->eq_numbers[i] = num_dofs++;

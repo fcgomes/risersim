@@ -41,8 +41,8 @@ TEST_CASE("Element::node()/num_nodes() match CorotationalBeam3D's node1/node2", 
     auto* elem = build_sample_element(n1, n2);
 
     REQUIRE(elem->num_nodes() == 2);
-    REQUIRE(elem->node(0) == elem->node1);
-    REQUIRE(elem->node(1) == elem->node2);
+    REQUIRE(elem->node(0) == elem->node1());
+    REQUIRE(elem->node(1) == elem->node2());
     REQUIRE(elem->node(0) == n1);
     REQUIRE(elem->node(1) == n2);
 

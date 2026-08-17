@@ -58,16 +58,16 @@ risersim::RiserModel* build_synthetic_catenary_model() {
         model->add_node(i + 1, x, 0.0, z);
     }
 
-    model->nodes.front()->eq_numbers = std::vector<int>(6, -1);
-    model->nodes.back()->eq_numbers = std::vector<int>(6, -1);
-    for (size_t i = 1; i < model->nodes.size() - 1; ++i) {
-        model->nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
+    model->nodes().front()->eq_numbers = std::vector<int>(6, -1);
+    model->nodes().back()->eq_numbers = std::vector<int>(6, -1);
+    for (size_t i = 1; i < model->nodes().size() - 1; ++i) {
+        model->nodes()[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
     }
 
     risersim::BeamMaterialProps props;
     const double L_unstretched = total_length / static_cast<double>(num_elements);
     for (int i = 0; i < num_elements; ++i) {
-        model->add_element(i + 1, model->nodes[i].get(), model->nodes[i + 1].get(), props, L_unstretched);
+        model->add_element(i + 1, model->nodes()[i].get(), model->nodes()[i + 1].get(), props, L_unstretched);
     }
 
     return model;
@@ -130,7 +130,7 @@ TEST_CASE("StaticAnalysis converges on the synthetic fallback catenary", "[stati
     // because the line now actually settles onto the seabed instead of being held above
     // it by residual force imbalance.
     const double expected_tension_effective_N = 1101.9820161411786 * 1000.0;
-    REQUIRE(model->elements.front()->tension_effective == Catch::Approx(expected_tension_effective_N).epsilon(0.005));
+    REQUIRE(model->elements().front()->tension_effective() == Catch::Approx(expected_tension_effective_N).epsilon(0.005));
 
     delete model;
 }

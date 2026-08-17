@@ -95,13 +95,13 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
                                                     Node3D* excluded_node,
                                                     double max_translation_step = -1.0,
                                                     double max_rotation_step = -1.0) {
-    std::vector<NodeStateSnapshot> snapshot(model->nodes.size());
-    for (size_t k = 0; k < model->nodes.size(); ++k) {
-        snapshot[k] = {model->nodes[k]->disp, model->nodes[k]->rot, model->nodes[k]->friction_force};
+    std::vector<NodeStateSnapshot> snapshot(model->nodes().size());
+    for (size_t k = 0; k < model->nodes().size(); ++k) {
+        snapshot[k] = {model->nodes()[k]->disp, model->nodes()[k]->rot, model->nodes()[k]->friction_force};
     }
 
     auto apply_scaled = [&](double alpha) {
-        for (const auto& node_ptr : model->nodes) {
+        for (const auto& node_ptr : model->nodes()) {
             Node3D* node = node_ptr.get();
             if (node == excluded_node) continue;
             Eigen::Vector3d delta_rot = Eigen::Vector3d::Zero();
@@ -118,10 +118,10 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
         }
     };
     auto restore = [&]() {
-        for (size_t k = 0; k < model->nodes.size(); ++k) {
-            model->nodes[k]->disp = snapshot[k].disp;
-            model->nodes[k]->rot = snapshot[k].rot;
-            model->nodes[k]->friction_force = snapshot[k].friction_force;
+        for (size_t k = 0; k < model->nodes().size(); ++k) {
+            model->nodes()[k]->disp = snapshot[k].disp;
+            model->nodes()[k]->rot = snapshot[k].rot;
+            model->nodes()[k]->friction_force = snapshot[k].friction_force;
         }
     };
 
@@ -133,7 +133,7 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     // residual-based backtracking below (a 100x-loose safety net) even gets a chance to react.
     double alpha_cap = 1.0;
     if (max_translation_step > 0.0 || max_rotation_step > 0.0) {
-        for (const auto& node_ptr : model->nodes) {
+        for (const auto& node_ptr : model->nodes()) {
             Node3D* node = node_ptr.get();
             if (node == excluded_node) continue;
             for (int i = 0; i < 3; ++i) {
@@ -157,7 +157,7 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     for (int bt = 0; bt <= max_backtracks; ++bt) {
         restore();
         apply_scaled(alpha);
-        for (const auto& elem : model->elements) elem->update_effective_tension();
+        for (const auto& elem : model->elements()) elem->update_effective_tension();
 
         Eigen::SparseMatrix<double> K_trial;
         Eigen::VectorXd F_int_trial;
@@ -179,7 +179,7 @@ Eigen::VectorXd apply_newton_step_with_line_search(const AssembleFn& assemble_fn
     // the next assemble (at the top of the following iteration, outside this function)
     // doesn't reapply the SAME increment a second time -- without this, the friction
     // force gets double-counted every iteration.
-    for (const auto& node : model->nodes) node->delta_disp_xy.setZero();
+    for (const auto& node : model->nodes()) node->delta_disp_xy.setZero();
 
     return accepted_dU;
 }
@@ -196,18 +196,18 @@ StepSnapshot capture_snapshot(RiserModel* model, int step_index, double load_fac
     StepSnapshot snap;
     snap.step_index = step_index;
     snap.load_factor = load_factor;
-    for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
-    for (size_t i = 0; i < model->elements.size(); ++i) {
-        auto* elem = model->elements[i].get();
+    for (const auto& node : model->nodes()) snap.node_coords.push_back(node->current_coords());
+    for (size_t i = 0; i < model->elements().size(); ++i) {
+        auto* elem = model->elements()[i].get();
         // Vizinho REAL (compartilha o nó), não só adjacente no array -- com múltiplas linhas,
         // elementos de linhas diferentes ficam lado a lado no array plano sem se tocar; usar
         // i-1/i+1 cegamente misturaria curvatura/momento entre linhas desconexas na fronteira.
-        const auto* prev = (i > 0 && model->elements[i - 1]->node2 == elem->node1) ? model->elements[i - 1].get() : nullptr;
-        const auto* next = (i + 1 < model->elements.size() && model->elements[i + 1]->node1 == elem->node2) ? model->elements[i + 1].get() : nullptr;
+        const auto* prev = (i > 0 && model->elements()[i - 1]->node2() == elem->node1()) ? model->elements()[i - 1].get() : nullptr;
+        const auto* next = (i + 1 < model->elements().size() && model->elements()[i + 1]->node1() == elem->node2()) ? model->elements()[i + 1].get() : nullptr;
 
         elem->update_effective_tension();
         auto sc = elem->compute_stress_and_curvature(prev, next);
-        snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+        snap.element_tensions_kN.push_back(elem->tension_effective() / 1000.0);
         snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
         snap.element_curvatures.push_back(sc.curvature);
         snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);
@@ -301,19 +301,19 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     // Total reference force at 100% load, used for a strict normalization
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
-    double water_surface_z_ref = model->environmental.water_surface_z;
-    for (const auto& elem : model->elements) {
-        double L = elem->initial_length;
+    double water_surface_z_ref = model->environmental().water_surface_z;
+    for (const auto& elem : model->elements()) {
+        double L = elem->initial_length();
         double g = 9.81;
-        double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
+        double w_dry = (elem->props().rho * elem->props().A + elem->props().rho_fluid * elem->inner_area()) * g;
         // Submersion-scaled buoyancy (see hydrostatics.hpp, docs/roadmap.md item 1b) -- only the
         // force matters here (a reference norm for convergence checking), no stiffness needed.
-        double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
-        Hydrostatics hydro(elem->props.D_outer, L, water_density);
+        double zc[2] = {elem->node1()->current_coords().z(), elem->node2()->current_coords().z()};
+        Hydrostatics hydro(elem->props().D_outer, L, water_density);
         hydro.compute(zc, water_surface_z_ref);
 
-        int eq1_z = elem->node1->eq_numbers[2];
-        int eq2_z = elem->node2->eq_numbers[2];
+        int eq1_z = elem->node1()->eq_numbers[2];
+        int eq2_z = elem->node2()->eq_numbers[2];
 
         if (eq1_z >= 0) F_total_ref[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
         if (eq2_z >= 0) F_total_ref[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
@@ -347,8 +347,8 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
         // ANFLEX (libs/anf_movements/src/ramp_function.cpp) -- comportamento inalterado para
         // modelos sem dado real de rampa (sintéticos, JSONs antigos). Ver
         // mapa_classes_anflex_estatica.md.
-        const auto& ramp_x = model->environmental.current_ramp_x;
-        const auto& ramp_y = model->environmental.current_ramp_y;
+        const auto& ramp_x = model->environmental().current_ramp_x;
+        const auto& ramp_y = model->environmental().current_ramp_y;
         double current_factor;
         if (ramp_x.size() >= 2 && ramp_x.size() == ramp_y.size()) {
             current_factor = interp_ramp(ramp_x, ramp_y, t);
@@ -407,12 +407,12 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
                 for (int k = 0; k < Residual.size(); ++k) {
                     if (std::abs(Residual[k]) > std::abs(worst_val)) { worst_val = Residual[k]; worst_eq = k; }
                 }
-                for (const auto& node_ptr : model->nodes) {
+                for (const auto& node_ptr : model->nodes()) {
                     Node3D* nd = node_ptr.get();
                     for (int i = 0; i < 6; ++i) {
                         if (nd->eq_numbers[i] == worst_eq) {
                             static const char* names[6] = {"tx","ty","tz","rx","ry","rz"};
-                            double pen = seabed.seabed_depth - nd->current_coords().z();
+                            double pen = seabed.seabed_depth() - nd->current_coords().z();
                             std::cout << "    [DEBUG] worst DOF: node " << nd->id << " " << names[i]
                                       << " = " << worst_val << " | z=" << nd->current_coords().z()
                                       << " pen=" << pen
@@ -491,7 +491,7 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
     if (!model) return false;
 
     // Resolve o(s) nó(s) de topo -- suporte multi-linha (docs/roadmap.md, backlog "múltiplas
-    // linhas com corpo flutuante compartilhado"). Um modelo single-line (model->lines vazio)
+    // linhas com corpo flutuante compartilhado"). Um modelo single-line (model->lines() vazio)
     // resolve pra exatamente um attachment, nodes.front() -- comportamento de hoje, inalterado.
     auto attachments = model->resolve_line_attachments();
     if (attachments.empty()) return false;
@@ -549,12 +549,12 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                   << line_states.front().prescribed->target_disp.x() << " m" << std::endl;
 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
-        double water_surface_z_offset = model->environmental.water_surface_z;
+        double water_surface_z_offset = model->environmental().water_surface_z;
 
-        for (const auto& elem : model->elements) {
-            double L = elem->initial_length;
+        for (const auto& elem : model->elements()) {
+            double L = elem->initial_length();
             double g = 9.81;
-            double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
+            double w_dry = (elem->props().rho * elem->props().A + elem->props().rho_fluid * elem->inner_area()) * g;
             // Submersion-scaled buoyancy (see hydrostatics.hpp, docs/roadmap.md item 1b), same
             // per-end apportionment as static_integrator.cpp::assemble_load_vector -- computed
             // once per offset step (not re-evaluated per Newton iteration below), same as this
@@ -562,12 +562,12 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
             // fresh into K_global every iteration since assemble_system() rebuilds it from
             // scratch each time) keeps Newton robust across an element crossing the surface
             // mid-step even though the force itself isn't re-linearized iteration-to-iteration.
-            double zc[2] = {elem->node1->current_coords().z(), elem->node2->current_coords().z()};
-            Hydrostatics hydro(elem->props.D_outer, L, water_density);
+            double zc[2] = {elem->node1()->current_coords().z(), elem->node2()->current_coords().z()};
+            Hydrostatics hydro(elem->props().D_outer, L, water_density);
             hydro.compute(zc, water_surface_z_offset);
 
-            int eq1_z = elem->node1->eq_numbers[2];
-            int eq2_z = elem->node2->eq_numbers[2];
+            int eq1_z = elem->node1()->eq_numbers[2];
+            int eq2_z = elem->node2()->eq_numbers[2];
 
             if (eq1_z >= 0) F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
             if (eq2_z >= 0) F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
@@ -603,17 +603,17 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 StepSnapshot snap;
                 snap.step_index = steps + step;
                 snap.load_factor = 1.0 + offset_factor;
-                for (const auto& node : model->nodes) snap.node_coords.push_back(node->current_coords());
-                for (size_t i = 0; i < model->elements.size(); ++i) {
-                    auto* elem = model->elements[i].get();
+                for (const auto& node : model->nodes()) snap.node_coords.push_back(node->current_coords());
+                for (size_t i = 0; i < model->elements().size(); ++i) {
+                    auto* elem = model->elements()[i].get();
                     // Vizinho REAL (compartilha o nó), não só adjacente no array -- ver mesmo
                     // comentário em capture_snapshot() acima.
-                    const auto* prev = (i > 0 && model->elements[i - 1]->node2 == elem->node1) ? model->elements[i - 1].get() : nullptr;
-                    const auto* next = (i + 1 < model->elements.size() && model->elements[i + 1]->node1 == elem->node2) ? model->elements[i + 1].get() : nullptr;
+                    const auto* prev = (i > 0 && model->elements()[i - 1]->node2() == elem->node1()) ? model->elements()[i - 1].get() : nullptr;
+                    const auto* next = (i + 1 < model->elements().size() && model->elements()[i + 1]->node1() == elem->node2()) ? model->elements()[i + 1].get() : nullptr;
 
                     elem->update_effective_tension();
                     auto sc = elem->compute_stress_and_curvature(prev, next);
-                    snap.element_tensions_kN.push_back(elem->tension_effective / 1000.0);
+                    snap.element_tensions_kN.push_back(elem->tension_effective() / 1000.0);
                     snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
                     snap.element_curvatures.push_back(sc.curvature);
                     snap.element_von_mises_MPa.push_back(sc.von_mises_MPa);

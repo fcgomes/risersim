@@ -27,25 +27,25 @@ namespace risersim {
  * for the typically near-1D topology of riser/mooring lines. Neighbors are enqueued in ascending
  * degree order within each BFS level. The resulting Cuthill-McKee order is reversed to get RCM.
  *
- * @param model The model whose node connectivity (via `model.elements`) defines the graph.
- * @return The order in which `model.nodes` should be processed to number DOFs (indices into
- *         `model.nodes`; does *not* reorder `model.nodes` itself). Intended for
+ * @param model The model whose node connectivity (via `model.elements()`) defines the graph.
+ * @return The order in which `model.nodes()` should be processed to number DOFs (indices into
+ *         `model.nodes()`; does *not* reorder `model.nodes()` itself). Intended for
  *         Analysis::assign_equation_numbers().
  */
 inline std::vector<int> compute_rcm_order(const RiserModel& model) {
-    int n = static_cast<int>(model.nodes.size());
+    int n = static_cast<int>(model.nodes().size());
     std::vector<int> order;
     order.reserve(n);
     if (n == 0) return order;
 
     std::unordered_map<Node3D*, int> index_of;
     index_of.reserve(n);
-    for (int i = 0; i < n; ++i) index_of[model.nodes[i].get()] = i;
+    for (int i = 0; i < n; ++i) index_of[model.nodes()[i].get()] = i;
 
     std::vector<std::vector<int>> adj(n);
-    for (const auto& elem : model.elements) {
-        auto it1 = index_of.find(elem->node1);
-        auto it2 = index_of.find(elem->node2);
+    for (const auto& elem : model.elements()) {
+        auto it1 = index_of.find(elem->node1());
+        auto it2 = index_of.find(elem->node2());
         if (it1 == index_of.end() || it2 == index_of.end()) continue;
         int a = it1->second, b = it2->second;
         adj[a].push_back(b);

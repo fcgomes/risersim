@@ -50,16 +50,16 @@ RiserModel build_small_synthetic_catenary_model() {
         model.add_node(i + 1, x, 0.0, z);
     }
 
-    model.nodes.front()->eq_numbers = std::vector<int>(6, -1);
-    model.nodes.back()->eq_numbers = std::vector<int>(6, -1);
-    for (size_t i = 1; i < model.nodes.size() - 1; ++i) {
-        model.nodes[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
+    model.nodes().front()->eq_numbers = std::vector<int>(6, -1);
+    model.nodes().back()->eq_numbers = std::vector<int>(6, -1);
+    for (size_t i = 1; i < model.nodes().size() - 1; ++i) {
+        model.nodes()[i]->eq_numbers = {0, 1, 2, -1, -1, -1};
     }
 
     BeamMaterialProps props;
     const double L_unstretched = total_length / static_cast<double>(num_elements);
     for (int i = 0; i < num_elements; ++i) {
-        model.add_element(i + 1, model.nodes[i].get(), model.nodes[i + 1].get(), props, L_unstretched);
+        model.add_element(i + 1, model.nodes()[i].get(), model.nodes()[i + 1].get(), props, L_unstretched);
     }
 
     return model;
@@ -77,7 +77,7 @@ RiserModel build_single_free_node_model() {
 
 TEST_CASE("PrescribedMotion::apply adds big_number to K and overwrites F_int with the right sign", "[prescribed_motion]") {
     RiserModel model = build_single_free_node_model();
-    Node3D* n = model.nodes.front().get();
+    Node3D* n = model.nodes().front().get();
     n->disp = Eigen::Vector3d(1.0, 0.0, 0.0); // currently at x=1.0
 
     PrescribedMotion pm(n);
@@ -111,7 +111,7 @@ TEST_CASE("PrescribedMotion::apply adds big_number to K and overwrites F_int wit
 
 TEST_CASE("PrescribedMotion::apply skips DOFs that are inactive or fixed on the node", "[prescribed_motion]") {
     RiserModel model = build_single_free_node_model();
-    Node3D* n = model.nodes.front().get();
+    Node3D* n = model.nodes().front().get();
     n->eq_numbers[1] = -1; // fix the Y DOF, even though it has a valid slot conceptually
 
     PrescribedMotion pm(n);
@@ -130,7 +130,7 @@ TEST_CASE("PrescribedMotion::apply skips DOFs that are inactive or fixed on the 
 
 TEST_CASE("StaticAnalysis::solve_vessel_offset converges and moves the top node to the requested offset", "[prescribed_motion][static_analysis]") {
     RiserModel model = build_small_synthetic_catenary_model();
-    Node3D* top_node = model.nodes.front().get();
+    Node3D* top_node = model.nodes().front().get();
     std::vector<int> original_top_eq_numbers = top_node->eq_numbers;
 
     StaticAnalysis sa;

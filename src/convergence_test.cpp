@@ -22,7 +22,7 @@ struct DofNorms {
 DofNorms split_by_dof_type(const RiserModel& model, const Eigen::VectorXd& v) {
     DofNorms r;
     double t2 = 0.0, r2 = 0.0;
-    for (const auto& node : model.nodes) {
+    for (const auto& node : model.nodes()) {
         for (int i = 0; i < 3; ++i) {
             int eq = node->eq_numbers[i];
             if (eq >= 0) {

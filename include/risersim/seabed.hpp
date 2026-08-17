@@ -25,32 +25,58 @@ enum class SoilModel { Uncoupled, Coupled };
  */
 class SeabedInteraction {
 public:
-    SoilModel soil_model = SoilModel::Uncoupled; ///< Which friction law calc_friction_* in analysis.cpp should use.
-    double seabed_depth;   ///< Z coordinate of the seabed (e.g. -100.0 m).
-    double stiffness_z;    ///< Initial vertical soil stiffness k_inicial (N/m per node, default 1e5).
-    double friction_coeff; ///< Default/fallback friction coefficient mu (used if axial/lateral aren't overridden).
-    double elastic_deflection_limit; ///< Default/fallback displacement (m) that mobilizes the friction limit.
-    double ultimate_bearing_force;   ///< Ultimate vertical bearing capacity per node f_ultima (N).
+    SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double f_ult = 1.0e7)
+        : soil_model_(SoilModel::Uncoupled), seabed_depth_(depth), stiffness_z_(kz), friction_coeff_(mu),
+          elastic_deflection_limit_(u_limit), ultimate_bearing_force_(f_ult),
+          axial_friction_(mu), lateral_friction_(mu),
+          axial_elastic_deflection_limit_(u_limit), lateral_elastic_deflection_limit_(u_limit) {}
+
+    /** @brief Which friction law calc_friction_* in analysis.cpp should use. */
+    SoilModel soil_model() const { return soil_model_; }
+    void set_soil_model(SoilModel m) { soil_model_ = m; }
+
+    /** @brief Z coordinate of the seabed (e.g. -100.0 m). */
+    double seabed_depth() const { return seabed_depth_; }
+    void set_seabed_depth(double z) { seabed_depth_ = z; }
+
+    /** @brief Initial vertical soil stiffness k_inicial (N/m per node, default 1e5). */
+    double stiffness_z() const { return stiffness_z_; }
+    void set_stiffness_z(double kz) { stiffness_z_ = kz; }
+
+    /** @brief Default/fallback friction coefficient mu (used if axial/lateral aren't overridden).
+     *
+     * Note: `axial_friction`/`lateral_friction` only default to this value at construction time
+     * (or when explicitly set via set_axial_friction()/set_lateral_friction()) -- calling
+     * set_friction_coeff() later does NOT retroactively update them. */
+    double friction_coeff() const { return friction_coeff_; }
+    void set_friction_coeff(double mu) { friction_coeff_ = mu; }
+
+    /** @brief Default/fallback displacement (m) that mobilizes the friction limit. */
+    double elastic_deflection_limit() const { return elastic_deflection_limit_; }
+    void set_elastic_deflection_limit(double u_limit) { elastic_deflection_limit_ = u_limit; }
+
+    /** @brief Ultimate vertical bearing capacity per node f_ultima (N). */
+    double ultimate_bearing_force() const { return ultimate_bearing_force_; }
+    void set_ultimate_bearing_force(double f_ult) { ultimate_bearing_force_ = f_ult; }
 
     /**
-     * @brief Direction-specific friction coefficients and elastic deflection limits.
-     *
-     * Axial (along the line) and lateral (perpendicular, horizontal plane) are kept distinct,
-     * mirroring ANFLEX's `soil.h` (`m_axial_friction`/`m_lateral_friction`,
-     * `m_axial_elastic_deflection_limit`/`m_lateral_elastic_deflection_limit`). Real models can
-     * have very different values per direction -- e.g. `Exemplo_01a_A1.xml` uses axial =
-     * 0.92/0.03 m vs. lateral = 0.95/0.279 m. Default to `friction_coeff`/`elastic_deflection_limit`;
-     * the caller may overwrite them with a model's real values.
+     * @brief Axial (along the line) friction coefficient -- see the class-level note on
+     * axial/lateral vs. friction_coeff().
      */
-    double axial_friction;
-    double lateral_friction;
-    double axial_elastic_deflection_limit;
-    double lateral_elastic_deflection_limit;
+    double axial_friction() const { return axial_friction_; }
+    void set_axial_friction(double mu) { axial_friction_ = mu; }
 
-    SeabedInteraction(double depth = -100.0, double kz = 1.0e5, double mu = 0.5, double u_limit = 0.05, double f_ult = 1.0e7)
-        : seabed_depth(depth), stiffness_z(kz), friction_coeff(mu), elastic_deflection_limit(u_limit), ultimate_bearing_force(f_ult),
-          axial_friction(mu), lateral_friction(mu),
-          axial_elastic_deflection_limit(u_limit), lateral_elastic_deflection_limit(u_limit) {}
+    /** @brief Lateral (perpendicular, horizontal plane) friction coefficient. */
+    double lateral_friction() const { return lateral_friction_; }
+    void set_lateral_friction(double mu) { lateral_friction_ = mu; }
+
+    /** @brief Axial elastic deflection limit (m). */
+    double axial_elastic_deflection_limit() const { return axial_elastic_deflection_limit_; }
+    void set_axial_elastic_deflection_limit(double u_limit) { axial_elastic_deflection_limit_ = u_limit; }
+
+    /** @brief Lateral elastic deflection limit (m). */
+    double lateral_elastic_deflection_limit() const { return lateral_elastic_deflection_limit_; }
+    void set_lateral_elastic_deflection_limit(double u_limit) { lateral_elastic_deflection_limit_ = u_limit; }
 
     /**
      * @brief Computes the normal (vertical) seabed reaction force and its tangent stiffness.
@@ -78,14 +104,14 @@ public:
      * @param[out] k_normal Tangent stiffness df/dpen (0 if not penetrating).
      */
     void calculate_seabed_reaction(double z_current, double& f_normal, double& k_normal) const {
-        double pen = seabed_depth - z_current; // > 0 quando penetrando
+        double pen = seabed_depth_ - z_current; // > 0 quando penetrando
         if (pen <= 0.0) {
             f_normal = 0.0;
             k_normal = 0.0;
             return;
         }
-        double a = 1.0 / stiffness_z;
-        double b = 1.0 / ultimate_bearing_force;
+        double a = 1.0 / stiffness_z_;
+        double b = 1.0 / ultimate_bearing_force_;
         double denom = a + b * pen;
         f_normal = pen / denom;
         k_normal = a / (denom * denom); // df/dpen
@@ -167,10 +193,10 @@ public:
     void calculate_friction_coupled(double f_normal, double du_axial, double du_lateral,
                                      double& f_axial, double& f_lateral,
                                      double& k_axial, double& k_lateral) const {
-        double fl_ax = axial_friction * std::fabs(f_normal);
-        double fl_lat = lateral_friction * std::fabs(f_normal);
-        k_axial = (axial_elastic_deflection_limit > 1.0e-9) ? (fl_ax / axial_elastic_deflection_limit) : 0.0;
-        k_lateral = (lateral_elastic_deflection_limit > 1.0e-9) ? (fl_lat / lateral_elastic_deflection_limit) : 0.0;
+        double fl_ax = axial_friction_ * std::fabs(f_normal);
+        double fl_lat = lateral_friction_ * std::fabs(f_normal);
+        k_axial = (axial_elastic_deflection_limit_ > 1.0e-9) ? (fl_ax / axial_elastic_deflection_limit_) : 0.0;
+        k_lateral = (lateral_elastic_deflection_limit_ > 1.0e-9) ? (fl_lat / lateral_elastic_deflection_limit_) : 0.0;
 
         f_axial += k_axial * du_axial;
         f_lateral += k_lateral * du_lateral;
@@ -188,6 +214,27 @@ public:
             }
         }
     }
+
+private:
+    SoilModel soil_model_;
+    double seabed_depth_;   ///< Z coordinate of the seabed (e.g. -100.0 m).
+    double stiffness_z_;    ///< Initial vertical soil stiffness k_inicial (N/m per node, default 1e5).
+    double friction_coeff_; ///< Default/fallback friction coefficient mu (used if axial/lateral aren't overridden).
+    double elastic_deflection_limit_; ///< Default/fallback displacement (m) that mobilizes the friction limit.
+    double ultimate_bearing_force_;   ///< Ultimate vertical bearing capacity per node f_ultima (N).
+
+    /**
+     * Axial (along the line) and lateral (perpendicular, horizontal plane) are kept distinct,
+     * mirroring ANFLEX's `soil.h` (`m_axial_friction`/`m_lateral_friction`,
+     * `m_axial_elastic_deflection_limit`/`m_lateral_elastic_deflection_limit`). Real models can
+     * have very different values per direction -- e.g. `Exemplo_01a_A1.xml` uses axial =
+     * 0.92/0.03 m vs. lateral = 0.95/0.279 m. Default to `friction_coeff_`/`elastic_deflection_limit_`;
+     * the caller may overwrite them with a model's real values via the setters above.
+     */
+    double axial_friction_;
+    double lateral_friction_;
+    double axial_elastic_deflection_limit_;
+    double lateral_elastic_deflection_limit_;
 };
 
 } // namespace risersim

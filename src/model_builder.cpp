@@ -192,13 +192,13 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         // contiguous-per-line IDs (see aml_reader.py's id_offset), so resolution has to go
         // through a real lookup -- same pattern the warm-start block already used.
         std::map<int, Node3D*> node_by_id;
-        for (const auto& node : model.nodes) node_by_id[node->id] = node.get();
+        for (const auto& node : model.nodes()) node_by_id[node->id] = node.get();
 
         // 2. Load elements
         std::map<std::string, int> missing_field_counts;
         int elements_missing_section_properties = 0;
         int elements_missing_nodes = 0;
-        if (j.contains("model") && j["model"].contains("elements") && !model.nodes.empty()) {
+        if (j.contains("model") && j["model"].contains("elements") && !model.nodes().empty()) {
             auto elems_json = j["model"]["elements"];
             for (auto& e_j : elems_json) {
                 int id = e_j["id"];
@@ -266,7 +266,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         // Sets DOFs for free (intermediate) nodes.
         // Node3D always initializes eq_numbers with 6 entries (never empty), so DOF
         // freedom must be tracked via constrained_nodes, not via .empty()
-        for (const auto& node : model.nodes) {
+        for (const auto& node : model.nodes()) {
             if (!constrained_nodes.count(node.get())) {
                 node->eq_numbers = {0, 1, 2, 3, 4, 5}; // Free translations and rotations
             }
@@ -298,7 +298,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         // purely additive, mirrors real ANFLEX's cReference/cConnection/cLine hierarchy
         // (interfaces/src/) at the JSON level (see model.hpp's ReferenceInfo/ConnectionInfo/
         // LineInfo doc comments). When `lines` is absent (every JSON written before this existed,
-        // and every single-line model going forward), model.lines/connections/references stay
+        // and every single-line model going forward), model.lines()/connections/references stay
         // empty and RiserModel::resolve_line_attachments() falls back to today's exact behavior
         // (nodes.front(), environmental.vessel_motion) -- zero migration needed.
         if (j.contains("references")) {
@@ -314,7 +314,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                     r_j["vessel_motion"].value("enabled", false)) {
                     ref.vessel_motion = parse_vessel_motion_config(r_j["vessel_motion"]);
                 }
-                model.references.push_back(ref);
+                model.references().push_back(ref);
             }
         }
         if (j.contains("connections")) {
@@ -327,7 +327,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                     warnings.push_back({"error", "connection id=" + std::to_string(conn.id) +
                         " referencia node_id=" + std::to_string(conn.node_id) + " que não existe."});
                 }
-                model.connections.push_back(conn);
+                model.connections().push_back(conn);
             }
         }
         if (j.contains("lines")) {
@@ -337,15 +337,15 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                 line.name = l_j.value("name", std::string());
                 line.top_connection_id = l_j.value("top_connection_id", -1);
                 line.anchor_connection_id = l_j.value("anchor_connection_id", -1);
-                model.lines.push_back(line);
+                model.lines().push_back(line);
             }
         }
 
-        // 4. Environmental parameters -> model.environmental (single place other classes
+        // 4. Environmental parameters -> model.environmental() (single place other classes
         // pull from below, instead of local variables scattered through this function).
         if (j.contains("environmental")) {
             auto env = j["environmental"];
-            auto& ec = model.environmental;
+            auto& ec = model.environmental();
 
             // "enabled": false (diagnostic-only escape hatch, matching
             // diag_isolated_segment.cpp's seabed_mode=0) pushes the seabed far below any
@@ -388,14 +388,14 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             ec.water_density = value_warn(env, "water_density", ec.water_density, "environmental.water_density", warnings);
 
             double max_z = -1e9;
-            for (const auto& node : model.nodes) {
+            for (const auto& node : model.nodes()) {
                 if (node->coords.z() > max_z) max_z = node->coords.z();
             }
 
             if (ec.seabed_enabled) {
                 // Aligns the seabed with the real minimum Z of the nodes read from the H5
                 double min_z = 1e9;
-                for (const auto& node : model.nodes) {
+                for (const auto& node : model.nodes()) {
                     if (node->coords.z() < min_z) min_z = node->coords.z();
                 }
                 ec.seabed_depth_z = min_z;
@@ -458,12 +458,12 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             }
         }
 
-        // 5. Solver parameters (static / dynamic options) -> model.analysis_options
+        // 5. Solver parameters (static / dynamic options) -> model.analysis_options()
         // (Solver tuning knobs, not physical/environmental values -- deliberately not
         // warned-about, see the rationale in model_builder.hpp.)
         if (j.contains("analysis_options")) {
             auto opts = j["analysis_options"];
-            auto& ao = model.analysis_options;
+            auto& ao = model.analysis_options();
             if (opts.contains("static")) {
                 auto st = opts["static"];
                 ao.static_steps = st.value("steps", ao.static_steps);

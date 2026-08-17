@@ -1756,6 +1756,59 @@ rodada. Pós-processador de ENTRADA (`preprocessor.html?project=&run=`) carregad
 Chrome headless real sobre essa rodada -- 501 nós / 500 elementos, `inputValid: true`, sem erro no
 console.
 
+## Qualidade de código — encapsulamento (2026-08-17)
+
+Pedido do usuário, revisando `model.hpp` no IDE: membros de classe muito expostos como `public`,
+preferência por estado privado acessado por método. Levantamento prévio (26 `class`/12 `struct` em
+`include/risersim/*.hpp`, contagem de pontos de acesso externo por grep) separou "exposição
+idiomática" (structs de config/DTO -- público é o idioma certo em C++) de "exposição que esconde um
+invariante violável de verdade". `ModelBuilder`/`VesselMotion`/`ConvergenceTest`/`Hydrostatics` já
+seguiam o padrão desejado (estado privado com sufixo `_`, método público sem sufixo) e serviram de
+modelo de estilo.
+
+**Encapsuladas** (4 classes, escopo acordado com o usuário via `AskUserQuestion`):
+1. **`SeabedInteraction`** (`seabed.hpp`) -- invariante real: `axial_friction`/`lateral_friction` só
+   herdam `friction_coeff` no construtor, reatribuir depois não propaga.
+2. **`CurrentProfile`** (`current_profile.hpp`) -- invariante real: os 3 vetores paralelos do perfil
+   tabulado (`depth_below_surface_m`/`velocities_ms`/`angles_deg`) precisam ter o mesmo tamanho e
+   ordem ascendente. `set_profile()` (já o mutador certo) ganhou validação nova que rejeita e avisa
+   (`std::cerr`) em vez de instalar um perfil inconsistente -- única mudança de COMPORTAMENTO deste
+   refactor inteiro, todo o resto é puramente sintático.
+3. **`RiserModel`** (`model.hpp`) -- invariante real: `nodes`/`elements` são
+   `vector<unique_ptr<...>>` dos quais `CorotationalBeam3D::node1()/node2()` guardam ponteiro cru;
+   nada impedia um `model.nodes.erase(...)` direto, que deixaria esses ponteiros pendurados.
+   `nodes()`/`elements()` agora só-leitura (escrita exclusivamente via `add_node()`/`add_element()`/
+   `clear()`, já as APIs certas -- confirmado por grep: zero mutação externa hoje). Por pedido do
+   usuário (consistência), `environmental()`/`analysis_options()`/`references()`/`connections()`/
+   `lines()` também viraram acessores (pares const/não-const, já que `model_builder.cpp` precisa de
+   referência mutável direta pra popular campo a campo).
+4. **`CorotationalBeam3D`** (`element_beam.hpp`) -- pedido explícito do usuário, apesar de ser a
+   classe mais "quente" do motor (~30x leitura de `node1`/`node2`, ~25x `props`, ~10x
+   `tension_effective` em `src/*.cpp`). Confirmado por grep que a ESCRITA já estava inteiramente
+   concentrada no construtor + `update_effective_tension()` -- exceto `BuoyancyModule`/
+   `BendRestrictor` (`buoyancy_and_restrictor.hpp`), que mutam `props`/`net_upward_buoyancy` de
+   fora (só achado pelo compilador ao tentar linkar `risersim.vcxproj`, já que esse header não é
+   usado por nenhum `src/*.cpp` -- só por `bindings.cpp`) -- resolvido dando a `props()` um overload
+   não-const (mutável in-place, mesmo padrão de `environmental()`/`analysis_options()`).
+
+**Fora de escopo, decisão explícita do usuário**: `Node3D` -- mesma classe "quente"
+(`disp`/`rot`/`coords`/`eq_numbers`/`friction_force`/`delta_disp_xy`, 100+ pontos de acesso dentro
+do Newton-Raphson estático/dinâmico já afinado ao longo de ~18 rodadas de debug), mas sem
+consumidor externo real pra proteger -- risco desproporcional ao ganho.
+
+**Revisão de documentação/comentários** (pedida junto): avaliada como já forte/uniforme no
+levantamento prévio (Doxygen `@brief`/`@param` com racional citando o real ANFLEX), sem gap
+prioritário -- ficou embutida no próprio trabalho de encapsulamento (cada campo privado manteve seu
+comentário detalhado, cada acessor novo ganhou `@brief` de uma linha).
+
+**Verificação**: os 4 alvos MSBuild (`risersim_test_main`, `risersim_tests`, `risersim` [módulo
+pybind], `risersim_diag_isolated_segment`) recompilam limpos após cada uma das 4 classes. Suíte
+Catch2: 405/405, zero regressão, em todas as 4 rodadas. Comparação numérica ponto-a-ponto
+(Near/Transverse/Cross vs `.SAI` real, mesma metodologia da Atualização 18) idêntica antes/depois em
+todas as 4 rodadas (erro horizontal médio/máximo batendo a 4 casas decimais). Smoke test manual em
+Python (bindings pybind) confirmou getters/setters, `props()` mutável, e `BuoyancyModule`/
+`BendRestrictor` funcionando nos dois sentidos.
+
 ## Backlog de recursos faltantes do motor (não bloqueante — puxar sob demanda)
 
 Achados documentados em `mapa_aml_exemplos_e_web_interface.md`, nenhum implementado: boias/tendões

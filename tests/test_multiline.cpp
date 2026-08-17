@@ -64,24 +64,24 @@ int add_catenary_chain(risersim::RiserModel& model, int id_offset, double y_orig
         model.add_node(id_offset + i + 1, x, y_origin, z);
     }
 
-    const size_t base = model.nodes.size() - num_nodes;
-    model.nodes[base]->eq_numbers = std::vector<int>(6, -1);
-    model.nodes[base + num_nodes - 1]->eq_numbers = std::vector<int>(6, -1);
+    const size_t base = model.nodes().size() - num_nodes;
+    model.nodes()[base]->eq_numbers = std::vector<int>(6, -1);
+    model.nodes()[base + num_nodes - 1]->eq_numbers = std::vector<int>(6, -1);
     for (size_t i = 1; i < static_cast<size_t>(num_nodes) - 1; ++i) {
-        model.nodes[base + i]->eq_numbers = {0, 1, 2, -1, -1, -1};
+        model.nodes()[base + i]->eq_numbers = {0, 1, 2, -1, -1, -1};
     }
 
     risersim::BeamMaterialProps props;
     const double L_unstretched = kTotalLength / static_cast<double>(kNumElements);
     for (int i = 0; i < kNumElements; ++i) {
-        model.add_element(id_offset + i + 1, model.nodes[base + i].get(), model.nodes[base + i + 1].get(), props, L_unstretched);
+        model.add_element(id_offset + i + 1, model.nodes()[base + i].get(), model.nodes()[base + i + 1].get(), props, L_unstretched);
     }
 
-    return model.nodes[base]->id;
+    return model.nodes()[base]->id;
 }
 
 /**
- * @brief Same catenary math as add_catenary_chain(), but emits `model.nodes`/`elements` JSON
+ * @brief Same catenary math as add_catenary_chain(), but emits `model.nodes()`/`elements` JSON
  * objects (appended to `nodes_out`/`elements_out`) instead of building a RiserModel directly --
  * used by the ModelBuilder::load_from_json() fixture tests below (Fase 2: proving the JSON
  * parsing path, not just direct C++ construction). Small (10 elements, not kNumElements=40) since
@@ -151,8 +151,8 @@ SolveResult solve_static_offset(risersim::RiserModel& model) {
 
     SolveResult r;
     r.converged = sa.solve();
-    r.top_disp = model.nodes.front()->disp; // válido pra qualquer chain isolada (id_offset=0) OU multi-linha (ver abaixo)
-    r.top_tension_N = model.elements.front()->tension_effective;
+    r.top_disp = model.nodes().front()->disp; // válido pra qualquer chain isolada (id_offset=0) OU multi-linha (ver abaixo)
+    r.top_tension_N = model.elements().front()->tension_effective();
     return r;
 }
 
@@ -164,11 +164,11 @@ TEST_CASE("Two disconnected lines converge independently, matching each solved a
     int topA_id = add_catenary_chain(combined, 0, 0.0);
     int topB_id = add_catenary_chain(combined, 1000, 50.0);
 
-    combined.references.push_back({1, risersim::ReferenceType::Global, "anchor", {}});
-    combined.connections.push_back({1, 1, topA_id});
-    combined.connections.push_back({2, 1, topB_id});
-    combined.lines.push_back({1, "A", 1, -1});
-    combined.lines.push_back({2, "B", 2, -1});
+    combined.references().push_back({1, risersim::ReferenceType::Global, "anchor", {}});
+    combined.connections().push_back({1, 1, topA_id});
+    combined.connections().push_back({2, 1, topB_id});
+    combined.lines().push_back({1, "A", 1, -1});
+    combined.lines().push_back({2, "B", 2, -1});
 
     risersim::StaticAnalysis sa;
     sa.model = &combined;
@@ -186,14 +186,14 @@ TEST_CASE("Two disconnected lines converge independently, matching each solved a
     // Localiza os nós/elementos de topo de cada linha pelo id (não por posição -- o array tem
     // ambas as chains concatenadas).
     auto find_node = [&](int id) {
-        auto it = std::find_if(combined.nodes.begin(), combined.nodes.end(), [&](const auto& n) { return n->id == id; });
-        REQUIRE(it != combined.nodes.end());
+        auto it = std::find_if(combined.nodes().begin(), combined.nodes().end(), [&](const auto& n) { return n->id == id; });
+        REQUIRE(it != combined.nodes().end());
         return it->get();
     };
     auto find_top_element = [&](risersim::Node3D* top_node) {
-        auto it = std::find_if(combined.elements.begin(), combined.elements.end(),
-            [&](const auto& e) { return e->node1 == top_node || e->node2 == top_node; });
-        REQUIRE(it != combined.elements.end());
+        auto it = std::find_if(combined.elements().begin(), combined.elements().end(),
+            [&](const auto& e) { return e->node1() == top_node || e->node2() == top_node; });
+        REQUIRE(it != combined.elements().end());
         return it->get();
     };
 
@@ -201,8 +201,8 @@ TEST_CASE("Two disconnected lines converge independently, matching each solved a
     risersim::Node3D* topB = find_node(topB_id);
     const Eigen::Vector3d combined_dispA = topA->disp;
     const Eigen::Vector3d combined_dispB = topB->disp;
-    const double combined_tensionA = find_top_element(topA)->tension_effective;
-    const double combined_tensionB = find_top_element(topB)->tension_effective;
+    const double combined_tensionA = find_top_element(topA)->tension_effective();
+    const double combined_tensionB = find_top_element(topB)->tension_effective();
 
     // Ambas as linhas de fato se moveram em direção ao offset (mecanismo funcionou, não ficou parado).
     REQUIRE(combined_dispA.x() == Catch::Approx(5.0).epsilon(0.02));
@@ -231,12 +231,12 @@ TEST_CASE("Two disconnected lines converge independently, matching each solved a
 TEST_CASE("A model with no lines[] keeps the legacy single top-node behavior", "[static_analysis][multiline]") {
     risersim::RiserModel model;
     add_catenary_chain(model, 0, 0.0);
-    REQUIRE(model.lines.empty());
+    REQUIRE(model.lines().empty());
 
     auto attachments = model.resolve_line_attachments();
     REQUIRE(attachments.size() == 1);
-    CHECK(attachments.front().top_node == model.nodes.front().get());
-    CHECK(attachments.front().vessel_motion == &model.environmental.vessel_motion);
+    CHECK(attachments.front().top_node == model.nodes().front().get());
+    CHECK(attachments.front().vessel_motion == &model.environmental().vessel_motion);
 
     SolveResult r = solve_static_offset(model);
     REQUIRE(r.converged);
@@ -248,11 +248,11 @@ TEST_CASE("DynamicAnalysis prescribes motion independently per line", "[dynamic_
     int topA_id = add_catenary_chain(combined, 0, 0.0);
     int topB_id = add_catenary_chain(combined, 1000, 50.0);
 
-    combined.references.push_back({1, risersim::ReferenceType::Global, "anchor", {}});
-    combined.connections.push_back({1, 1, topA_id});
-    combined.connections.push_back({2, 1, topB_id});
-    combined.lines.push_back({1, "A", 1, -1});
-    combined.lines.push_back({2, "B", 2, -1});
+    combined.references().push_back({1, risersim::ReferenceType::Global, "anchor", {}});
+    combined.connections().push_back({1, 1, topA_id});
+    combined.connections().push_back({2, 1, topB_id});
+    combined.lines().push_back({1, "A", 1, -1});
+    combined.lines().push_back({2, "B", 2, -1});
 
     risersim::StaticAnalysis sa;
     sa.model = &combined;
@@ -265,8 +265,8 @@ TEST_CASE("DynamicAnalysis prescribes motion independently per line", "[dynamic_
     REQUIRE(sa.solve()); // só o assentamento em catenária -- sem offset, sem vessel motion real
 
     auto find_node = [&](int id) {
-        auto it = std::find_if(combined.nodes.begin(), combined.nodes.end(), [&](const auto& n) { return n->id == id; });
-        REQUIRE(it != combined.nodes.end());
+        auto it = std::find_if(combined.nodes().begin(), combined.nodes().end(), [&](const auto& n) { return n->id == id; });
+        REQUIRE(it != combined.nodes().end());
         return it->get();
     };
     risersim::Node3D* topA = find_node(topA_id);
@@ -326,9 +326,9 @@ TEST_CASE("ModelBuilder parses a multi-line JSON fixture (references/connections
     risersim::RiserModel* model = load_json_fixture(builder, doc, "test_multiline_fixture_2line.json");
     REQUIRE(model != nullptr);
 
-    REQUIRE(model->lines.size() == 2);
-    REQUIRE(model->connections.size() == 2);
-    REQUIRE(model->references.size() == 1);
+    REQUIRE(model->lines().size() == 2);
+    REQUIRE(model->connections().size() == 2);
+    REQUIRE(model->references().size() == 1);
 
     auto attachments = model->resolve_line_attachments();
     REQUIRE(attachments.size() == 2);
@@ -369,14 +369,14 @@ TEST_CASE("ModelBuilder keeps single-line JSON (no lines[]) working exactly as b
     risersim::RiserModel* model = load_json_fixture(builder, doc, "test_multiline_fixture_singleline.json");
     REQUIRE(model != nullptr);
 
-    REQUIRE(model->lines.empty());
-    REQUIRE(model->connections.empty());
-    REQUIRE(model->references.empty());
+    REQUIRE(model->lines().empty());
+    REQUIRE(model->connections().empty());
+    REQUIRE(model->references().empty());
 
     auto attachments = model->resolve_line_attachments();
     REQUIRE(attachments.size() == 1);
-    CHECK(attachments.front().top_node == model->nodes.front().get());
-    CHECK(attachments.front().vessel_motion == &model->environmental.vessel_motion);
+    CHECK(attachments.front().top_node == model->nodes().front().get());
+    CHECK(attachments.front().vessel_motion == &model->environmental().vessel_motion);
 
     risersim::StaticAnalysis sa;
     sa.model = model;

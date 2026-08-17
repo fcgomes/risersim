@@ -15,27 +15,27 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
     auto* model = analysis->model;
     if (!model) return F_ext;
 
-    double water_surface_z = model->environmental.water_surface_z;
+    double water_surface_z = model->environmental().water_surface_z;
 
-    for (const auto& elem : model->elements) {
-        double L = elem->initial_length;
+    for (const auto& elem : model->elements()) {
+        double L = elem->initial_length();
         double g = 9.81;
 
-        double z1 = elem->node1->current_coords().z();
-        double z2 = elem->node2->current_coords().z();
+        double z1 = elem->node1()->current_coords().z();
+        double z2 = elem->node2()->current_coords().z();
 
         // Dry weight (net of internal-fluid buoyancy, which is a fixed structural property, not
         // Z-dependent) stays exactly as before. External buoyancy now scales with how much of
         // the element is actually below the water surface, instead of always applying the
         // fully-submerged value regardless of Z -- see hydrostatics.hpp for why (docs/roadmap.md
         // item 1b).
-        double w_dry = (elem->props.rho * elem->props.A + elem->props.rho_fluid * elem->inner_area()) * g;
+        double w_dry = (elem->props().rho * elem->props().A + elem->props().rho_fluid * elem->inner_area()) * g;
         double zc[2] = {z1, z2};
-        Hydrostatics hydro(elem->props.D_outer, L, analysis->water_density);
+        Hydrostatics hydro(elem->props().D_outer, L, analysis->water_density);
         hydro.compute(zc, water_surface_z);
 
-        int eq1_z = elem->node1->eq_numbers[2];
-        int eq2_z = elem->node2->eq_numbers[2];
+        int eq1_z = elem->node1()->eq_numbers[2];
+        int eq2_z = elem->node2()->eq_numbers[2];
 
         // Dry weight still splits 50/50 (doesn't depend on submersion). Buoyancy uses
         // Hydrostatics' own per-end apportionment (generally asymmetric while straddling --
@@ -57,7 +57,7 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
             // underground, full lateral current force kept fighting the seabed's contact
             // reaction instead of backing off like real ANFLEX, a plausible amplifier of the
             // seabed+current divergence (see mapa_classes_anflex_estatica.md).
-            double buried_threshold_z = analysis->seabed.seabed_depth - 1.0;
+            double buried_threshold_z = analysis->seabed.seabed_depth() - 1.0;
             bool node1_buried = z1 < buried_threshold_z;
             bool node2_buried = z2 < buried_threshold_z;
             double exposed_fraction = 1.0;
@@ -72,12 +72,12 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
 
             if (exposed_fraction > 0.0) {
                 double avg_z = 0.5 * (z1 + z2);
-                Eigen::Vector3d elem_axis = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
+                Eigen::Vector3d elem_axis = (elem->node2()->current_coords() - elem->node1()->current_coords()).normalized();
                 Eigen::Vector3d f_drag = analysis->current.get_drag_force_per_length(
-                    avg_z, elem->props.D_outer, analysis->water_density_for_mass, elem_axis);
+                    avg_z, elem->props().D_outer, analysis->water_density_for_mass, elem_axis);
 
-                int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
-                int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
+                int eq1_x = elem->node1()->eq_numbers[0]; int eq2_x = elem->node2()->eq_numbers[0];
+                int eq1_y = elem->node1()->eq_numbers[1]; int eq2_y = elem->node2()->eq_numbers[1];
 
                 double L_exposed = L * exposed_fraction;
                 if (eq1_x >= 0) F_ext[eq1_x] += f_drag.x() * L_exposed * 0.5 * current_factor;
@@ -105,22 +105,22 @@ void StaticIntegrator::assemble_stiffness_and_internal_forces(int iter, Eigen::S
     // contribution, same "K_global += ..." pattern as K_artificial below.
     K_global += analysis->assemble_buoyancy_stiffness();
 
-    if (!artificial_stiffness_enabled || !model || model->elements.empty()) return;
+    if (!artificial_stiffness_enabled || !model || model->elements().empty()) return;
 
     add_artificial_stiffness(model, analysis->num_dofs, iter, K_global);
 }
 
 void add_artificial_stiffness(const RiserModel* model, int num_dofs, int iter, Eigen::SparseMatrix<double>& K_global) {
-    if (!model || model->elements.empty()) return;
+    if (!model || model->elements().empty()) return;
 
     // Artificial stiffness (Tikhonov regularization), the same technique used by
     // real ANFLEX (beam.cpp:calc_artificial_stiffness / static_integrator.cpp).
     double avg_EA_L = 0.0;
-    for (const auto& elem : model->elements) {
+    for (const auto& elem : model->elements()) {
         double L = elem->current_length();
-        if (L > 1.0e-9) avg_EA_L += (elem->props.E * elem->props.A) / L;
+        if (L > 1.0e-9) avg_EA_L += (elem->props().E * elem->props().A) / L;
     }
-    avg_EA_L /= static_cast<double>(model->elements.size());
+    avg_EA_L /= static_cast<double>(model->elements().size());
 
     // NOTE: tested with constant 5.0 (instead of 1.25) as a way to keep artificial
     // stiffness relevant for more iterations -- this does prevent residual blow-up
@@ -137,7 +137,7 @@ void add_artificial_stiffness(const RiserModel* model, int num_dofs, int iter, E
     double k_rotational = k_transversal * 0.05;
 
     std::vector<Eigen::Triplet<double>> artif_triplets;
-    for (const auto& node : model->nodes) {
+    for (const auto& node : model->nodes()) {
         for (int i = 0; i < 3; ++i) {
             int eq = node->eq_numbers[i];
             if (eq >= 0) artif_triplets.push_back(Eigen::Triplet<double>(eq, eq, k_transversal));

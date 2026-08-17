@@ -141,17 +141,19 @@ Minimal usage example:
              "Creates an element between node1 and node2. L_unstretched=0 uses the initial length.",
              py::keep_alive<1, 3>(),   // keep node1 alive
              py::keep_alive<1, 4>())   // keep node2 alive
-        .def_readwrite("id",                 &CorotationalBeam3D::id)
-        .def_readwrite("props",              &CorotationalBeam3D::props)
-        .def_readwrite("p_i",               &CorotationalBeam3D::p_i,
+        .def_property_readonly("id",         &CorotationalBeam3D::id)
+        .def_property_readonly("props",      static_cast<BeamMaterialProps& (CorotationalBeam3D::*)()>(&CorotationalBeam3D::props),
+                       py::return_value_policy::reference_internal,
+                       "Cross-section/material properties (mutable in place -- see BuoyancyModule/BendRestrictor).")
+        .def_property("p_i",                 &CorotationalBeam3D::p_i, &CorotationalBeam3D::set_p_i,
                        "Internal fluid pressure (Pa).")
-        .def_readwrite("p_e",               &CorotationalBeam3D::p_e,
+        .def_property("p_e",                 &CorotationalBeam3D::p_e, &CorotationalBeam3D::set_p_e,
                        "External hydrostatic pressure (Pa, computed automatically if 0).")
-        .def_readwrite("net_upward_buoyancy", &CorotationalBeam3D::net_upward_buoyancy,
+        .def_property("net_upward_buoyancy", &CorotationalBeam3D::net_upward_buoyancy, &CorotationalBeam3D::set_net_upward_buoyancy,
                        "Extra net upward buoyancy force from modules (N/m, e.g. lazy wave).")
-        .def_readwrite("tension_effective",   &CorotationalBeam3D::tension_effective,
+        .def_property_readonly("tension_effective", &CorotationalBeam3D::tension_effective,
                        "Computed effective tension T_eff = T_true + p_e*A_e - p_i*A_i (N).")
-        .def_readwrite("initial_length",      &CorotationalBeam3D::initial_length,
+        .def_property_readonly("initial_length",    &CorotationalBeam3D::initial_length,
                        "Unstretched length (m).")
         .def("current_length",         &CorotationalBeam3D::current_length,
              "Current length (m).")
@@ -197,9 +199,9 @@ Minimal usage example:
              py::arg("stiffness_z") = 1.0e5,
              py::arg("friction")    = 0.5,
              "depth: seabed Z coordinate (m, negative). stiffness_z: vertical stiffness (N/m). friction: friction coefficient.")
-        .def_readwrite("seabed_depth",  &SeabedInteraction::seabed_depth)
-        .def_readwrite("stiffness_z",   &SeabedInteraction::stiffness_z)
-        .def_readwrite("friction_coeff",&SeabedInteraction::friction_coeff);
+        .def_property("seabed_depth",  &SeabedInteraction::seabed_depth,  &SeabedInteraction::set_seabed_depth)
+        .def_property("stiffness_z",   &SeabedInteraction::stiffness_z,   &SeabedInteraction::set_stiffness_z)
+        .def_property("friction_coeff",&SeabedInteraction::friction_coeff,&SeabedInteraction::set_friction_coeff);
 
     // =========================================================================
     // CurrentProfile
@@ -213,11 +215,11 @@ Minimal usage example:
              py::arg("power_exponent") = 0.1428,
              py::arg("Cd")             = 1.0,
              "v_surface: surface velocity (m/s). seabed_depth: seabed Z (m, negative). heading_deg: azimuth (deg).")
-        .def_readwrite("v_surface",      &CurrentProfile::v_surface)
-        .def_readwrite("seabed_depth",   &CurrentProfile::seabed_depth)
-        .def_readwrite("heading_deg",    &CurrentProfile::heading_deg)
-        .def_readwrite("power_exponent", &CurrentProfile::power_exponent)
-        .def_readwrite("Cd",             &CurrentProfile::Cd)
+        .def_property("v_surface",      &CurrentProfile::v_surface,      &CurrentProfile::set_v_surface)
+        .def_property("seabed_depth",   &CurrentProfile::seabed_depth,   &CurrentProfile::set_seabed_depth)
+        .def_property("heading_deg",    &CurrentProfile::heading_deg,    &CurrentProfile::set_heading_deg)
+        .def_property("power_exponent", &CurrentProfile::power_exponent, &CurrentProfile::set_power_exponent)
+        .def_property("Cd",             &CurrentProfile::Cd,             &CurrentProfile::set_Cd)
         .def("get_velocity", &CurrentProfile::get_velocity, py::arg("z"),
              "Returns the current velocity at depth z (m/s).");
 
@@ -299,14 +301,14 @@ Minimal usage example:
         .def(py::init<>())
         .def_property_readonly("nodes", [](const RiserModel& model) {
             std::vector<Node3D*> v;
-            v.reserve(model.nodes.size());
-            for (const auto& n : model.nodes) v.push_back(n.get());
+            v.reserve(model.nodes().size());
+            for (const auto& n : model.nodes()) v.push_back(n.get());
             return v;
         }, "Read-only list of the model's nodes (owned by the model -- see add_node()).")
         .def_property_readonly("elements", [](const RiserModel& model) {
             std::vector<CorotationalBeam3D*> v;
-            v.reserve(model.elements.size());
-            for (const auto& e : model.elements) v.push_back(e.get());
+            v.reserve(model.elements().size());
+            for (const auto& e : model.elements()) v.push_back(e.get());
             return v;
         }, "Read-only list of the model's elements (owned by the model -- see add_element()).")
         .def("add_node", [](RiserModel& model, int id, double x, double y, double z) {

@@ -10,6 +10,7 @@
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <numbers>
 #include <vector>
 
@@ -28,19 +29,36 @@ namespace risersim {
  */
 class CurrentProfile {
 public:
-    double v_surface;     ///< Current velocity at the sea surface (m/s) -- fallback path only.
-    double seabed_depth;  ///< Seabed Z coordinate (m, e.g. -80.0 in the "surface=0" convention, or
-                           ///< ~0.0 for a real XML/H5-derived model, see `water_surface_z` below).
-    double heading_deg;   ///< Current direction in degrees (0 = +X, 90 = +Y) -- fallback path only.
-    double power_exponent;///< Power law exponent alpha (default 1/7 = 0.1428) -- fallback path only.
-    double Cd;            ///< Drag coefficient (default 1.0).
+    CurrentProfile(double v_surf = 1.5, double seabed_z = -80.0, double heading = 90.0, double alpha = 0.1428, double cd = 1.0)
+        : v_surface_(v_surf), seabed_depth_(seabed_z), heading_deg_(heading), power_exponent_(alpha), Cd_(cd) {}
+
+    /** @brief Current velocity at the sea surface (m/s) -- fallback path only. */
+    double v_surface() const { return v_surface_; }
+    void set_v_surface(double v) { v_surface_ = v; }
+
+    /** @brief Seabed Z coordinate (m, e.g. -80.0 in the "surface=0" convention, or ~0.0 for a
+     * real XML/H5-derived model, see `water_surface_z()` below). */
+    double seabed_depth() const { return seabed_depth_; }
+    void set_seabed_depth(double z) { seabed_depth_ = z; }
+
+    /** @brief Current direction in degrees (0 = +X, 90 = +Y) -- fallback path only. */
+    double heading_deg() const { return heading_deg_; }
+    void set_heading_deg(double deg) { heading_deg_ = deg; }
+
+    /** @brief Power law exponent alpha (default 1/7 = 0.1428) -- fallback path only. */
+    double power_exponent() const { return power_exponent_; }
+    void set_power_exponent(double alpha) { power_exponent_ = alpha; }
+
+    /** @brief Drag coefficient (default 1.0). */
+    double Cd() const { return Cd_; }
+    void set_Cd(double cd) { Cd_ = cd; }
 
     /**
-     * @brief Z coordinate of the sea surface, in the SAME frame as `seabed_depth` and the
+     * @brief Z coordinate of the sea surface, in the SAME frame as `seabed_depth()` and the
      * model's node Z coordinates -- NOT assumed to be 0.
      *
      * Defaults to `0.0`, matching risersim's synthetic-model convention (surface at z=0,
-     * seabed at negative z, e.g. `seabed_depth=-80.0`) -- so any caller that never sets this
+     * seabed at negative z, e.g. `seabed_depth()=-80.0`) -- so any caller that never sets this
      * (the synthetic fallback path, older callers) keeps its exact previous behavior.
      *
      * Real XML/H5-derived models do NOT use that convention: `ModelBuilder` aligns
@@ -53,14 +71,24 @@ public:
      * `water_surface_z=0` for a real model silently collapsed the whole depth-varying current
      * profile to a single, constant, surface-only value along the entire riser.
      */
-    double water_surface_z = 0.0;
+    double water_surface_z() const { return water_surface_z_; }
+    void set_water_surface_z(double z) { water_surface_z_ = z; }
+
+    /** @brief Real tabulated depth-below-surface profile (0 = surface, positive downward) -- see
+     * set_profile(). Empty until set_profile() installs a real table. */
+    const std::vector<double>& depth_below_surface_m() const { return depth_below_surface_m_; }
+    /** @brief Real tabulated velocity profile, same indexing as depth_below_surface_m(). */
+    const std::vector<double>& velocities_ms() const { return velocities_ms_; }
+    /** @brief Real tabulated heading profile, same indexing as depth_below_surface_m() (may be
+     * empty -- get_heading() falls back to heading_deg() when it doesn't match in size). */
+    const std::vector<double>& angles_deg() const { return angles_deg_; }
 
     /**
-     * @brief Real tabulated profile, sorted ascending by depth below the surface (0 = surface,
-     * positive downward -- same convention as the input JSON's environmental.current arrays).
-     * Empty by default; populated via set_profile() when the source data has it.
+     * @brief Installs the real tabulated profile (arbitrary point count, sorted ascending by
+     * depth below the surface -- 0 = surface, positive downward, same convention as the input
+     * JSON's environmental.current arrays).
      *
-     * Named `depth_below_surface_m`, not `depths_m`, on purpose: the source data (ANFLEX
+     * Named `depth_below_surface_m`/`depths`, not `depths_m`, on purpose: the source data (ANFLEX
      * XML/AML) measures depth the OPPOSITE way (0 = seabed, increasing toward the surface) --
      * a same-name-different-convention collision between the JSON field and the XML field is
      * exactly what let a real bug (the whole current profile silently collapsing to the surface
@@ -68,19 +96,37 @@ public:
      * docs/mapa_classes_anflex_estatica.md and docs/mapa_aml_exemplos_e_web_interface.md
      * ("Auditoria de conversões de valor", achado 3). Keep the convention in the name when this
      * field is touched again.
+     *
+     * `depths`/`vels` must be the same size -- get_velocity()'s interpolation indexes both
+     * in lockstep, so a mismatch would be a real out-of-bounds read, not just a wrong answer.
+     * `angles` is optional (get_heading() already falls back to heading_deg() when it isn't a
+     * matching-size table) but is still checked here for the same size, so a genuine mismatch is
+     * caught at the point the bad data was installed rather than silently ignored later. `depths`
+     * must be sorted ascending, since interp1() assumes it. Any of these violated: the profile is
+     * NOT installed (falls back to the power-law formula, matching the "no profile" case) and a
+     * warning is printed -- fails safe rather than reading past the end of a shorter vector.
      */
-    std::vector<double> depth_below_surface_m;
-    std::vector<double> velocities_ms;
-    std::vector<double> angles_deg;
-
-    CurrentProfile(double v_surf = 1.5, double seabed_z = -80.0, double heading = 90.0, double alpha = 0.1428, double cd = 1.0)
-        : v_surface(v_surf), seabed_depth(seabed_z), heading_deg(heading), power_exponent(alpha), Cd(cd) {}
-
-    /** @brief Installs the real tabulated profile (arbitrary point count, sorted ascending by depth). */
     void set_profile(std::vector<double> depths, std::vector<double> vels, std::vector<double> angles) {
-        depth_below_surface_m = std::move(depths);
-        velocities_ms = std::move(vels);
-        angles_deg = std::move(angles);
+        if (depths.size() != vels.size()) {
+            std::cerr << "CurrentProfile::set_profile: depths (" << depths.size() << ") and "
+                         "velocities (" << vels.size() << ") sizes differ -- profile NOT installed, "
+                         "falling back to the power-law formula." << std::endl;
+            return;
+        }
+        if (!angles.empty() && angles.size() != depths.size()) {
+            std::cerr << "CurrentProfile::set_profile: angles (" << angles.size() << ") doesn't match "
+                         "depths (" << depths.size() << ") -- profile NOT installed, falling back to "
+                         "the power-law formula." << std::endl;
+            return;
+        }
+        if (!std::is_sorted(depths.begin(), depths.end())) {
+            std::cerr << "CurrentProfile::set_profile: depths are not sorted ascending -- profile NOT "
+                         "installed, falling back to the power-law formula." << std::endl;
+            return;
+        }
+        depth_below_surface_m_ = std::move(depths);
+        velocities_ms_ = std::move(vels);
+        angles_deg_ = std::move(angles);
     }
 
     /**
@@ -93,35 +139,35 @@ public:
      * @return Velocity magnitude (m/s).
      */
     double get_velocity(double z) const {
-        double depth_from_surface = std::max(0.0, water_surface_z - z);
-        if (depth_below_surface_m.size() >= 2) {
-            return interp1(depth_below_surface_m, velocities_ms, depth_from_surface);
+        double depth_from_surface = std::max(0.0, water_surface_z_ - z);
+        if (depth_below_surface_m_.size() >= 2) {
+            return interp1(depth_below_surface_m_, velocities_ms_, depth_from_surface);
         }
 
-        if (z >= water_surface_z) return v_surface;
-        if (z <= seabed_depth) return 0.0;
+        if (z >= water_surface_z_) return v_surface_;
+        if (z <= seabed_depth_) return 0.0;
 
-        double total_water_depth = water_surface_z - seabed_depth;
-        double height_above_seabed = z - seabed_depth;
+        double total_water_depth = water_surface_z_ - seabed_depth_;
+        double height_above_seabed = z - seabed_depth_;
 
         double ratio = (total_water_depth > 1.0e-9) ? (height_above_seabed / total_water_depth) : 1.0;
         ratio = std::max(0.0, std::min(1.0, ratio));
 
-        return v_surface * std::pow(ratio, power_exponent);
+        return v_surface_ * std::pow(ratio, power_exponent_);
     }
 
     /**
      * @brief Current heading at depth z (degrees, 0 = +X, 90 = +Y).
      *
      * Interpolates the real tabulated profile when 2+ angle points are available; otherwise
-     * falls back to the single fixed `heading_deg`.
+     * falls back to the single fixed `heading_deg()`.
      */
     double get_heading(double z) const {
-        double depth_from_surface = std::max(0.0, water_surface_z - z);
-        if (angles_deg.size() >= 2 && angles_deg.size() == depth_below_surface_m.size()) {
-            return interp1(depth_below_surface_m, angles_deg, depth_from_surface);
+        double depth_from_surface = std::max(0.0, water_surface_z_ - z);
+        if (angles_deg_.size() >= 2 && angles_deg_.size() == depth_below_surface_m_.size()) {
+            return interp1(depth_below_surface_m_, angles_deg_, depth_from_surface);
         }
-        return heading_deg;
+        return heading_deg_;
     }
 
     /**
@@ -155,10 +201,22 @@ public:
 
         Eigen::Vector3d v_perp = v_fluid - (v_fluid.dot(elem_axis)) * elem_axis;
 
-        return 0.5 * rho_water * Cd * D_outer * v_perp.norm() * v_perp;
+        return 0.5 * rho_water * Cd_ * D_outer * v_perp.norm() * v_perp;
     }
 
 private:
+    double v_surface_;     ///< Current velocity at the sea surface (m/s) -- fallback path only.
+    double seabed_depth_;  ///< Seabed Z coordinate (m) -- see seabed_depth()'s doc comment above.
+    double heading_deg_;   ///< Current direction in degrees (0 = +X, 90 = +Y) -- fallback path only.
+    double power_exponent_;///< Power law exponent alpha (default 1/7 = 0.1428) -- fallback path only.
+    double Cd_;            ///< Drag coefficient (default 1.0).
+    double water_surface_z_ = 0.0; ///< See water_surface_z()'s doc comment above.
+
+    /// Real tabulated profile, sorted ascending by depth below the surface -- see set_profile().
+    std::vector<double> depth_below_surface_m_;
+    std::vector<double> velocities_ms_;
+    std::vector<double> angles_deg_;
+
     /**
      * @brief Linear interpolation of y_table(x_table) at x -- x_table must be sorted ascending.
      * Outside the table's range, holds the nearest edge value (no extrapolation).

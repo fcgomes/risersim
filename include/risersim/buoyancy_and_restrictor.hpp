@@ -21,8 +21,8 @@ public:
 
     /** @brief Overwrites `elem`'s outer diameter and net upward buoyancy with this module's values. */
     void apply_to_element(CorotationalBeam3D* elem) const {
-        elem->props.D_outer = D_buoyancy;
-        elem->net_upward_buoyancy = net_upward_force;
+        elem->props().D_outer = D_buoyancy;
+        elem->set_net_upward_buoyancy(net_upward_force);
     }
 };
 
@@ -35,8 +35,8 @@ public:
 
     /** @brief Multiplies `elem`'s IY/IZ moments of inertia by `stiffness_multiplier`. */
     void apply_to_element(CorotationalBeam3D* elem) const {
-        elem->props.IY *= stiffness_multiplier;
-        elem->props.IZ *= stiffness_multiplier;
+        elem->props().IY *= stiffness_multiplier;
+        elem->props().IZ *= stiffness_multiplier;
     }
 };
 
