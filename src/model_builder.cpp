@@ -508,6 +508,8 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                     ao.rayleigh_alpha = ray.value("alpha", ao.rayleigh_alpha);
                     ao.rayleigh_beta = ray.value("beta", ao.rayleigh_beta);
                 }
+                ao.hht_alpha = dy.value("hht_alpha", ao.hht_alpha);
+                ao.dynamic_max_step_halvings = dy.value("max_step_halvings", ao.dynamic_max_step_halvings);
             }
         }
 

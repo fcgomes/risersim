@@ -205,33 +205,42 @@ VesselMotion::VesselMotion(const VesselMotionConfig& config, double wave_heading
 
     transfer_to_point(x_local, y_local, z_local, re, im);
 
-    // Espectro JONSWAP nos pontos reais de discretização (linspace(wini,wfin,nwave), igual ao
-    // grid de componentes de onda real -- irregular_wave.cpp) e momentos espectrais por GDL
-    // (m0, m2, m4) via trapézio -- mesma fórmula de spectrum.cpp::compute_spectrum_moments,
-    // exceto que integramos exatamente sobre [wini,wfin] (n-1 trapézios pra n pontos) em vez do
-    // grid ligeiramente mais curto que o código real usa (um artefato de `dw=(wf-wi)/n` com `n`
-    // = contagem de pontos, não de intervalos, ali) -- diferença desprezível (~1% pra n=100),
-    // documentada em vez de replicada bit-a-bit.
-    int nwave = std::max(2, config.jonswap_nwave);
-    std::vector<double> w(nwave);
-    for (int i = 0; i < nwave; ++i) {
-        w[i] = config.jonswap_wini_rad_s + (config.jonswap_wfin_rad_s - config.jonswap_wini_rad_s) * i / (nwave - 1);
-    }
-
-    // Restringe o intervalo de integração dos momentos espectrais à faixa REALMENTE tabelada na
-    // RAO (`config.frequencies_rad_s`), como `hybrid_movement.cpp:69-81` faz (`m_mov_ini_fre`/
-    // `m_mov_fin_fre`) -- sem isso, `curve_at()`/`interp_linear()` extrapolava a amplitude da RAO
-    // como constante além da tabela (ex. Exemplo_01a: RAO só vai até 1,2 rad/s, mas o grid JONSWAP
-    // configurado ia até 3,0 rad/s), incluindo uma cauda espúria que o código real nunca usa --
-    // pesa desproporcionalmente em m4 (~ω⁴) e explicava o gap não-uniforme entre GDL documentado
-    // em docs/roadmap.md (Eixo 2a, Atualização 8).
-    int mov_ini = 0, mov_fin = nwave - 1;
+    // Nós de quadratura para o espectro induzido (sw = RAO²×S_jonswap) e os momentos espectrais
+    // (m0, m2, m4) via trapézio -- mesma fórmula de spectrum.cpp::compute_spectrum_moments. Uma
+    // versão anterior usava um grid UNIFORME (linspace(wini,wfin,jonswap_nwave), tipicamente 100
+    // pontos, dw~0.028 rad/s pro Exemplo_01c) -- aqui trocado pelos PRÓPRIOS pontos de frequência
+    // da tabela RAO (`config.frequencies_rad_s`, clipados à interseção com [wini,wfin] -- mesmo
+    // papel do antigo mov_ini/mov_fin, que replicava `hybrid_movement.cpp:69-81`/`m_mov_ini_fre`/
+    // `m_mov_fin_fre`), que são mais finamente espaçados exatamente onde a RAO varia mais rápido
+    // (0,01 rad/s vs os 0,028 rad/s do grid uniforme antigo, ex. perto da ressonância de roll do
+    // Far, RU salta 0,57->2,81->1,43 deg/m numa janela de 0,03 rad/s -- Exemplo_01c_A1_FarDI.SAI:
+    // 178-182). Isso é uma correção real (mais perto do integral contínuo verdadeiro: comparado
+    // numericamente contra uma referência de 200k pontos usando a MESMA curva RAO -- já confirmada
+    // byte-a-byte idêntica à tabela "TRANSFERRED" real -- o grid antigo tinha ~4,6% de erro no m0
+    // do heave por ESTIMAR PARA CIMA a área perto de w=0,2 [S(w)~w^-5 é convexo ali, trapézio
+    // superestima], este grid tem ~1,2%), mas -- achado importante -- NÃO é a causa do gap real de
+    // heave/roll: mesmo o integral de referência de 200k pontos, usando a mesma curva RAO já
+    // confirmada idêntica à real e os mesmos parâmetros JONSWAP (alpha/gamma/period_s idênticos ao
+    // relatado no .SAI: 0,0047260/1,6742/15,350), dá amp_max(RU)=0,1323 rad / amp_max(W)=7,66 m --
+    // ainda longe do real (RU=9,7258°=0,16975 rad, W=9,2905 m). Como nenhum esquema de quadratura
+    // pode legitimamente convergir pra um valor ~2,7x (RU) diferente do integral contínuo da MESMA
+    // função verificada, a causa raiz não é resolução de grid -- fica em aberto (ver roadmap.md,
+    // possível suspeita: rotina Fortran legada `MOVGHARFLO`/`movgharfloa.f`, ainda não lida a
+    // fundo, pode ser o caminho que realmente gera esse relatório em vez de `hybrid_movement.cpp`).
+    std::vector<double> w;
     if (!config.frequencies_rad_s.empty()) {
-        double rao_min = config.frequencies_rad_s.front();
-        double rao_max = config.frequencies_rad_s.back();
+        double lo = std::max(config.jonswap_wini_rad_s, config.frequencies_rad_s.front());
+        double hi = std::min(config.jonswap_wfin_rad_s, config.frequencies_rad_s.back());
+        for (double f : config.frequencies_rad_s) {
+            if (f >= lo && f <= hi) w.push_back(f);
+        }
+    }
+    if (w.size() < 2) {
+        // Sem tabela RAO utilizável dentro da faixa configurada -- volta pro grid uniforme antigo.
+        int nwave = std::max(2, config.jonswap_nwave);
+        w.resize(nwave);
         for (int i = 0; i < nwave; ++i) {
-            if (w[i] < rao_min) mov_ini = i;
-            if (w[i] < rao_max) mov_fin = i;
+            w[i] = config.jonswap_wini_rad_s + (config.jonswap_wfin_rad_s - config.jonswap_wini_rad_s) * i / (nwave - 1);
         }
     }
 
@@ -239,11 +248,11 @@ VesselMotion::VesselMotion(const VesselMotionConfig& config, double wave_heading
     for (int dof = 0; dof < 6; ++dof) {
         double m0 = 0.0, m2 = 0.0, m4 = 0.0;
         double s_prev = 0.0;
-        for (int i = mov_ini; i <= mov_fin; ++i) {
+        for (size_t i = 0; i < w.size(); ++i) {
             double amp = curve_at(config.frequencies_rad_s, re[dof], im[dof], w[i]).first;
             double s_jonswap = jonswap_spectrum(w[i], config.jonswap_alpha, config.jonswap_gamma, config.jonswap_period_s);
             double s_dof = amp * amp * s_jonswap;
-            if (i > mov_ini) {
+            if (i > 0) {
                 double dw = w[i] - w[i - 1];
                 double a = 0.5 * (s_prev + s_dof) * dw;
                 double wm = 0.5 * (w[i - 1] + w[i]);

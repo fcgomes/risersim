@@ -105,6 +105,22 @@ struct AnalysisOptionsConfig {
     double dynamic_tolerance = 1.0e-4;
     double rayleigh_alpha = 0.05;
     double rayleigh_beta = 0.01;
+    // HHT-alpha (Alfa-Method) time integration. gamma=0.5-alpha, beta=0.25*(1-alpha)^2
+    // (bcalfa.f:100-101). alpha=0 (default here) recovers plain Newmark average acceleration
+    // (gamma=0.5, beta=0.25). Real ANFLEX's own default is -0.1 (bldanagr3.f:77) -- tested
+    // directly against the Far load case (docs/roadmap.md, Eixo 2a, Atualizacao 16): confirmed
+    // implemented correctly (monotonic, sign-correct response), but empirically alpha=-0.1
+    // makes that case's known non-convergence slightly WORSE (fails at step 430 vs. 446 for
+    // alpha=0), with no compensating benefit on any case that already converges (Near/Transverse/
+    // Cross unaffected either way). Kept configurable (real, correct, general improvement over
+    // the previous undocumented ad hoc gamma=0.55/beta=0.28) but defaulted to 0.0 since -0.1
+    // doesn't help anything in this codebase and measurably hurts the one hard case.
+    double hht_alpha = 0.0;
+    // LSTEPITER real (badina.f:2163-2171): quantas vezes um passo dinamico pode subdividir dt pela
+    // metade (recursivamente) quando o Newton nao converge, antes de desistir e parar o laco de
+    // tempo. 0 = comportamento antigo (sem retry, falha imediata). Default 4 = dt tao fino quanto
+    // dt_s/16.
+    int dynamic_max_step_halvings = 4;
     // Default true -- see the matching field's doc comment in dynamic_analysis.hpp for why (a
     // non-converged step's state is physically meaningless, so is everything built on it).
     bool stop_on_first_non_convergence = true;

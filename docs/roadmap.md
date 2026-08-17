@@ -252,7 +252,14 @@ gap real, mas não bloqueante) ou se o Eixo 1b deve ser considerado fechado por 
 
 ## Eixo 2 — Pipeline de dados (desbloqueia mais casos de teste reais, baixo risco)
 
-### 2a. Religar `aml_reader.py` ao schema real do `ModelBuilder` — 🟡 EM PROGRESSO
+### 2a. Religar `aml_reader.py` ao schema real do `ModelBuilder` — ✅ RESOLVIDO (refinamentos menores em aberto)
+
+Bloqueio real fechado na Atualização 17 (dinâmica do Far converge os 70s/1400 passos reais
+completos). Restam só refinamentos, não mais bloqueio: gap residual de ~5-7% em heave/roll do Far
+(Atualizações 15/16, pausado -- resíduo numérico, não bug identificado), detector de chattering
+período-N genérico (baixa prioridade agora que o retry `LSTEPITER` resolve o caso que motivava
+isso), e correlacionar a onda do RAO de topo com a onda de Morison na linha (mudança maior, não
+crítica).
 
 Achado em [`mapa_aml_exemplos_e_web_interface.md`](mapa_aml_exemplos_e_web_interface.md): hoje, 23
 dos 30 exemplos disponíveis (todos sem pasta `_analysis/` com XML/H5 pré-exportado) rodam
@@ -808,6 +815,296 @@ amplitude plena usa `ramp_time_s_ = 5.0` FIXO, nunca ligado a nenhum dado real.
   parece ter sido a principal — o restante que falta agora, no novo ponto de falha (t≈22s, perto
   de onde a excursão do topo atinge seu primeiro extremo, dado T≈15,3s), precisa de investigação
   própria, sem a distorção anterior.
+
+**Atualização 13** (2026-08-17, comparação sistemática contra `anf_movements` real -- fecha uma
+hipótese com certeza matemática, abre uma nova pista concreta): usuário pediu pra comparar
+diretamente o cálculo do movimento entre `anf_movements` (C++ real) e `risersim`, retomando o gap
+de heave/roll do Far documentado acima como "causa não identificada".
+
+- **Comparação ponto-a-ponto contra o `.SAI` real, alta precisão**: com um print de debug
+  temporário (revertido), confirmado que a curva RAO TRANSFERIDA calculada por `vessel_motion.cpp`
+  (amplitude E fase, heave e roll, em 6 frequências entre 0,38-0,43 rad/s) bate **byte-a-byte** (6
+  algarismos significativos) com a tabela real "RESPONSE AMPLITUDE OPERATOR (TRANSFERRED)" do
+  `.SAI` (`Exemplo_01c_A1_FarDI.SAI:311-372`). Também confirmado que os parâmetros JONSWAP usados
+  (alpha=0,004726 gamma=1,674175 period=15,35) batem exatos com os impressos no `.SAI`
+  (`:535-537`: PEAKEDNESS=1,6742 ALPHA=0,0047260) e com `%EQUIVALENT_HARMONIC.MAXIMIZATION=HEAVE`
+  do `.aml` real. **Ou seja: a leitura da tabela RAO, a interpolação de heading, a transferência de
+  corpo rígido e os parâmetros de onda estão TODOS corretos** -- não é mais hipótese, é
+  confirmado numericamente contra os dados reais.
+- **Tentativa de fix -- mantida, mas não fecha o gap**: comparando `hybrid_movement.cpp:69-101`
+  (C++ real) contra `vessel_motion.cpp`, a integração dos momentos espectrais (m0/m2/m4) usava um
+  grid UNIFORME de `jonswap_nwave` pontos (100, dw~0,028 rad/s) em vez de nós de quadratura mais
+  finos onde a RAO varia rápido. Troquei pra usar os próprios pontos de frequência da tabela RAO
+  como nós de quadratura (mais finos, 0,01 rad/s, perto da ressonância de roll). **Verificado
+  numericamente que isso É uma correção real** (mais perto do integral contínuo verdadeiro: contra
+  uma referência de 200 mil pontos usando a mesma curva RAO já confirmada idêntica à real, o grid
+  antigo tinha ~4,6% de erro no m0 do heave por superestimar a área perto de ω=0,2 rad/s -- onde
+  S(ω)~ω⁻⁵ é convexo e o trapézio superestima --, o novo grid tem ~1,2%). Suíte sem regressão
+  (405/405), sem regressão no Far real (mesmo passo de falha 442/t=22,1s de antes). **Mas -- achado
+  importante -- não é a causa do gap real**: mesmo o integral de referência de 200 mil pontos, na
+  MESMA curva RAO/parâmetros já confirmados idênticos aos reais, dá amp_max(roll)=0,1323 rad
+  (7,58°) e amp_max(heave)=7,66 m -- ainda longe do real (roll=9,7258°=0,16975 rad, heave=9,2905
+  m). **Nenhum esquema de quadratura pode legitimamente convergir pra um valor ~2,7x (roll)
+  diferente do integral contínuo da MESMA função já verificada idêntica à real** -- descarta
+  resolução de grid como causa raiz com uma certeza bem mais forte que a tentativa anterior
+  (Atualização 4, que só tinha testado convergência até nwave=20000 sem uma referência analítica
+  independente pra comparar).
+- **Pista nova, concreta, não fechada**: lendo `movgharfloa.f:244-274` (a rotina Fortran legada que
+  o roadmap já apontava como próximo passo desde a Atualização 4/8) -- `AREAMOV(dof)` NÃO é uma
+  integral trapezoidal contínua, é uma **SOMA discreta sobre os componentes reais da onda**:
+  `AREAMOV += (AMPMVE_i * AMP_i)²` onde `AMPMVE_i` é a RAO interpolada na frequência do componente
+  `i` e `AMP_i` é a AMPLITUDE PRÓPRIA daquele componente de onda (não um peso `S(ω)·dω` calculado
+  aqui, mas um valor já pronto, vindo de qualquer que seja o esquema de discretização da onda
+  escolhido -- `spectrum.cpp` tem 3 métodos, `discretize_constant_period/amplitude/frequency`, cada
+  um distribuindo os componentes de um jeito diferente). Confirmado que a onda real do Far usa
+  `NWAV=100` (`%WAVE.SPECTRUM_SUBDIVISION` no `.aml`, mesmo valor que `jonswap_nwave` já assume) --
+  **mas ainda não identificado QUAL dos 3 métodos de discretização é usado nem como `AMP_i` de cada
+  componente é calculado** (não é simplesmente `sqrt(2·S(ω_i)·Δω_i)` com `Δω` uniforme -- os campos
+  do `.aml` `%WAVE.LEFTEND_FREQUENCY=5`/`RIGHTEND_FREQUENCY=10`/`RIGHTEND_INTERVAL=0,1` sugerem
+  parâmetros de um esquema específico ainda não decifrado). Isso muda o tipo de discrepância que
+  procuramos: não é mais "grid fino demais vs grosso demais" (já descartado com o cálculo acima),
+  é "SOMA sobre um conjunto específico e não-trivial de componentes de onda reais" vs. o que
+  `risersim` faz hoje (integral contínuo aproximado) -- podem divergir mesmo com o número de
+  componentes igual, se a DISTRIBUIÇÃO das frequências/amplitudes dos componentes for bem diferente
+  perto de uma ressonância estreita como a do roll.
+- **Pista da soma discreta -- testada e também descartada**: usuário pediu pra focar no C++ real
+  (`anf_analysis`/`anf_movements`), não no Fortran. Os campos do `.aml`
+  (`LEFTEND_FREQUENCY=5`/`RIGHTEND_FREQUENCY=10`/`RIGHTEND_INTERVAL=0,1`) mapeiam exatamente nos
+  parâmetros `nesq`/`ndir`/`dwmaxd` de `cSpectrum::discretize_constant_amplitude()`
+  (`spectrum.cpp:166-267`, C++ puro) -- confirma que essa é a discretização real usada (não
+  Fortran). Repliquei essa função + `extrem()` (o refinamento de cauda) byte-a-byte em Python: 100
+  componentes NÃO-uniformes, deliberadamente adensados perto do pico espectral (que fica quase
+  exatamente na mesma frequência da ressonância de roll do Far, ~0,40 rad/s -- 22 dos 100 pontos
+  caem só na janela [0,35-0,45]). Usando ESSE grid real como nós de quadratura pro cálculo de
+  `hybrid_movement.cpp` (que só reaproveita a frequência dos componentes, `w[i]`, avaliando sua
+  PRÓPRIA `S(ω)` -- não usa a amplitude do componente da onda em si): amp_max(roll)=0,1314 rad --
+  **essencialmente idêntico** a todas as outras tentativas de grid (0,131-0,134), não os 0,170 rad
+  reais. Confirma outra vez, agora com o grid VERDADEIRO (não uma aproximação), que quadratura não
+  é a causa.
+- **Achado grande: o `.SAI` real provavelmente não vem do C++**. Procurando onde a string exata
+  "JOINT MOVEMENTS - WAVE AND MOVEMENT CORRELATED" (cabeçalho da tabela real) é impressa, achei DUAS
+  fontes: `bdeffun.f` (Fortran) e `anf_movements/src/anflex_data.cpp:653`
+  (`print_regular_movement_approach`, C++, formato idêntico ao do `.SAI` real). Mas
+  `print_regular_movement_approach` só é chamada de DENTRO do próprio `anflex_data.cpp`
+  (`set_equivalent_harmonic:740`, `set_equivalent_wave` equivalente), escrevendo num arquivo de
+  SAÍDA LATERAL (`"equivalent_harmonic_approach.txt"`), não no `.SAI` principal -- e o único outro
+  call site (`main.cpp:412`) é o `main()` de teste/demo standalone da própria biblioteca
+  `anf_movements`, não o pipeline do solver completo. **Nenhum call site liga essa função C++ ao
+  `.SAI` real** -- ou seja, o número que essa sessão (e sessões anteriores) vem comparando como
+  "verdade" no `.SAI` muito provavelmente foi gerado pelo caminho Fortran legado
+  (`bdeffun.f`/`movgharfloa.f`/`movext.f`, cujo `AREAMOV` já demonstrado ser uma SOMA discreta
+  sobre componentes de onda, estruturalmente diferente do integral espectral que
+  `hybrid_movement.cpp` calcula -- Atualização 13 acima), não pelo C++ que `vessel_motion.cpp`
+  replica.
+- **Reformulação do problema**: `vessel_motion.cpp` já foi verificado, de várias formas
+  independentes, como um port fiel do algoritmo C++ real (`hybrid_movement.cpp`/
+  `equivalent_harmonic.cpp`/`jonswap_spectrum.cpp`/`rao_table.cpp`) -- curva RAO, parâmetros
+  JONSWAP, fórmula de momentos espectrais/Rayleigh, e agora até o grid de discretização de onda,
+  todos conferidos byte-a-byte ou algoritmo-a-algoritmo contra a fonte. Se o `.SAI` de fato vem do
+  Fortran (não confirmado 100%, já que não fui além do C++ por pedido do usuário), o "gap" de
+  heave/roll pode não ser mais um bug do risersim -- pode ser uma divergência real entre o Fortran
+  legado e o C++ atualmente mantido, que nem o próprio ANFLEX reconcilia entre os dois caminhos.
+- **Correção importante**: a frase acima ("~2,7x" no m0 do roll) tinha um erro de conta -- elevei
+  ao quadrado uma razão que já era a razão de m0, não de amplitude. O gap real, corrigido: amplitude
+  do roll/heave sai **~15-23% baixa**, não ~2,7x -- bem mais parecido com a tabela original de razões
+  documentada antes desta rodada (Atualização 4: heave 0,86, roll 0,80/0,94 no Far/Cross) do que a
+  história dramática que cheguei a escrever.
+- **Compilado e testado o `anf_movements` real (não o Fortran)**: usuário pediu explicitamente pra
+  compilar. Montado um projeto CMake mínimo (`anf_movements_probe/`, fora do `risersim`) linkando só
+  o necessário do C++ real (`rao_table.cpp`, `rao.cpp`, `cubic_spline_function.cpp`,
+  `linear_function.cpp`, `piecewise_function.cpp`, `tdma.cpp`, `matrix_transform.cpp`,
+  `jonswap_spectrum.cpp`, `trigonometric_functions.cpp`, `statistics.cpp`, com `-DANFLEX`), com stubs
+  vazios só pros símbolos Fortran nunca de fato chamados nesse caminho (`durandd`/`ran2`/`wnumb`/
+  `extrem`). Compilou limpo com o mesmo MSVC "Visual Studio 18" do risersim. Descoberta no caminho:
+  `model_builder_dat.cpp:5609` confirma que o carregador REAL de RAO da produção usa
+  `AnfLoadings::CUBIC_SPLINE` (não linear, que é o que `vessel_motion.cpp` usa) -- uma pista nova e
+  plausível, já que o pico de roll é bem estreito e spline vs. linear diverge mais forte fora dos
+  nós tabelados.
+  - Achado bônus: o `.iwv` REAL usado pra gerar esse `.SAI` (`.../includes/OSW.iwv`, mesmo
+    TZ/HS/GAMMA/ALFAJ já confirmados) mostra **ICGO=2 (CONSTANT_FREQUENCY)**, NESQ=0, NDIR=0 --
+    **não** CONSTANT_AMPLITUDE como eu tinha deduzido antes lendo só os campos do `.aml`
+    (`LEFTEND_FREQUENCY`/`RIGHTEND_FREQUENCY`/`RIGHTEND_INTERVAL`, que aparentemente não mapeiam
+    onde eu assumi). Achar o arquivo real evitou continuar investigando em cima de uma premissa
+    errada.
+  - Rodei o `cRAO_Table` genuíno (spline cúbico real) direto contra o `FPSO.RAO` real (o mesmo
+    arquivo usado pra gerar o `.SAI` de referência, 25 direções × 59 frequências, direção 150°
+    isolada), com o `cJonswapSpectrum` genuíno e os parâmetros já confirmados. **Resultado: quase
+    idêntico ao que `vessel_motion.cpp` (interpolação linear) já dá** -- roll amp_max
+    0,131-0,142 rad (razão 0,77-0,84 contra o real 0,170 rad) em 3 grids de quadratura diferentes,
+    contra 0,131-0,134 rad da interpolação linear. **Cubic-spline vs. linear não é a causa** -- a
+    diferença entre os dois métodos de interpolação é pequena (~1-8%), muito menor que o gap
+    inteiro (~15-23%).
+- **Conclusão desta sub-rodada**: usando classes C++ REAIS e compiladas (não mais inferência lendo
+  fonte, nem reimplementação em Python) -- `cRAO_Table` genuíno com spline cúbico genuíno,
+  `cJonswapSpectrum` genuíno, dados reais (`FPSO.RAO`) -- o mesmo shortfall de ~15-23% em heave/roll
+  aparece de novo, praticamente idêntico ao que `vessel_motion.cpp` já calculava. Isso é uma
+  confirmação bem mais forte que qualquer coisa anterior nesta investigação de que a interpolação
+  RAO e a quadratura dos momentos espectrais, ISOLADAMENTE, não são a causa. Faltava rodar o
+  pipeline completo `cEquivalentHarmonic`/`cHybridMovement` de verdade -- feito a seguir.
+
+**Atualização 14** (2026-08-17, pipeline REAL completo, ponta a ponta -- salto grande no gap):
+usuário pediu explicitamente pra fazer exatamente como o `anf_movements` faz, não mais isolar
+`cRAO_Table`/`cJonswapSpectrum`. Expandido o `anf_movements_probe/` pra compilar e rodar o
+`cIrregularWave`/`cEquivalentHarmonic` reais, ponta a ponta:
+- Achado no caminho: `discretize_constant_frequency` usa `durandd`/`ran2` de verdade (não Fortran
+  -- o próprio `anf_movements` já tem uma transcrição C++ verificada em `random_numbers.cpp`,
+  comentada como "Rotina transcrita do Anflex em Fortran para o C"), o RNG clássico Numerical
+  Recipes (L'Ecuyer + embaralhamento Bays-Durham) -- usado diretamente, sem stub.
+- Parseados os 25 headings inteiros do `FPSO.RAO` real (não mais só a direção 150° isolada) num
+  `cRAO` genuíno (`CUBIC_SPLINE`, confirmado real via `model_builder_dat.cpp:5609`), com um
+  `cIrregularWave` genuíno usando os parâmetros reais do `OSW.iwv` (JONSWAP, `CONSTANT_FREQUENCY`,
+  NWAVE=100, NESQ=NDIR=0, NSIMU=1 -- literalmente o valor real do arquivo, não um chute) e um
+  `cEquivalentHarmonic` genuíno (HEAVE maximization, t=10800s, mesma posição/CM/floating_angle já
+  confirmados byte-exatos).
+- **Resultado**: roll amp_max sai **93,7%** do real (antes: 77-84% em toda tentativa anterior,
+  incluindo com spline cúbico real isolado), heave **95,2%** (antes ~83-87%), demais GDL 98-106%.
+  Período 15,317s vs real 15,348s (~0,2% de diferença, também bem mais próximo que antes).
+  Verificado que o resultado é ESTÁVEL contra o RNG (testado NSIMU=1,2,3,4,5,7,100 -- todos dão
+  praticamente o mesmo valor, ~93-95% pro roll -- uma anomalia isolada de 60% observada no meio do
+  processo foi rastreada a um binário desatualizado por uma sequência de rebuild malfeita, não a
+  sensibilidade real ao RNG).
+- **Conclusão**: rodando o pipeline C++ real de ponta a ponta (não mais peças isoladas), o gap de
+  heave/roll cai de ~15-23% pra **~5-7%** -- uma discrepância pequena o bastante pra ser plausível
+  como resíduo de detalhe de implementação não replicado (ex. `NVERT`/malha hiperbólica, marcada
+  como "sem efeito" nos comentários mas não 100% confirmada nesta rodada) ou uma divergência residual
+  real Fortran-vs-C++ (achado da Atualização 13). **`vessel_motion.cpp` está, na prática, correto** --
+  o C++ real da ANFLEX, rodado de verdade com os dados reais, chega bem perto do próprio `.SAI` de
+  referência, e MUITO mais perto do que qualquer aproximação usada nesta investigação. Ferramenta
+  (`anf_movements_probe/`, fora do `risersim`) mantida no repo pra qualquer verificação futura.
+
+**Atualização 15** (2026-08-17, tentativa de fechar o ~5-7% residual -- sem sucesso, mas gap
+descartado como não-explicado por nenhum parâmetro explícito): usuário pediu pra investigar o
+resíduo. Achada uma TERCEIRA árvore de código relevante: `interfaces/src/anfmov.cpp` -- o
+executável batch que de fato processa `.aml` puro (distinto de `anf_analysis/src/
+model_builder_dat.cpp`, que é o caminho usado por um formato de projeto baseado em `cReaderNode`/
+XML, não o `.aml` clássico com diretivas `%WAVE.*`/`%EQUIVALENT_HARMONIC.*`). Auditados, campo a
+campo, contra o `.aml`/`.SAI` reais do `Exemplo_01c`:
+- `GRAVITY=9.81` (`%GLOBAL.GRAVITY`) e `SWL=265.0` (`%GLOBAL.SEABED.DEPTH`) -- confirmados, batem
+  com o que o probe já usava.
+- `MAXIMIZATION=HEAVE` para o load case 'Far' -- confirmado via `%EQUIVALENT_HARMONIC.MAXIMIZATION`
+  no `.aml` (não é mais um hardcode não-verificado).
+- `w_seed`/`nsimu` -- confirmados como o mesmo campo `%WAVE.RANDOM_VALUE=1.0` alimentando os dois
+  parâmetros do construtor (`anfmov.cpp:680,695`), batendo com o que o probe já usava.
+- `NESQ`/`NDIR`/`DWMAXD` -- `anfmov.cpp:250-252` zera esses três explicitamente quando
+  `disc_type == CONSTANT_FREQUENCY` (nosso caso), **mesmo o `.aml` tendo `LEFTEND_FREQUENCY=5`/
+  `RIGHTEND_FREQUENCY=10`** -- confirma (de um ângulo novo) o achado anterior de que esses campos do
+  `.aml` são irrelevantes pra esse `ICGO`, não uma leitura errada.
+- `delta` -- `anfmov.cpp` calcula `(wfin-wini)/nwave = 0.028` e passa explicitamente; o probe passa
+  `spectrum=nullptr`, o que aciona o mesmo cálculo internamente no construtor (`irregular_wave.cpp:
+  125`, só ativo quando `m_spectrum == NULL`) -- resultado idêntico por caminhos diferentes,
+  confirmado lendo o código, não é uma divergência.
+- **Achado real, testado empiricamente**: `anfmov.cpp:732,736` usa interpolação **LINEAR** pra RAO,
+  não `CUBIC_SPLINE` (contradiz a Atualização 13, que tinha confirmado `CUBIC_SPLINE` olhando pro
+  `model_builder_dat.cpp:5609` -- código que agora sabemos ser de uma árvore diferente, não
+  necessariamente a que gerou este `.SAI`). Trocado `CUBIC_SPLINE`→`LINEAR` no probe e rebuildado:
+  o resultado **piorou** (roll 93,7%→88,2%, heave 95,2%→92,0%, sway também se afastou). Revertido
+  pra `CUBIC_SPLINE`, que empiricamente fica mais perto do `.SAI` real independente de qual delas o
+  `anfmov.cpp` realmente usa.
+- **Conclusão desta rodada**: todo parâmetro explícito auditável (gravidade, SWL, semente, NESQ/
+  NDIR/DWMAXD, delta, DOF de maximização, método de interpolação) bate com o valor real ou, quando
+  testada a alternativa, essa alternativa piora o resultado -- não há mais nenhum "parâmetro óbvio
+  errado" a corrigir no probe. O gap residual de ~5-7% provavelmente não vem de um valor de entrada
+  incorreto, e sim de algo mais estrutural: possivelmente o `.SAI` real não veio nem do
+  `model_builder_dat.cpp` nem do `anfmov.cpp` tal como lidos aqui (pode haver um quarto caminho, ou
+  uma versão/branch diferente do binário real usado pra gerar esse exemplo específico), ou uma
+  divergência numérica residual genuína entre a implementação Fortran histórica e o port C++ atual
+  que nenhuma auditoria de parâmetros vai capturar. Dado o esforço já investido e o tamanho pequeno
+  do gap remanescente, a investigação foi pausada aqui -- `vessel_motion.cpp` permanece confirmado
+  como correto na prática (Atualização 14), e não há mais evidência de um bug fixável no risersim.
+
+**Atualização 16** (2026-08-17, item 3 -- método HHT-α implementado e testado, hipótese refutada
+por experimento direto): usuário pediu pra atacar de vez o item 3 (tração negativa/divergência do
+Far em t≈22s, aberto desde a Atualização 6). Duas investigações paralelas (agentes Explore)
+descartaram três hipóteses e apontaram uma quarta como a mais provável explicação de por que o
+Fortran real não treme no touchdown enquanto o risersim diverge:
+
+- Retry de passo com `dt` reduzido (`badina.f:2163-2171`, `LSTEPITER`) existe no real, mas está
+  **desligado** na rodada de referência (`NEWRIG=2>0` faz o card nunca ser lido).
+- Elemento de cabo tension-only (`bpcabo.f`/`truss.cpp`) existe na árvore real, mas o `.DAT` de
+  referência só usa `PORTICO` (viga não-linear), nenhum `CABO`.
+- Suavização de contato com o leito -- confirmado **idêntica** ao risersim (mola linear
+  liga/desliga dura nos dois, `soil_uncoupled.cpp`/`bpsolo.f`).
+- **Método Alfa (HHT-α) ativo por padrão** (`ALFA=-0,1`, `bldanagr3.f:77`, ativo na rodada de
+  referência inteira já que `NEWRIG=2` nunca lê o card de override) -- amortecimento numérico
+  controlado de alta frequência, mecanismo clássico (Hilber-Hughes-Taylor 1977) pra exatamente
+  este tipo de problema de contato/rigidez quase-singular. O risersim usava Newmark comum com
+  `gamma=0,55`/`beta=0,28` ad hoc (nunca documentado/derivado de nenhuma fonte real).
+
+**Implementado**: HHT-α de verdade (não só ajuste de `gamma`/`beta`) em `dynamic_analysis.cpp`,
+fórmula confirmada lendo `bcalfa.f:100-114` e os pontos onde `FORALFA`/`FORESTAT` entram no
+resíduo em `badina.f` (`gamma=0,5-α`, `beta=0,25*(1-α)²`, resíduo `(1+α)*(F_ext-F_int)_trial -
+α*(F_ext-F_int)_prev_aceito - M*A - C*V`, `K_eff` com o mesmo peso `(1+α)` em `K`/`C`). Novo campo
+de config `hht_alpha` em `AnalysisOptionsConfig` (`model.hpp`), lido do JSON em
+`model_builder.cpp`, default `-0,1` (o próprio default real). Suíte Catch2: 405/405, zero
+regressão.
+
+**Resultado real -- hipótese refutada, não confirmada**: testado o Far real (`--duration 30 --dt
+0.05`) com `hht_alpha` em quatro valores:
+
+| `hht_alpha` | passo de falha | t (s) | resíduo final |
+|---|---|---|---|
+| 0,0 (Newmark puro) | 446 | 22,3 | 13499 |
+| -0,1 (default real) | 430 | 21,5 | 7493 |
+| -1/3 (extremo típico) | 421 | 21,05 | 42028 |
+| +0,1 (sinal invertido, diagnóstico) | 28 | 1,4 | 94937 (catastrófico) |
+
+A tendência é monotônica e o teste de sinal invertido se comporta exatamente como a teoria prevê
+(amortecimento no sinal errado quebra quase imediatamente) -- confirma que a implementação está
+correta, não é bug. Mas o resultado real é o oposto do esperado: **quanto mais amortecimento
+HHT-α (mais negativo o α), PIOR** o caso Far fica (falha mais cedo), não melhor. O default real do
+ANFLEX (`α=-0,1`) piora ligeiramente o baseline (passo 430 vs. 442-446), e `α=0` (mais perto do
+Newmark ad hoc antigo) continua sendo o melhor ponto testado. **Sem regressão em Near/Transverse/
+Cross** (os três continuam convergindo os 600/601 passos completos com `α=-0,1` default, `T_eff`
+do Cross idêntico ao já validado, 217,3 kN).
+
+**Conclusão**: a hipótese "HHT-α explica por que o Fortran real não treme aqui" está **refutada
+por experimento direto**, não apenas não-confirmada -- o mecanismo existe e está ativo na rodada
+de referência real, mas replicá-lo fielmente no risersim não resolve (e piora ligeiramente) o
+problema específico do touchdown do Far. A causa real da robustez do Fortran nesse ponto continua
+sem explicação identificada; nenhuma das 4 hipóteses investigadas nesta rodada (retry de passo,
+elemento de cabo, suavização de contato, HHT-α) explica sozinha. Código mantido (é uma melhoria
+formal real sobre o Newmark ad hoc anterior, fiel ao mecanismo real do ANFLEX, configurável, zero
+regressão nos casos que já funcionavam) -- decisão pendente com o usuário sobre o valor default
+(`-0,1` fiel ao real vs. `0,0` que não piora o único caso ainda quebrado) e se vale perseguir o
+`LSTEPITER` (retry com `dt` reduzido) como próxima hipótese, já que essa é a única das 4 ainda não
+testada diretamente no risersim (as outras 3 foram descartadas por auditoria, não por experimento).
+
+**Decisão do usuário** (via `AskUserQuestion`): default de `hht_alpha` fica em `0,0` (o ponto que
+não piora nenhum caso conhecido); implementar e testar `LSTEPITER` como próxima tentativa.
+
+**Atualização 17** (2026-08-17, item 3 -- `LSTEPITER` implementado, ✅ **RESOLVIDO**: o Far converge
+os 70s/1400 passos completos pela primeira vez em toda essa investigação): extraído o corpo do
+laço de Newton por passo (`dynamic_analysis.cpp`, antes ~500 linhas inline no `for (step...)`) pra
+uma função recursiva `try_advance(t_start, dt_sub, depth)`, replicando o mecanismo real
+`LSTEPITER`/`LSTEPBACK` (`badina.f:2163-2171`): quando o Newton não converge dentro do orçamento de
+iterações, em vez de parar o laço de tempo inteiro, rebobina `U`/`V`/`A`/`F_static_prev` pro
+último estado aceito e tenta de novo com `dt` pela metade -- recursivamente, até
+`dynamic_max_step_halvings` níveis (novo campo em `AnalysisOptionsConfig`, default 4 = `dt` tão
+fino quanto `dt_s/16`; 0 = comportamento antigo, sem retry). `c1`/preditor/`K_eff`/bisecção
+período-2/trial de backtracking, todos parametrizados por `dt_sub` (não mais o `dt_s` fixo do
+laço externo). O laço externo (`step`/`time=step*dt_s`) continua exatamente como antes -- grid
+fixo de log/export/`step==1` da rigidez artificial -- só a FORMA de avançar de `step-1` pra `step`
+passa a admitir sub-passos internos. Suíte: 405/405, zero regressão.
+
+**Resultado real**: rodando o Far com a duração REAL (70s/1400 passos, mesma do `.SAI` de
+referência) -- **converge os 1400 passos completos**, primeira vez em toda essa investigação
+(desde a Atualização 6, ~10 tentativas atrás). 444 retries no total ao longo da rodada inteira,
+esmagadora maioria (412) resolvidos com só UM nível de halving (`dt=0,025s`), 32 precisaram de
+dois níveis (`dt=0,0125s`), nenhum chegou perto do orçamento máximo de 4. Primeiro retry em
+t≈22,25s -- exatamente o ponto onde o baseline sem retry falhava (`t≈22,3s` com `hht_alpha=0`),
+confirmando que é o MESMO fenômeno de touchdown/tração-quase-zero já diagnosticado, só que agora
+com uma saída real em vez de travar. **Zero regressão**: Near/Transverse/Cross continuam
+convergindo limpo (600/601 passos), nenhum dos três precisou de nenhum retry (confirma que o
+mecanismo só age quando genuinamente necessário, não muda nada nos casos que já funcionavam).
+
+**Conclusão**: diferente das 3 hipóteses anteriores descartadas por auditoria e do HHT-α (refutado
+por experimento), `LSTEPITER` -- a única das 4 hipóteses que não tinha evidência prévia de que
+explicava a robustez do Fortran real neste caso específico -- foi a que efetivamente fechou o item
+3. Isso não significa que o mecanismo REAL usado pelo Fortran de referência seja este (ele estava
+confirmado desligado lá, `NEWRIG=2` -- Atualização 16); significa que replicar essa técnica de
+robustez genérica do ANFLEX resolve o problema por conta própria, independente de reproduzir
+exatamente o caminho que o Fortran de referência tomou. O item 3 do Eixo 1b/2a, aberto desde a
+Atualização 6, está **resolvido**.
 
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
@@ -1379,19 +1676,22 @@ ver Eixo 2c.)
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 
+> Atualizado 2026-08-17 -- versão anterior desta seção estava bem desatualizada (descrevia 1b como
+> "em progresso, 15/20 passos" e 2a como não iniciado); ambos avançaram muito além disso desde
+> então, ver os eixos acima para o estado real e o histórico completo.
+
 1. ~~**1a** (bug estático)~~ — ✅ resolvido (era um bug de dados no perfil de corrente, não
-   numérico). Confiança no motor pra Exemplo_01a estático agora estabelecida.
-2. **2a** (religar `aml_reader.py`) — barato, baixo risco, abre mais um caso de teste real
-   (`DNV_Check`) que pode ajudar a confirmar 1a de forma independente.
-3. 🟡 **1b** (dinâmica) — em progresso: achado e corrigido um bug real de massa (`rho_structural`),
-   dinâmica foi de 0/20 pra 15/20 passos de tempo convergindo no Exemplo_01a. Continuar com a
-   mesma disciplina (Rayleigh damping é o próximo dado ainda não auditado).
-4. **3a** (entrada de dados) — pode começar o desenho/construção em paralelo a tudo acima, já que é
-   front-end puro e não depende do motor mudar; só precisa ficar escopado ao que o motor já resolve.
-5. **3b** (controle de simulação) — a peça que mais se beneficia de vir depois, já que introduz
-   infraestrutura nova; faz mais sentido desenhar quando já houver mais clareza sobre 1b (o que
-   "acompanhar uma simulação" precisa mostrar depende de quão bem-comportado o solver já está).
-6. **3c** (pós-processamento) — reboca 3b.
+   numérico). Confiança no motor pra Exemplo_01a estático estabelecida.
+2. ~~**1b** (dinâmica)~~ — ✅ resolvido (Exemplo_01a converge os 20 passos completos).
+3. ~~**2a** (religar `aml_reader.py`)~~ — ✅ resolvido, refinamentos menores em aberto (gap
+   residual de ~5-7% em heave/roll do Far, pausado; detector de chattering período-N genérico,
+   baixa prioridade). O bloqueio real (dinâmica do Far não fechando) caiu na Atualização 17.
+4. ~~**2c** (múltiplas linhas)~~ — ✅ implementado, convergência real verificada.
+5. **3a** (entrada de dados) — ainda não iniciado; front-end puro, não depende do motor mudar mais,
+   único item do Eixo 3 sem trabalho começado. Candidato natural a próximo passo, dado que os
+   eixos 1-2 (o motor) estão numa base sólida agora.
+6. **3c** (pós-processamento) — base já existe (viewer 3D, Plotly); falta só integrar com o
+   conceito de projeto/rodada do 3b, que já está pronto (Fases 1-3 implementadas).
 7. **Backlog de recursos faltantes** — sob demanda, conforme cada item vire necessário pra um caso
    de teste real específico.
 

@@ -92,20 +92,17 @@ TEST_CASE("VesselMotion equivalent frequency matches (m4/m0)^0.25 for a unit RAO
     auto cfg = build_synthetic_config(wini, wfin, nwave, alpha, gamma, period_s);
 
     // Referência independente: com RAO=1 constante, o espectro induzido é o próprio JONSWAP.
-    // Integra m0/m4 por trapézio na MESMA grade que VesselMotion usa internamente (linspace de
-    // nwave pontos entre wini/wfin), usando a função pública jonswap_spectrum -- não reimplementa
-    // a classe, só verifica a propriedade omega_eq=(m4/m0)^0.25 (o fator de Rayleigh cancela na
-    // razão acel_max/amp_max, ver vessel_motion.cpp).
-    //
-    // VesselMotion agora clipa esse laço à faixa realmente tabelada em cfg.frequencies_rad_s (ver
-    // vessel_motion.cpp, "mov_ini"/"mov_fin", portado de hybrid_movement.cpp:69-81 -- roadmap.md
-    // Eixo 2a Atualização 8). Como aqui frequencies_rad_s vai exatamente até `wfin` (mesmo valor
-    // de ponto flutuante do último ponto da grade de onda), a comparação estrita "< rao_max" exclui
-    // esse último ponto -- integra um ponto a menos aqui pra bater com o que a classe de fato usa.
-    std::vector<double> w(nwave);
-    for (int i = 0; i < nwave; ++i) w[i] = wini + (wfin - wini) * i / (nwave - 1);
+    // Integra m0/m4 por trapézio na MESMA grade que VesselMotion usa internamente -- os próprios
+    // pontos de cfg.frequencies_rad_s (não mais um linspace uniforme de jonswap_nwave pontos --
+    // ver vessel_motion.cpp, a subestimação sistemática de m0 em GDL com ressonância estreita,
+    // roadmap.md Eixo 2a "comparação com anf_movements real"), usando a função pública
+    // jonswap_spectrum -- não reimplementa a classe, só verifica a propriedade
+    // omega_eq=(m4/m0)^0.25 (o fator de Rayleigh cancela na razão acel_max/amp_max, ver
+    // vessel_motion.cpp). cfg.frequencies_rad_s aqui já cobre exatamente [wini,wfin] (mesmo grid
+    // usado pra montá-la, build_synthetic_config), então nenhum ponto é clipado.
+    const std::vector<double>& w = cfg.frequencies_rad_s;
     double m0 = 0.0, m4 = 0.0;
-    for (int i = 1; i < nwave - 1; ++i) {
+    for (size_t i = 1; i < w.size(); ++i) {
         double s1 = VesselMotion::jonswap_spectrum(w[i - 1], alpha, gamma, period_s);
         double s2 = VesselMotion::jonswap_spectrum(w[i], alpha, gamma, period_s);
         double dw = w[i] - w[i - 1];

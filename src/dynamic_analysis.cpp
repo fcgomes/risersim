@@ -14,6 +14,7 @@
 #include <cmath>
 #include <map>
 #include <optional>
+#include <functional>
 
 namespace risersim {
 
@@ -135,11 +136,15 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         wave_kinematics.emplace(spectrum.generate_wave_components(), depth);
     }
 
-    // Newmark-beta Constants (Average Acceleration Method)
-    const double gamma_newmark = 0.55;
-    const double beta_newmark = 0.28;
-
-    const double c1 = 1.0 / (beta_newmark * dt_s * dt_s);
+    // HHT-alpha (Alfa-Method) integration constants, derived from model->analysis_options.hht_alpha
+    // (default 0.0 -- plain Newmark average acceleration; real ANFLEX's own default is -0.1,
+    // bldanagr3.f:77/bcalfa.f:100-101, but tested directly against the Far load case and found to
+    // make its known non-convergence slightly WORSE, not better -- see docs/roadmap.md, Eixo 2a,
+    // Atualização 16 -- so defaulted to 0.0 instead; -0.1 remains available via JSON config).
+    // gamma=0.5-alpha, beta=0.25*(1-alpha)^2 (bcalfa.f:100-101).
+    const double hht_alpha = model->analysis_options.hht_alpha;
+    const double gamma_newmark = 0.5 - hht_alpha;
+    const double beta_newmark = 0.25 * (1.0 - hht_alpha) * (1.0 - hht_alpha);
 
     // Save Initial Equilibrium Displacements
     std::vector<Eigen::Vector3d> static_disps;
@@ -153,6 +158,11 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     Eigen::VectorXd U = Eigen::VectorXd::Zero(num_dofs);
     Eigen::VectorXd V = Eigen::VectorXd::Zero(num_dofs);
     Eigen::VectorXd A = Eigen::VectorXd::Zero(num_dofs);
+
+    // (F_ext - F_int) from the last ACCEPTED state of the previous time step -- the Fortran
+    // FORESTAT/FORALFA mechanism (badina.f:1441,1856-1863,1921). Zero initially: the dynamic
+    // loop starts from static equilibrium (U=0), so the imbalance there is already ~0.
+    Eigen::VectorXd F_static_prev = Eigen::VectorXd::Zero(num_dofs);
 
     // Uma PrescribedMotion por linha -- reserve() evita realocação enquanto guardamos ponteiros
     // pra dentro do vetor em line_runtimes (mesmo cuidado de vessel_motions acima).
@@ -168,21 +178,101 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         lr.prescribed->dof_active = {true, true, true, true, true, true};
     }
 
-    bool all_steps_converged = true;
+    // Reconciles model->nodes[*]->disp/rot/tension_effective with a given system-DOF vector --
+    // extracted so it can be called both from inside assemble_at() (every Newton trial) AND once
+    // from the outer step loop after try_advance() returns, to resync node state with the FINAL
+    // committed U when a step exhausted its retry budget without converging (try_advance rewinds
+    // the U/V/A Eigen vectors on failure, but the node objects themselves still hold whatever the
+    // last, now-superseded trial left them at -- this closes that gap before the snapshot/export
+    // step below reads node state).
+    auto sync_node_state = [&](const Eigen::VectorXd& U_trial) {
+        for (size_t i = 0; i < model->nodes.size(); ++i) {
+            auto* node = model->nodes[i].get();
 
-    for (int step = 0; step <= total_steps; ++step) {
-        double time = step * dt_s;
+            Eigen::Vector3d dyn_rot_perturbation = Eigen::Vector3d::Zero();
+            bool has_rot_dof = false;
+            for (int k = 0; k < 3; ++k) {
+                int eq = node->eq_numbers[k];
+                if (eq >= 0) {
+                    double new_disp_k = static_disps[i][k] + U_trial[eq];
+                    // This iteration's increment (for the seabed friction spring).
+                    if (k < 2) node->delta_disp_xy[k] = new_disp_k - node->disp[k];
+                    node->disp[k] = new_disp_k;
+                }
+
+                int eq_rot = node->eq_numbers[k + 3];
+                if (eq_rot >= 0) { dyn_rot_perturbation[k] = U_trial[eq_rot]; has_rot_dof = true; }
+            }
+            // Proper composition of the dynamic perturbation on top of the static base
+            // rotation (not a linear sum). See rotation_utils.hpp.
+            if (has_rot_dof) node->rot = compose_rotations(static_rots[i], dyn_rot_perturbation);
+        }
+
+        // Update Element Effective Tensions based on deformed geometry
+        for (const auto& elem : model->elements) {
+            elem->update_effective_tension();
+        }
+    };
+
+    // Assembles M from the model's CURRENT node state (must be called right after sync_node_state()
+    // has positioned the nodes for the state being evaluated) -- extracted so both the top-of-
+    // iteration assembly and each backtracking trial can share it, instead of only K/C being
+    // recomputed per trial while M silently used the top-of-iteration geometry for every trial.
+    // `local_mass_matrix()` (element_beam.cpp) uses `current_length()`, so M is NOT geometry-
+    // independent as an earlier version of this comment claimed -- found while investigating the
+    // Far dynamic case's negative-tension divergence (docs/roadmap.md, Eixo 1b, Atualização
+    // 10/11): the friction-state and C-staleness bugs already fixed here follow the same pattern
+    // (a quantity recomputed once per iteration and silently reused across trials whose geometry
+    // has since moved).
+    auto assemble_mass = [&]() -> Eigen::SparseMatrix<double> {
+        Eigen::SparseMatrix<double> M(num_dofs, num_dofs);
+        std::vector<Eigen::Triplet<double>> m_triplets;
+        for (const auto& elem : model->elements) {
+            Eigen::MatrixXd m_elem = elem->mass_matrix(water_density_for_mass);
+            int n_dof = elem->num_nodes() * 6;
+            std::vector<int> eq_map(n_dof);
+            for (int n = 0; n < elem->num_nodes(); ++n) {
+                Node3D* nd = elem->node(n);
+                for (int i = 0; i < 6; ++i) eq_map[n * 6 + i] = nd->eq_numbers[i];
+            }
+            for (int r = 0; r < n_dof; ++r) {
+                if (eq_map[r] < 0) continue;
+                for (int c = 0; c < n_dof; ++c) {
+                    if (eq_map[c] < 0) continue;
+                    m_triplets.push_back(Eigen::Triplet<double>(eq_map[r], eq_map[c], m_elem(r, c)));
+                }
+            }
+        }
+        M.setFromTriplets(m_triplets.begin(), m_triplets.end());
+        return M;
+    };
+
+    int step = 0; // captured by reference below (assemble_at's step==1 artificial-stiffness gate)
+
+    // Attempts to advance the dynamic state from t_start to t_start+dt_sub via one Newton solve.
+    // On failure, recursively retries via two half-steps -- real ANFLEX's LSTEPITER mechanism
+    // (badina.f:2163-2171: rewinds TIME/DESL/VEL/ACEL to the last converged state, halves the
+    // step, reprocesses), confirmed present in the real dynamic driver but OFF in the reference
+    // run used throughout this investigation (docs/roadmap.md, Eixo 2a, Atualização 16) -- so
+    // unlike HHT-alpha, this isn't a replay of what made the reference run robust, it's a genuine
+    // (real, not invented) robustness mechanism being tried on its own merits. Bounded by
+    // model->analysis_options.dynamic_max_step_halvings (0 = no retry, immediate failure,
+    // matching pre-retry behavior exactly). Returns true with U/V/A/F_static_prev committed to
+    // t_start+dt_sub; false with U/V/A/F_static_prev rewound to their value on entry (state
+    // unchanged from the caller's perspective, so a parent-level retry starts clean).
+    std::function<bool(double, double, int)> try_advance = [&](double t_start, double dt_sub, int depth) -> bool {
+        Eigen::VectorXd U_before = U, V_before = V, A_before = A, F_static_prev_before = F_static_prev;
+        double time = t_start + dt_sub;
+
+        const double c1 = 1.0 / (beta_newmark * dt_sub * dt_sub);
 
         // Prescribe Top Vessel Motion: real RAO+JONSWAP "equivalent harmonic" (6 DOFs) quando a
         // linha tem dado real pra isso (vessel_motion.hpp), senão o antigo fallback senoidal em Z
         // com a mesma rampa suave de 5s -- aplicado independentemente por linha, via o alvo da
         // mola de penalidade (setup acima), não uma atribuição direta de disp/rot.
-        double disp_z = 0.0; // só usado no log de progresso abaixo (linha 0, representativa)
-        for (size_t li = 0; li < line_runtimes.size(); ++li) {
-            auto& lr = line_runtimes[li];
+        for (auto& lr : line_runtimes) {
             const Eigen::Vector3d& base_disp = static_disps[lr.node_array_index];
             const Eigen::Vector3d& base_rot = static_rots[lr.node_array_index];
-            double line_disp_z = 0.0;
             if (lr.motion) {
                 Eigen::Vector3d vessel_disp, vessel_rot;
                 lr.motion->get_motion(time, vessel_disp, vessel_rot);
@@ -200,69 +290,35 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 // (`nMathUtils::pseudo_sum`, `integrator.cpp:697`), aplicado ao alvo vs. ao
                 // estado, não ao mesmo lugar.
                 lr.prescribed->target_rot = base_rot + vessel_rot;
-                line_disp_z = vessel_disp.z();
             } else {
                 double ramp_time = 5.0;
                 double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
-                line_disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
+                double line_disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
                 lr.prescribed->target_disp = base_disp + Eigen::Vector3d(0.0, 0.0, line_disp_z);
                 lr.prescribed->target_rot = base_rot; // alvo constante -- rotação do topo nunca foi dinamicamente imposta sem vessel_motion real
             }
-            if (li == 0) disp_z = line_disp_z;
         }
 
         // Save Previous State Vectors for Newmark Integration
-        Eigen::VectorXd U_prev = U;
-        Eigen::VectorXd V_prev = V;
-        Eigen::VectorXd A_prev = A;
+        const Eigen::VectorXd& U_prev = U_before;
+        const Eigen::VectorXd& V_prev = V_before;
+        const Eigen::VectorXd& A_prev = A_before;
 
         // Standard Newmark-beta Predictor step
         Eigen::VectorXd A_curr = Eigen::VectorXd::Zero(num_dofs);
-        Eigen::VectorXd V_curr = V_prev + dt_s * (1.0 - gamma_newmark) * A_prev;
-        Eigen::VectorXd U_curr = U_prev + dt_s * V_prev + 0.5 * dt_s * dt_s * (1.0 - 2.0 * beta_newmark) * A_prev;
+        Eigen::VectorXd V_curr = V_prev + dt_sub * (1.0 - gamma_newmark) * A_prev;
+        Eigen::VectorXd U_curr = U_prev + dt_sub * V_prev + 0.5 * dt_sub * dt_sub * (1.0 - 2.0 * beta_newmark) * A_prev;
 
         // Assembles node state + F_ext + K_global/F_int for a TRIAL dynamic-DOF vector U_trial --
         // extracted so both the main per-iteration assembly below AND the backtracking line
-        // search (docs/roadmap.md item 1b) can share it instead of duplicating ~70 lines. Sets
-        // node->disp/rot ABSOLUTELY from static_disps/static_rots + U_trial (not incrementally),
-        // so repeated calls with different U_trial candidates are self-consistent -- no manual
-        // snapshot/restore needed between backtracking attempts, each call simply overwrites.
+        // search (docs/roadmap.md item 1b) can share it instead of duplicating ~70 lines.
         struct AssembledState {
             Eigen::VectorXd F_ext;
             Eigen::SparseMatrix<double> K_global;
             Eigen::VectorXd F_int;
         };
         auto assemble_at = [&](const Eigen::VectorXd& U_trial, int iter) -> AssembledState {
-            // Update Node Displacements (Static + Current Dynamic Perturbation) -- top_node
-            // included now: it's a genuine free DOF held by the penalty spring (top_motion), not
-            // excluded by direct assignment, so it must receive Newton corrections like any other
-            // free node (this is what lets its mass properly couple to its neighbor via M_BA).
-            for (size_t i = 0; i < model->nodes.size(); ++i) {
-                auto* node = model->nodes[i].get();
-
-                Eigen::Vector3d dyn_rot_perturbation = Eigen::Vector3d::Zero();
-                bool has_rot_dof = false;
-                for (int k = 0; k < 3; ++k) {
-                    int eq = node->eq_numbers[k];
-                    if (eq >= 0) {
-                        double new_disp_k = static_disps[i][k] + U_trial[eq];
-                        // This iteration's increment (for the seabed friction spring).
-                        if (k < 2) node->delta_disp_xy[k] = new_disp_k - node->disp[k];
-                        node->disp[k] = new_disp_k;
-                    }
-
-                    int eq_rot = node->eq_numbers[k + 3];
-                    if (eq_rot >= 0) { dyn_rot_perturbation[k] = U_trial[eq_rot]; has_rot_dof = true; }
-                }
-                // Proper composition of the dynamic perturbation on top of the static base
-                // rotation (not a linear sum). See rotation_utils.hpp.
-                if (has_rot_dof) node->rot = compose_rotations(static_rots[i], dyn_rot_perturbation);
-            }
-
-            // Update Element Effective Tensions based on deformed geometry
-            for (const auto& elem : model->elements) {
-                elem->update_effective_tension();
-            }
+            sync_node_state(U_trial);
 
             AssembledState st;
 
@@ -373,45 +429,13 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // dynamic loop never had this before; a prior attempt applying it on EVERY step (not
             // just step 1) made things worse (docs/roadmap.md, Eixo 1b Atualização 7) -- this is a
             // different, narrower experiment matching the real gating precisely, not a retry of the
-            // reverted one.
+            // reverted one. `step` here is the OUTER step counter (captured by reference through
+            // the try_advance/assemble_at closure chain), unaffected by dt-halving retries within it.
             if (step == 1) {
                 add_artificial_stiffness(model, num_dofs, iter, st.K_global);
             }
 
             return st;
-        };
-
-        // Assembles M from the model's CURRENT node state (must be called right after
-        // assemble_at() has positioned the nodes for the state being evaluated) -- extracted so
-        // both the top-of-iteration assembly and each backtracking trial below can share it,
-        // instead of only K/C being recomputed per trial while M silently used the top-of-
-        // iteration geometry for every trial. `local_mass_matrix()` (element_beam.cpp) uses
-        // `current_length()`, so M is NOT geometry-independent as an earlier version of this
-        // comment claimed -- found while investigating the Far dynamic case's negative-tension
-        // divergence (docs/roadmap.md, Eixo 1b, Atualização 10/11): the friction-state and
-        // C-staleness bugs already fixed here follow the same pattern (a quantity recomputed once
-        // per iteration and silently reused across trials whose geometry has since moved).
-        auto assemble_mass = [&]() -> Eigen::SparseMatrix<double> {
-            Eigen::SparseMatrix<double> M(num_dofs, num_dofs);
-            std::vector<Eigen::Triplet<double>> m_triplets;
-            for (const auto& elem : model->elements) {
-                Eigen::MatrixXd m_elem = elem->mass_matrix(water_density_for_mass);
-                int n_dof = elem->num_nodes() * 6;
-                std::vector<int> eq_map(n_dof);
-                for (int n = 0; n < elem->num_nodes(); ++n) {
-                    Node3D* nd = elem->node(n);
-                    for (int i = 0; i < 6; ++i) eq_map[n * 6 + i] = nd->eq_numbers[i];
-                }
-                for (int r = 0; r < n_dof; ++r) {
-                    if (eq_map[r] < 0) continue;
-                    for (int c = 0; c < n_dof; ++c) {
-                        if (eq_map[c] < 0) continue;
-                        m_triplets.push_back(Eigen::Triplet<double>(eq_map[r], eq_map[c], m_elem(r, c)));
-                    }
-                }
-            }
-            M.setFromTriplets(m_triplets.begin(), m_triplets.end());
-            return M;
         };
 
         // Newton-Raphson Iterations per Dynamic Time Step
@@ -428,11 +452,23 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         // root. res_hist/U_hist keep the entering state from 2 iterations ago, indexed by parity.
         double res_hist[2] = {-1.0, -1.0};
         Eigen::VectorXd U_hist[2];
+        // HHT-alpha bookkeeping: (F_ext-F_int) consistent with whatever U_curr this attempt's
+        // Newton loop ultimately ends on -- declared outside the iter loop so it survives past
+        // whichever break statement exits it.
+        Eigen::VectorXd F_ext_accepted = Eigen::VectorXd::Zero(num_dofs);
+        Eigen::VectorXd F_int_accepted = Eigen::VectorXd::Zero(num_dofs);
         for (int iter = 0; iter < max_nr_iters; ++iter) {
             AssembledState state = assemble_at(U_curr, iter);
             Eigen::SparseMatrix<double>& K_global = state.K_global;
             Eigen::VectorXd& F_ext = state.F_ext;
             Eigen::VectorXd& F_int = state.F_int;
+            // This call didn't change U_curr, it only evaluated at it -- so state.F_ext/F_int
+            // already correspond to the current U_curr. Captured unconditionally here so the
+            // convergence-break and divergence-break paths below (which don't touch U_curr) are
+            // covered for free; the chattering-bisection and backtracking-accepted paths further
+            // down overwrite these when THEY change U_curr instead.
+            F_ext_accepted = F_ext;
+            F_int_accepted = F_int;
 
             if (!model) return false;
             // Mass at the state assemble_at(U_curr, iter) just left the nodes in -- recomputed
@@ -444,13 +480,14 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // Damping Matrix C = alpha*M + beta*K
             Eigen::SparseMatrix<double> C_global = alpha_rayleigh * M_global + beta_rayleigh * K_global;
 
-            // Effective Dynamic Stiffness K_eff = K + c1*M + (gamma / (beta * dt))*C
-            Eigen::SparseMatrix<double> K_eff = K_global + c1 * M_global + (gamma_newmark / (beta_newmark * dt_s)) * C_global;
+            // Effective Dynamic Stiffness K_eff = (1+hht_alpha)*K + c1*M + (1+hht_alpha)*(gamma/(beta*dt))*C
+            Eigen::SparseMatrix<double> K_eff = (1.0 + hht_alpha) * K_global + c1 * M_global
+                                               + (1.0 + hht_alpha) * (gamma_newmark / (beta_newmark * dt_sub)) * C_global;
 
-            // Dynamic Residual Force Vector: R = F_ext - F_int - M*A_curr - C*V_curr
+            // HHT-alpha Residual: R = (1+alpha)*(F_ext-F_int) - alpha*F_static_prev - M*A_curr - C*V_curr
             Eigen::VectorXd F_damp = C_global * V_curr;
             Eigen::VectorXd F_iner = M_global * A_curr;
-            Eigen::VectorXd Residual = F_ext - F_int - F_iner - F_damp;
+            Eigen::VectorXd Residual = (1.0 + hht_alpha) * (F_ext - F_int) - hht_alpha * F_static_prev_before - F_iner - F_damp;
 
             double res_norm = Residual.norm();
             double f_ext_norm = F_ext.norm() + 1.0;
@@ -466,15 +503,17 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 if (iter >= 5 && res_hist[parity] > 0.0 &&
                     std::abs(res_norm - res_hist[parity]) < 1.0e-4 * std::max(res_norm, 1.0)) {
                     Eigen::VectorXd U_avg = 0.5 * (U_curr + U_hist[parity]);
-                    assemble_at(U_avg, iter); // leaves node->disp/rot consistent with U_avg (return value unused)
-                    Eigen::VectorXd A_avg = c1 * (U_avg - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
-                    Eigen::VectorXd V_avg = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_avg);
-                    std::cerr << "  ⚖️ Dynamic NR period-2 chattering detected at step " << step
-                              << " iter " << iter << " (res=" << res_norm << " repeats iter " << (iter - 2)
+                    AssembledState avg_state = assemble_at(U_avg, iter); // leaves node->disp/rot consistent with U_avg
+                    Eigen::VectorXd A_avg = c1 * (U_avg - U_prev) - (1.0 / (beta_newmark * dt_sub)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
+                    Eigen::VectorXd V_avg = V_prev + dt_sub * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_avg);
+                    std::cerr << "  ⚖️ Dynamic NR period-2 chattering detected at t=" << time
+                              << "s iter " << iter << " (res=" << res_norm << " repeats iter " << (iter - 2)
                               << "'s value) -- accepting the bisected state instead." << std::endl;
                     U_curr = U_avg;
                     A_curr = A_avg;
                     V_curr = V_avg;
+                    F_ext_accepted = avg_state.F_ext;
+                    F_int_accepted = avg_state.F_int;
                     nr_converged_iter = iter;
                     break;
                 }
@@ -482,10 +521,10 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 U_hist[parity] = U_curr;
             }
 
-            // Divergence check: if the residual grew significantly, bail out of this step's correction
+            // Divergence check: if the residual grew significantly, bail out of this attempt
             if (iter > 0 && res_norm > 10.0 * res_norm_prev) {
-                std::cerr << "  ⚠️ Dynamic NR divergence at step " << step
-                          << " iter " << iter << " (res=" << res_norm << " > 10x prev=" << res_norm_prev << ")" << std::endl;
+                std::cerr << "  ⚠️ Dynamic NR divergence at t=" << time
+                          << "s iter " << iter << " (res=" << res_norm << " > 10x prev=" << res_norm_prev << ")" << std::endl;
                 break;
             }
             res_norm_prev = res_norm;
@@ -581,8 +620,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 for (size_t k = 0; k < model->nodes.size(); ++k) model->nodes[k]->friction_force = friction_snapshot[k];
                 U_trial = U_curr + trial_alpha * delta_U;
                 trial_state = assemble_at(U_trial, iter);
-                A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_s)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
-                V_trial = V_prev + dt_s * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_trial);
+                A_trial = c1 * (U_trial - U_prev) - (1.0 / (beta_newmark * dt_sub)) * V_prev - (1.0 / (2.0 * beta_newmark) - 1.0) * A_prev;
+                V_trial = V_prev + dt_sub * ((1.0 - gamma_newmark) * A_prev + gamma_newmark * A_trial);
                 // Mass at THIS trial's geometry (element length moves with the nodes, same
                 // rationale as recomputing K/C per trial above) -- previously reused M_global from
                 // the top of the iteration for every trial, silently stale once a trial actually
@@ -627,6 +666,8 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     U_curr = U_trial;
                     A_curr = A_trial;
                     V_curr = V_trial;
+                    F_ext_accepted = trial_state.F_ext;
+                    F_int_accepted = trial_state.F_int;
                     nr_converged_iter = iter;
                     break;
                 }
@@ -638,15 +679,46 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             U_curr = U_trial;
             A_curr = A_trial;
             V_curr = V_trial;
+            F_ext_accepted = trial_state.F_ext;
+            F_int_accepted = trial_state.F_int;
         }
 
-        U = U_curr;
-        V = V_curr;
-        A = A_curr;
+        if (nr_converged_iter >= 0) {
+            U = U_curr;
+            V = V_curr;
+            A = A_curr;
+            // HHT-alpha bookkeeping: (F_ext-F_int) of whatever state this attempt ended on
+            // becomes the next attempt's F_static_prev (badina.f's FORESTAT carried forward).
+            F_static_prev = F_ext_accepted - F_int_accepted;
+            return true;
+        }
 
-        if (nr_converged_iter < 0 && step > 0) {
-            std::cerr << "  ⚠️ Dynamic NR did not converge at step " << step
-                      << " (t=" << time << "s, last res_norm=" << res_norm_prev << ")" << std::endl;
+        if (depth >= model->analysis_options.dynamic_max_step_halvings) {
+            U = U_before; V = V_before; A = A_before; F_static_prev = F_static_prev_before; // rewind, not garbage
+            return false;
+        }
+
+        std::cerr << "  🔁 Dynamic step retry: halving dt at t=" << t_start << "s (depth " << (depth + 1)
+                  << ", dt=" << (dt_sub / 2.0) << "s)" << std::endl;
+        if (!try_advance(t_start, dt_sub / 2.0, depth + 1) ||
+            !try_advance(t_start + dt_sub / 2.0, dt_sub / 2.0, depth + 1)) {
+            U = U_before; V = V_before; A = A_before; F_static_prev = F_static_prev_before; // rewind
+            return false;
+        }
+        return true;
+    };
+
+    bool all_steps_converged = true;
+
+    for (step = 0; step <= total_steps; ++step) {
+        double time = step * dt_s;
+
+        bool step_converged = try_advance((step - 1) * dt_s, dt_s, 0);
+
+        if (!step_converged && step > 0) {
+            std::cerr << "  ⚠️ Dynamic NR did not converge at step " << step << " (t=" << time << "s)"
+                       << " even after retrying with dt halved down to "
+                       << (dt_s / (1 << model->analysis_options.dynamic_max_step_halvings)) << "s." << std::endl;
             all_steps_converged = false;
             if (stop_on_first_non_convergence) {
                 std::cerr << "  ⏹️ Stopping (stop_on_first_non_convergence=true) instead of running "
@@ -654,6 +726,12 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 break;
             }
         }
+
+        // Resync node->disp/rot/tension_effective with the FINAL committed U (needed after a
+        // fully-exhausted retry, which rewinds U/V/A but leaves node state at the last failed
+        // trial -- a no-op resync when the step converged normally, since assemble_at()'s last
+        // call already left node state consistent with the committed U_curr).
+        sync_node_state(U);
 
         // Record Snapshot for Web Visualizer
         if (step % 1 == 0) {
@@ -686,6 +764,21 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
         }
 
         if (step % 40 == 0) {
+            // Representative top Z (line 0), recomputed here only for the progress log -- doesn't
+            // feed the solve, so a redundant get_motion()/ramp evaluation every 40 steps is cheap.
+            double disp_z = 0.0;
+            if (!line_runtimes.empty()) {
+                auto& lr0 = line_runtimes[0];
+                if (lr0.motion) {
+                    Eigen::Vector3d vessel_disp, vessel_rot;
+                    lr0.motion->get_motion(time, vessel_disp, vessel_rot);
+                    disp_z = vessel_disp.z();
+                } else {
+                    double ramp_time = 5.0;
+                    double ramp_factor = (time < ramp_time) ? 0.5 * (1.0 - std::cos(std::numbers::pi * time / ramp_time)) : 1.0;
+                    disp_z = ramp_factor * wave_amplitude * std::sin(omega * time);
+                }
+            }
             std::cout << "  ⏱️ Dynamic Time Step " << std::setw(4) << step << "/" << total_steps
                       << " (t = " << std::fixed << std::setprecision(1) << time << " s) | Top Z: "
                       << std::setprecision(2) << disp_z << " m" << std::endl;
