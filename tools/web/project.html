@@ -31,6 +31,7 @@
         <button class="btn-tab" id="tab-manager-btn" data-view="manager" type="button">🗂 Gerenciador</button>
         <button class="btn-tab active" id="tab-pre-btn" data-view="pre" type="button">🔍 Pré-processamento</button>
         <button class="btn-tab" id="tab-post-btn" data-view="post" type="button">📊 Pós-processamento</button>
+        <button class="btn-tab" id="tab-edit-btn" data-view="edit" type="button" style="display:none;">✏️ Editar</button>
     </div>
 
     <div id="view-manager" class="workspace-view" style="display:none;">
@@ -50,6 +51,7 @@
                 </div>
                 <div class="actions">
                     <a class="btn secondary" id="view-input-link" href="#">🔍 Ver entrada</a>
+                    <select id="analysis-select" style="display:none;" title="Análise (configuração de solver) para a nova simulação"></select>
                     <select id="load-case-select" style="display:none;" title="Caso de carregamento para a nova simulação"></select>
                     <button class="btn" id="new-run-btn">▶ Nova Simulação</button>
                     <button class="btn secondary" id="refresh-btn">⟳ Atualizar</button>
@@ -77,6 +79,10 @@
     <div id="view-post" class="workspace-view" style="display:none;">
         <iframe id="post-frame" class="workspace-iframe" title="Pós-processamento"></iframe>
         <div class="empty-state" id="post-empty" style="display:none;">Nenhuma simulação convergida ainda -- rode o projeto primeiro pra ver resultados aqui.</div>
+    </div>
+
+    <div id="view-edit" class="workspace-view" style="display:none;">
+        <iframe id="edit-frame" class="workspace-iframe" title="Editor"></iframe>
     </div>
 
     <script type="module" src="js/project.js"></script>

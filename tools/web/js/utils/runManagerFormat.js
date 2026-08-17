@@ -163,18 +163,22 @@ export class DuplicateRunError extends Error {
  * callers own their own confirm-and-retry UI (see project.js::createRun for the pattern: catch
  * `DuplicateRunError`, confirm with the user, call again with `force: true`).
  * @param {string} projectId
- * @param {{force?: boolean, load_case_id?: number|null}} [opts] `load_case_id`: which %LOAD_CASE
- * this run should use (see {@link fetchLoadCases}) -- omitted/`null` reuses the project's own
+ * @param {{force?: boolean, analysis_id?: number|null, load_case_id?: number|null}} [opts]
+ * `analysis_id`/`load_case_id`: which (análise, caso de carregamento) combination this run should
+ * use (see {@link fetchRunsCatalog}) -- both omitted/`null` reuses the project's own
  * already-compiled `input_simulation.json` unchanged, same as before this parameter existed.
+ * `analysis_id` alone omitted (only `load_case_id` given) auto-resolves to the first analysis
+ * that covers it server-side (`risersim_projects.py::create_run()`) -- kept for any caller that
+ * still only tracks a load case, not a full (analysis, load_case) pair.
  * @returns {Promise<object>} The created run.
  * @throws {DuplicateRunError} On a 409 (duplicate model_hash).
  * @throws {Error} On any other non-2xx response.
  */
-export async function createRun(projectId, { force = false, load_case_id = null } = {}) {
+export async function createRun(projectId, { force = false, analysis_id = null, load_case_id = null } = {}) {
     const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force, load_case_id }),
+        body: JSON.stringify({ force, analysis_id, load_case_id }),
     });
     if (res.status === 409) {
         const body = await res.json().catch(() => ({}));
@@ -205,5 +209,27 @@ export async function fetchLoadCases(projectId) {
         return await res.json();
     } catch (e) {
         return { available: false, load_cases: [] };
+    }
+}
+
+/**
+ * `GET /api/projects/<id>/runs-catalog` -- lists every valid `(analysis_id, load_case_id)`
+ * combination for a project's `source/interface.json` (docs/roadmap.md, Eixo 3a) -- the
+ * generalization of {@link fetchLoadCases} that also covers blank/editor-created projects, not
+ * just `.aml`-sourced ones (every project with an interface JSON has one now). Feeds the
+ * two-step analysis-then-load-case "new run" selector (project.js/preprocessor_app.js).
+ *
+ * Same best-effort contract as {@link fetchLoadCases}: never throws, degrades to
+ * `{available: false, runs: []}` on any failure so run creation still works without the selector.
+ * @param {string} projectId
+ * @returns {Promise<{available: boolean, runs: Array<{analysis_id: number, analysis_name: string|null, load_case_id: number, load_case_name: string|null}>}>}
+ */
+export async function fetchRunsCatalog(projectId) {
+    try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/runs-catalog`);
+        if (!res.ok) return { available: false, runs: [] };
+        return await res.json();
+    } catch (e) {
+        return { available: false, runs: [] };
     }
 }

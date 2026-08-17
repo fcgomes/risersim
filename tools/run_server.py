@@ -13,6 +13,7 @@ through the filesystem, with no broker.
 Usage: `python3 run_server.py [port]` (default 8000).
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -32,7 +33,8 @@ _WEB_DIR = _SCRIPT_DIR / "web"
 from risersim_projects import ProjectStore, DuplicateRunError
 from risersim_runner import (
     build_config_from_xml_h5, discover_xml_h5_examples, list_aml_load_cases,
-    build_config_from_aml, discover_aml_only_examples,
+    build_config_from_aml, discover_aml_only_examples, list_interface_runs,
+    build_config_from_interface,
 )
 from risersim_version import WEB_VERSION
 
@@ -210,6 +212,75 @@ def api_upload_project():
     return jsonify(project), 201
 
 
+@app.route('/api/projects/blank', methods=['POST'])
+def api_create_blank_project():
+    """Creates a project directly from a hand-built "JSON de interface" (docs/roadmap.md, Eixo
+    3a) -- the web editor's "novo projeto em branco" entry point (`dashboard.js`). Body:
+    `{"name": "...", "interface": {...}, "description": "..."}`. Unlike `api_create_project()`/
+    `api_upload_project()` above, there's no XML/H5/AML to validate paths for -- the interface
+    JSON's own structure is validated by `build_config_from_interface()` (via
+    `ProjectStore.create_blank_project()`), which returns a clear `ValueError` (400) for anything
+    it can't resolve (bad id references, no valid analysis/load-case combination, ...) instead of
+    a generic 500."""
+    body = request.get_json(force=True, silent=True) or {}
+    name = (body.get('name') or '').strip()
+    interface_json = body.get('interface')
+    if not name or not isinstance(interface_json, dict):
+        return jsonify({"error": "informe 'name' e 'interface' (objeto JSON de interface)"}), 400
+    try:
+        project = store.create_blank_project(name, interface_json, description=body.get('description', ''))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"falha ao compilar o modelo: {exc}"}), 400
+    return jsonify(project), 201
+
+
+@app.route('/api/interface/preview', methods=['POST'])
+def api_interface_preview():
+    """Compiles a "JSON de interface" (docs/roadmap.md, Eixo 3a) into node/element positions for
+    the editor's live 3D preview (`editor.html`'s "Linhas" tab) -- unlike
+    `api_create_blank_project()`/`api_update_project_interface()`, this is entirely STATELESS: no
+    project id, nothing written to disk, safe to call on every debounced edit while the user is
+    still typing. Body: `{"interface": {...}, "analysis_id"?: int, "load_case_id"?: int}` --
+    both ids optional, defaulting to the first valid combination (`list_interface_runs()`), same
+    as `create_blank_project()`'s own project-level default (the preview should show *some*
+    result even before the user has picked a specific run to preview).
+
+    Returns only `{nodes, elements}` (never the full simulation JSON -- environmental/analysis
+    fields aren't needed to draw the mesh) on success, or `{"error": "..."}` (400) for anything
+    `build_config_from_interface()` can't resolve (e.g. no lines yet, or a dangling id reference)
+    -- expected/frequent while the user is still filling in the form, not a server fault."""
+    body = request.get_json(force=True, silent=True) or {}
+    interface_json = body.get('interface')
+    if not isinstance(interface_json, dict):
+        return jsonify({"error": "informe 'interface' (objeto JSON de interface)"}), 400
+
+    analysis_id = body.get('analysis_id')
+    load_case_id = body.get('load_case_id')
+    if analysis_id is None or load_case_id is None:
+        runs = list_interface_runs(interface_json)
+        if not runs:
+            return jsonify({"error": "nenhuma análise com pelo menos um caso de carregamento definida ainda"}), 400
+        analysis_id, load_case_id = runs[0]['analysis_id'], runs[0]['load_case_id']
+
+    try:
+        config, warnings = build_config_from_interface(interface_json, analysis_id, load_case_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"falha ao compilar: {exc}"}), 400
+    # Reshapes `{"id", "coords": [x,y,z]}` (the simulation JSON's own node shape) into
+    # `{"id", "x", "y", "z"}` -- what the frontend's `Riser3DRenderer`/`Node3D` (built to consume
+    # already-parsed HDF5 results, never raw `model.nodes`) actually expects.
+    nodes = [{"id": n["id"], "x": n["coords"][0], "y": n["coords"][1], "z": n["coords"][2]} for n in config['model']['nodes']]
+    return jsonify({
+        "nodes": nodes,
+        "elements": config['model']['elements'],
+        "warnings": warnings,
+    })
+
+
 @app.route('/api/projects/<project_id>', methods=['GET'])
 def api_get_project(project_id):
     project = store.get_project(project_id)
@@ -306,6 +377,72 @@ def api_project_load_cases(project_id):
     return jsonify({"available": len(load_cases) > 1, "load_cases": load_cases})
 
 
+@app.route('/api/projects/<project_id>/runs-catalog', methods=['GET'])
+def api_project_runs_catalog(project_id):
+    """Lists every valid `(analysis_id, load_case_id)` combination for this project's
+    `source/interface.json` (docs/roadmap.md, Eixo 3a) -- the generalization of
+    `api_project_load_cases()` above that also works for blank/editor-created projects, not just
+    `.aml`-sourced ones (every project with an interface JSON has one now, see
+    `ProjectStore.create_project()`'s docstring). Feeds the two-step analysis-then-load-case
+    selector in `project.html`/`preprocessor.html`'s "new run" flow.
+
+    A project without `source/interface.json` (an XML+H5-only project with no `.aml` alongside
+    it) returns `available: false` -- same degrade-gracefully contract as
+    `api_project_load_cases()`."""
+    project = store.get_project(project_id)
+    if project is None:
+        abort(404)
+    interface_rel = (project.get('source') or {}).get('interface_path')
+    if not interface_rel:
+        return jsonify({"available": False, "runs": []})
+    interface_path = store.project_dir(project_id) / interface_rel
+    try:
+        interface_json = json.loads(interface_path.read_text(encoding='utf-8'))
+        runs = list_interface_runs(interface_json)
+    except Exception as exc:
+        return jsonify({"available": False, "runs": [], "error": str(exc)})
+    return jsonify({"available": len(runs) > 1, "runs": runs})
+
+
+@app.route('/api/projects/<project_id>/interface', methods=['GET'])
+def api_project_interface(project_id):
+    """Serves the project's `source/interface.json` -- the web editor's "load my draft" path
+    (`?project=<id>` on `editor.html`), and generally useful for inspecting the logical model
+    behind a project's compiled `input_simulation.json` (docs/roadmap.md, Eixo 3a). 404s if the
+    project has no interface JSON at all (an XML+H5-only project with no `.aml`)."""
+    project = store.get_project(project_id)
+    if project is None:
+        abort(404)
+    interface_rel = (project.get('source') or {}).get('interface_path')
+    if not interface_rel:
+        abort(404)
+    pdir = store.project_dir(project_id)
+    return send_from_directory(str(pdir), interface_rel, mimetype="application/json")
+
+
+@app.route('/api/projects/<project_id>/interface', methods=['PUT'])
+def api_update_project_interface(project_id):
+    """Saves the web editor's edited "JSON de interface" back to the project
+    (`ProjectStore.update_interface()`) -- recompiles `input_simulation.json` too, and returns
+    the compiler's warnings for the editor to display. Only projects created via
+    `POST /api/projects/blank` (`source["interface_editable"]`) accept this -- editing/reopening
+    an AML/XML-derived project is out of scope (see roadmap "Eixo 3a fora de escopo"),
+    `ProjectStore.update_interface()` raises `ValueError` (400) for those."""
+    body = request.get_json(force=True, silent=True) or {}
+    interface_json = body.get('interface')
+    if not isinstance(interface_json, dict):
+        return jsonify({"error": "informe 'interface' (objeto JSON de interface)"}), 400
+    try:
+        warnings = store.update_interface(project_id, interface_json)
+    except FileNotFoundError:
+        abort(404)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"falha ao compilar o modelo: {exc}"}), 400
+    return jsonify({"warnings": warnings})
+
+
 @app.route('/api/projects/<project_id>/source/<path:filename>', methods=['GET'])
 def api_project_source_file(project_id, filename):
     """Serves an original source file (XML/H5/AML, copied by
@@ -339,14 +476,15 @@ def api_create_run(project_id):
     body = request.get_json(force=True, silent=True) or {}
     force = bool(body.get('force'))
     load_case_id = body.get('load_case_id')
+    analysis_id = body.get('analysis_id')
 
     # Duplicate-run dedup (avoids accidentally re-running a deterministic solver against the same
-    # input) and load-case config-building both moved into create_run() itself -- see
+    # input) and analysis/load-case config-building both moved into create_run() itself -- see
     # risersim_projects.py::create_run()'s docstring: the dedup check needs to hash the bytes THIS
-    # run would actually use (which depend on load_case_id), not unconditionally the project-level
-    # file the way this route used to do it.
+    # run would actually use (which depend on analysis_id/load_case_id), not unconditionally the
+    # project-level file the way this route used to do it.
     try:
-        run = store.create_run(project_id, load_case_id=load_case_id, force=force)
+        run = store.create_run(project_id, analysis_id=analysis_id, load_case_id=load_case_id, force=force)
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 400
     except ValueError as exc:

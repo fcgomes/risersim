@@ -1302,16 +1302,171 @@ disparar a auto-detecção (EI=21,7 kN·m² > limiar), comportamento idêntico a
 
 ## Eixo 3 — Interfaces (podem começar em paralelo aos eixos 1-2, escopadas ao que o motor já suporta)
 
-### 3a. Interface de entrada de dados
+### 3a. Interface de entrada de dados — ✅ v1 IMPLEMENTADA (2026-08-17)
 
-Arquitetura já desenhada em `mapa_aml_exemplos_e_web_interface.md`: dois JSONs (um "de interface",
-próximo ao modelo lógico — linha com segmentos referenciando material/solo/corrente por nome; um
-"de simulação", o schema atual e inalterado que `ModelBuilder` já lê), com um compilador JS
-rodando no navegador. Falta: desenhar o formato concreto do JSON de interface, construir o
-formulário (reaproveitando a casca de UI já existente — `TabPanel`, `PanelResizer`, `ThemeToggle`,
-toolbar de câmera 3D — hoje só usada para visualização, nunca para edição), escrever o compilador.
-Escopo inicial deve ficar restrito ao que o motor já resolve hoje: uma linha só, um material de
-seção genérico, sem boias/tendões/turret/ruptura (ver Eixo 5).
+Arquitetura original (dois JSONs, compilador JS no navegador) **revisada** com o usuário antes de
+implementar: em vez de "uma linha só, referências por nome, compilador em JS", o desenho final
+(schema v3, ver `docs/mapa_aml_exemplos_e_web_interface.md` se quiser o histórico da discussão)
+ficou:
+
+- **IDs em vez de nomes** — todo objeto (solo/material/corrente/onda/linha/segmento/caso de
+  carga/análise) tem um `id` inteiro; referências cruzadas usam esse id, espelhando o `.aml` real
+  (`%SOIL.ID`, `%MATERIAL.ID`, etc.).
+- **Solo por segmento**, não por linha — `segments[].soil_id`, como `%LINE.SEGMENT.SOIL_ID` real.
+- **Múltiplas linhas/correntes/ondas/análises/casos de carga** desde o v1 — o motor já suportava
+  isso (`references[]`/`connections[]`/`lines[]`, Eixo 2c), não fazia sentido restringir a uma de
+  cada. Cada linha continua com o topo fixo no espaço (sem corpo flutuante compartilhado — RAO/
+  movimento de topo real fica pra uma fase 2, decisão confirmada).
+- **Análise → lista de casos de carga** (não o contrário): uma configuração de solver
+  (`analyses[].load_case_ids`) se aplica a vários cenários de corrente/onda — uma rodada é o par
+  `(analysis_id, load_case_id)`.
+- **Compilador único no backend (Python)**, não JS no navegador — decisão explícita: a geometria
+  de catenária (achar o vão dado o ângulo+comprimento) só tem solução validada via MoorPy em
+  Python (`solve_catenary_geometry()`, já usado pelo caminho AML), reimplementar em JS seria
+  trabalho novo e arriscado. **AML reroteado**: `aml_reader.py` para de produzir a JSON de
+  simulação diretamente — agora produz `to_interface_json()` (a JSON de interface), e o mesmo
+  compilador (`risersim_runner.py::build_config_from_interface()`) atende tanto projetos
+  importados de `.aml` quanto projetos criados do zero pelo editor. XML+H5 continua indo direto
+  pra JSON de simulação (malha já resolvida, sem etapa de catenária pra deduplicar).
+
+**Implementado**:
+- `tools/catenary_geometry.py` (novo) — `solve_catenary_geometry`/`correct_line_mesh_via_moorpy`/
+  `synthesize_mesh`/`compute_rayleigh_alpha`/`compute_rayleigh_beta`/`static_robustness_overrides`/
+  `build_section_properties`, extraídos de `aml_reader.py` (refactor puro).
+- `aml_reader.py::to_interface_json()` — traduz o `.aml` pro schema de interface, preservando IDs
+  reais; não resolve geometria (isso migrou pro compilador).
+- `risersim_runner.py::build_config_from_interface()`/`list_interface_runs()` — compilador único;
+  `build_config_from_aml()`/`build_config_from_aml_multiline()` viraram wrappers finos sobre ele.
+- Backend (`risersim_projects.py`/`run_server.py`): `create_blank_project`/`update_interface`,
+  `create_run(analysis_id, load_case_id)` (com fallback de compatibilidade pra quem só passa
+  `load_case_id`), rotas novas (`POST /api/projects/blank`, `GET`/`PUT /api/projects/<id>/interface`,
+  `GET /api/projects/<id>/runs-catalog`). Todo projeto (inclusive os vindos de `.aml`) ganha um
+  `source/interface.json` auto-derivado na criação — só projetos "em branco"
+  (`source.interface_editable`) aceitam `PUT`.
+- Frontend: `tools/web/editor.html`/`js/editor_app.js` (novo) — formulário de 8 abas (Site/Solos/
+  Materiais/Correntes/Ondas/Linhas+Segmentos/Casos de Carga/Análises), tabelas editáveis genéricas
+  (`renderEditableTable()`) pros 6 catálogos + segmentos de cada linha. `project.html`/
+  `preprocessor.html` ganharam o seletor de duas etapas (análise → caso de carga, só um dos dois
+  reaproveitado quando há mais de uma combinação — mesmo comportamento condicional de antes) e uma
+  4ª aba "✏️ Editar" (só visível pra projetos `interface_editable`). `dashboard.js` ganhou a aba
+  "✏️ Em branco" no modal de novo projeto, com um modelo default mínimo (1 solo/material/linha/
+  análise, geometria conservadora o bastante pra convergir de cara).
+
+**Verificação real**: regressão completa do reroteamento AML→interface→simulação contra os 4 casos
+do Exemplo_01a (Near/Far/Transverse/Cross) — `T_eff` byte-idêntico ao baseline (217.2/220/219.6/
+213.9 kN) nos dois caminhos (`ANFLEXAMLReader` direto e via `risersim_projects.py`). Teste de
+múltiplas linhas + múltiplas análises com JSON de interface escrita à mão (2 linhas independentes,
+2 análises cobrindo 1 e 2 casos de carga respectivamente) — as 3 combinações convergem, linha 1
+bate o baseline exato, linha 2 (geometria diferente) converge com `T_eff` distinto e fisicamente
+coerente. Backend testado via `ProjectStore` puro (blank + AML-derivado, incluindo o bloqueio de
+`update_interface` num projeto não-editável) e via servidor real (`run_server.py` local + Chrome
+headless `--dump-dom`): projeto "em branco" real criado, `editor.html` carrega e popula as 8 abas
+com dados reais sem erro de console; projeto vindo de exemplo real mostra a aba "Editar" oculta e o
+seletor de duas etapas com as 4 combinações certas (Near/Far/Transverse/Cross sob a análise "A1").
+Bug real achado e corrigido nesse processo: segmentos vindos de uma JSON de interface derivada de
+AML não têm `id` próprio (só a linha tem) — quebrava o botão de apagar segmento no editor
+(`data-row-id="undefined"`); corrigido com backfill defensivo de id antes de renderizar. Catch2:
+405/405 sem regressão (nenhum arquivo C++ tocado em todo este eixo).
+
+**Atualização 1** (preview 3D ao vivo, pedido pelo usuário — deixa de ser "fora de escopo"):
+painel 3D na aba "Linhas" (`Riser3DRenderer`/`CameraViewController`, os mesmos já usados pelo
+`preprocessor.html`, reaproveitados sem alteração), gatilho decidido com o usuário: só aparece
+depois que existe pelo menos uma linha; mostra imediatamente mar+solo+bounding box (calculados só
+a partir do topo da linha e `global.water_depth_m`, sem round-trip) e, com debounce de 600ms após
+parar de editar, a malha real via novo endpoint stateless `POST /api/interface/preview`
+(`build_config_from_interface()`, nada salvo em disco — seguro chamar a cada edição). Erros de
+compilação (ex. `material_id` ainda não criado) aparecem inline, sem interromper a digitação.
+Verificado via screenshot real (Chrome headless `--screenshot`, servidor local): caixa aparece
+instantânea, depois a catenária real (25° da vertical) substitui o placeholder.
+
+**Atualização 2** (layout redesenhado -- "a cara do pós-processador, só que editável", pedido
+explícito do usuário): o preview 3D deixou de ser um painel dentro da aba "Linhas" e virou o
+mesmo esqueleto de 3 regiões do `preprocessor.html`/`posprocessor.html` (`css/shared.css` --
+sidebar de câmera/zoom | canvas 3D | painel com abas), espelhado: painel de dados (as 8 abas do
+formulário) na ESQUERDA, sidebar de câmera + canvas 3D sempre visível na DIREITA -- editar o
+modelo agora tem o desenho inteiro ao lado, em qualquer aba, não só em "Linhas". Mudanças reais:
+- `editor_app.js` monta um `Riser3DRenderer`/`CameraViewController`/`ZoomWindowController`
+  persistentes desde o início (não mais lazy, já que o canvas nunca fica oculto), reaproveitando
+  `bindCameraToolbar()`/`initThemeToggle()` exatamente como as outras duas páginas.
+- O preview passou a mostrar o MODELO INTEIRO (todas as linhas) em qualquer aba -- editar um
+  material ou solo pode mudar a geometria (peso entra na equação da catenária) tanto quanto editar
+  uma linha, então não fazia sentido restringir a visualização a uma aba.
+- Reframe da câmera passou a ser explícito (só no load inicial e ao adicionar/apagar linha), não
+  mais em toda edição -- com o canvas sempre visível, reenquadrar a cada tecla digitada faria a
+  câmera "pular" enquanto o usuário orbita a cena pra inspecionar algo.
+- Drag-resize do painel precisou de lógica própria (`initReversedPanelResizer()`), já que
+  `ui/PanelResizer.js` assume o painel de dados à DIREITA do resizer (como no pré/pós-processador)
+  -- aqui está à esquerda, então o sinal do delta de arraste é invertido.
+- Bordas do `#data-panel`/`#sidebar` (herdadas de `shared.css`, pensadas pro arranjo original)
+  ajustadas via `editor.css` pro espelhamento; legenda de diâmetro (`#colorbar-legend` e
+  vizinhos) ganhou o mesmo dimensionamento 140px do pré-processador (`shared.css` deixa isso
+  deliberadamente de fora, por página).
+Verificado via Chrome headless `--screenshot` (servidor local, projeto "em branco" real): canvas
+3D com bounding box + catenária real visível simultaneamente nas abas "Site", "Materiais" e
+"Linhas" -- confirma que o preview não é mais exclusivo de uma aba.
+
+**Atualização 3** (protótipo de grid tipo planilha, pedido do usuário -- colar de Excel/Sheets +
+unidade configurável por coluna): a aba "Materiais" trocou o `renderEditableTable()` genérico por
+**Tabulator** (MIT, `tabulator-tables@5.5.2` via CDN, mesmo padrão de dependência que Three.js/
+Plotly já usam) -- só essa aba, como protótipo antes de decidir se vale espalhar pras outras
+(Solos/Correntes/Ondas/Casos de Carga/Análises continuam no editable-table de sempre).
+- **Colar de planilha**: módulo de clipboard nativo do Tabulator (`clipboard: true,
+  clipboardPasteAction: "range"`) -- selecionar a célula de destino e Ctrl+V com dados copiados do
+  Excel/Sheets funciona sem código customizado.
+- **Unidade por coluna**: 5 colunas (diâmetro externo/interno, peso seco/molhado, EA) ganharam um
+  seletor de unidade embutido no próprio cabeçalho (`unitColumn()`, m/mm/in/ft e kN·kgf·lbf·tf
+  conforme o grupo) -- o modelo (`this.model.materials`) continua em SI internamente, só o
+  formatter/editor da célula convertem na exibição/edição; trocar a unidade só re-renderiza
+  (`table.redraw(true)`), não muda o dado guardado.
+- **Bug de layout achado e corrigido**: Tabulator mede a largura do contêiner na hora de montar a
+  grade -- como isso acontece durante `renderAll()` (aba "Site" ainda ativa, painel "Materiais"
+  com `display:none`), a tabela nascia com largura zero e nunca se recuperava sozinha ao trocar de
+  aba (mesma classe de bug que os gráficos Plotly já tinham no pré-processador). Corrigido com
+  `switchToTab()` chamando `table.redraw(true)` sempre que a aba vira "materials".
+- Tema (cores dark/light do Tabulator) mapeado pros tokens `--surface`/`--border`/`--accent` etc.
+  já existentes, em vez de carregar o CSS do tema padrão da biblioteca.
+Verificado via Chrome headless `--screenshot` + `--dump-dom` (servidor local): grid renderiza com
+os seletores de unidade certos no cabeçalho, sem "undefined"/"NaN" vazando pras células, e sobrevive
+a ser carregado direto na aba "Materiais" via `?tab=materials` (o cenário que expõe o bug de
+largura zero, se o fix não estivesse funcionando). Colar de verdade a partir de uma planilha real
+não foi testado neste ambiente (sem acesso a clipboard real em Chrome headless) -- fica pra
+confirmação manual do usuário.
+
+**Atualização 4** (generalização do grid tipo planilha -- discussão de risco com o usuário sobre
+usar o Tabulator "pronto" vs. caseiro, decidida a favor do Tabulator especificamente pela
+virtualização: as tabelas de catálogo podem crescer a centenas/milhares de linhas, e renderizar
+tudo de uma vez em HTML puro -- o que o `renderEditableTable()` antigo fazia -- engasgaria bem
+antes disso; escrever virtualização de scroll caseira do zero foi julgado um projeto arriscado por
+si só, então a decisão foi manter uma biblioteca madura pra essa parte específica em vez de
+reinventá-la). Extraído `tools/web/js/ui/SpreadsheetTable.js` -- `createSpreadsheetTable(container,
+items, columns, {onDelete, onChange})`, com tipos de coluna unificados (`text`/`number`/`unit`/
+`select`/`checkbox`/`list`) e coluna de ID/apagar automáticas. **Todas** as abas de catálogo (Solos/
+Materiais/Correntes/Ondas/Casos de Carga/Análises) e a tabela de Segmentos de cada linha migraram
+pra esse componente -- `renderEditableTable()` foi removido. Duas melhorias generalizadas nessa
+migração:
+- **Fix de largura zero virou genérico**: em vez do `switchToTab()` checando `if key ===
+  'materials'` (como na Atualização 3), `SpreadsheetTable.js` usa um `ResizeObserver` no próprio
+  container -- corrige automaticamente qualquer tabela nascida numa aba escondida, não só
+  Materiais, sem o `EditorApp` precisar saber qual aba é qual.
+- **Refresh entre abas dependentes**: quando um catálogo referenciado (solo/material/corrente/
+  onda) é editado ou apagado, a tabela que o referencia (Segmentos ou Casos de Carga) chama
+  `.refresh()` pra atualizar os rótulos exibidos nos dropdowns -- consolidado em métodos
+  `on*Changed()` por catálogo.
+A tabela de Segmentos é a exceção ao padrão "cria uma vez, atualiza local": como está amarrada ao
+array `segments` da linha ATIVA (referência diferente a cada troca de linha no seletor), é
+destruída e reconstruída em toda chamada de `renderSegments()`, em vez de reapontar uma instância
+existente pra um array novo (evita um bug de closure obsoleta que reapontar traria).
+Verificado via Chrome headless `--screenshot` em 6 abas (Solos/Correntes/Ondas/Casos de Carga/
+Análises/Linhas) carregadas via deep-link direto (`?tab=<x>`, o cenário que expõe o bug de largura
+zero) contra um projeto com todos os catálogos populados -- todas renderizam corretamente, os
+dropdowns de referência cruzada mostram os rótulos certos (ex. caso de carga "Near" mostrando
+"Cor_NE (1)"/"Onda_1 (1)"), sem "undefined"/"NaN". Bug cosmético achado e corrigido: colunas
+inteiras (`static.steps`/`static.max_iterations`) mostravam "20.000"/"300.000" com o default de 3
+casas decimais -- setado `decimals: 0` nessas duas.
+
+**Fora de escopo do v1** (explícito): movimento de topo real/RAO, upload de `.RAO`, corpo
+flutuante compartilhado entre linhas (fase 2 futura); editar/reabrir um projeto importado de AML/
+XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura.
 
 ### 3b. Interface de controle de simulação (projetos, disparo, acompanhamento)
 
@@ -1834,9 +1989,9 @@ ver Eixo 2c.)
    residual de ~5-7% em heave/roll do Far, pausado; detector de chattering período-N genérico,
    baixa prioridade). O bloqueio real (dinâmica do Far não fechando) caiu na Atualização 17.
 4. ~~**2c** (múltiplas linhas)~~ — ✅ implementado, convergência real verificada.
-5. **3a** (entrada de dados) — ainda não iniciado; front-end puro, não depende do motor mudar mais,
-   único item do Eixo 3 sem trabalho começado. Candidato natural a próximo passo, dado que os
-   eixos 1-2 (o motor) estão numa base sólida agora.
+5. ~~**3a** (entrada de dados)~~ — ✅ v1 implementada (2026-08-17): editor completo (8 abas),
+   compilador único interface→simulação (também reroteando o caminho AML), backend + verificação
+   real via servidor local. Fora de escopo do v1: RAO/movimento de topo, editar projeto importado.
 6. **3c** (pós-processamento) — base já existe (viewer 3D, Plotly); falta só integrar com o
    conceito de projeto/rodada do 3b, que já está pronto (Fases 1-3 implementadas).
 7. **Backlog de recursos faltantes** — sob demanda, conforme cada item vire necessário pra um caso

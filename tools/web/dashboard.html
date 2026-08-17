@@ -85,6 +85,7 @@
             <div class="tab-row">
                 <button class="btn-tab active" id="source-tab-example-btn" type="button">📋 A partir de exemplo</button>
                 <button class="btn-tab" id="source-tab-upload-btn" type="button">📤 Importar arquivo</button>
+                <button class="btn-tab" id="source-tab-blank-btn" type="button">✏️ Em branco</button>
             </div>
 
             <div id="source-tab-example">
@@ -103,6 +104,10 @@
                 <input type="file" id="upload-h5-input" accept=".h5">
                 <label for="upload-aml-input">Arquivo AML/PML (opcional com XML+H5; obrigatório sozinho para importar sem XML+H5)</label>
                 <input type="file" id="upload-aml-input" accept=".aml,.pml">
+            </div>
+
+            <div id="source-tab-blank" style="display:none;">
+                <p style="font-size:12px; color:var(--text-muted); margin:8px 0 0;">Cria um projeto do zero com um solo, um material, uma linha e uma análise genéricos já preenchidos -- ajuste tudo no editor logo em seguida (docs/roadmap.md, Eixo 3a). Sem movimento de topo/RAO nesta versão -- toda linha fica com o topo fixo no espaço.</p>
             </div>
 
             <label for="project-name-input">Nome do Projeto</label>

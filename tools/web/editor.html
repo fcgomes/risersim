@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>RiserSim - Editor de Modelo</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Tabulator (MIT) -- prototype spreadsheet-style grid for the "Materiais" tab: paste
+         straight from Excel/Sheets (built-in clipboard module) + per-column unit dropdowns (see
+         editor_app.js's unitColumn()). Only this one tab uses it for now -- see the module
+         docstring for why the other tabs still use the plain editable-table. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tabulator-tables@5.5.2/dist/css/tabulator.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/tabulator-tables@5.5.2/dist/js/tabulator.min.js"></script>
+    <link rel="stylesheet" href="css/shared.css">
+    <link rel="stylesheet" href="css/dashboard.css">
+    <link rel="stylesheet" href="css/editor.css">
+</head>
+<body class="dark-mode">
+    <div id="header">
+        <h1><svg class="brand-mark" viewBox="0 0 120 120" aria-hidden="true">
+                <rect x="5" y="5" width="110" height="110" rx="26" fill="#0a0a10"/>
+                <path d="M14,22 Q20,16 26,22 T38,22 T50,22 T62,22 T74,22 T86,22 T98,22 T110,22" fill="none" stroke="#3a3a4a" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
+                <path d="M64,20 C60,42 44,78 26,99" fill="none" stroke="var(--brand-accent)" stroke-width="5.5" stroke-linecap="round" opacity="0.85"/>
+                <path d="M60,22 C62,48 56,76 60,99" fill="none" stroke="var(--brand-accent-strong)" stroke-width="7" stroke-linecap="round"/>
+                <path d="M56,20 C60,42 76,78 94,99" fill="none" stroke="var(--brand-accent)" stroke-width="5.5" stroke-linecap="round" opacity="0.85"/>
+                <line x1="12" y1="99" x2="108" y2="99" stroke="#3a3a4a" stroke-width="2" stroke-linecap="round"/>
+                <path d="M18,99 l-5,7 M30,99 l-5,7 M42,99 l-5,7 M54,99 l-5,7 M66,99 l-5,7 M78,99 l-5,7 M90,99 l-5,7 M102,99 l-5,7" stroke="#3a3a4a" stroke-width="1.6" stroke-linecap="round" opacity="0.75"/>
+                <circle cx="26" cy="99" r="3.1" fill="var(--brand-accent)"/>
+                <circle cx="94" cy="99" r="3.1" fill="var(--brand-accent)"/>
+                <circle cx="60" cy="99" r="3.6" fill="var(--brand-accent-strong)"/>
+                <circle cx="60" cy="22" r="4.6" fill="var(--brand-accent-strong)"/>
+                <circle cx="60" cy="22" r="1.8" fill="#0a0a10"/>
+            </svg><span class="brand-text">Riser<span class="brand-sim">Sim</span> - Editor de Modelo</span></h1>
+        <button class="btn-theme" id="theme-toggle-btn">☀️ Modo Claro</button>
+    </div>
+
+    <!-- Same 3-region skeleton as preprocessor.html/posprocessor.html (css/shared.css), mirrored:
+         data panel (editable tabs) on the left, camera sidebar + 3D canvas on the right -- see
+         editor_app.js's module docstring for why (this is a live, always-on preview of the model
+         being edited, not a read-only viewer). -->
+    <div id="main-layout">
+        <div id="data-panel">
+            <div class="editor-toolbar">
+                <div>
+                    <h2 id="editor-project-name">Carregando…</h2>
+                    <div class="subtitle">Editor da JSON de interface (docs/roadmap.md, Eixo 3a)</div>
+                </div>
+                <div class="actions">
+                    <button class="btn secondary" id="save-draft-btn">💾 Salvar rascunho</button>
+                    <button class="btn" id="save-and-go-btn">✓ Salvar e ir para o projeto</button>
+                </div>
+            </div>
+
+            <div class="control-group editor-warnings" id="editor-warnings" style="display:none;"></div>
+            <div class="error-text" id="editor-error"></div>
+
+            <div id="bottom-tabs">
+                <button class="btn-tab active" id="tab-site-btn" data-tab="site" type="button">🌍 Site</button>
+                <button class="btn-tab" id="tab-soils-btn" data-tab="soils" type="button">🪨 Solos</button>
+                <button class="btn-tab" id="tab-materials-btn" data-tab="materials" type="button">🧵 Materiais</button>
+                <button class="btn-tab" id="tab-currents-btn" data-tab="currents" type="button">🌊 Correntes</button>
+                <button class="btn-tab" id="tab-waves-btn" data-tab="waves" type="button">🌀 Ondas</button>
+                <button class="btn-tab" id="tab-lines-btn" data-tab="lines" type="button">📏 Linhas</button>
+                <button class="btn-tab" id="tab-loadcases-btn" data-tab="loadcases" type="button">🎯 Casos de Carga</button>
+                <button class="btn-tab" id="tab-analyses-btn" data-tab="analyses" type="button">⚙️ Análises</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel active" id="panel-site">
+                <div class="editor-tab-hint">Parâmetros globais do site (lâmina d'água, gravidade, pesos específicos).</div>
+                <div class="line-fields-grid" id="site-fields"></div>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-soils">
+                <div class="editor-tab-hint">Cada segmento de linha referencia um solo por ID (aba "Linhas") -- não precisa ser o mesmo pra todos. Cole direto de uma planilha (Excel/Sheets -- selecione a célula de destino e Ctrl+V).</div>
+                <div id="soils-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-soil-btn" type="button">+ Adicionar solo</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-materials">
+                <div class="editor-tab-hint">Cada segmento de linha referencia um material por ID (aba "Linhas"). Cole direto de uma planilha (Excel/Sheets -- selecione a célula de destino e Ctrl+V) e troque a unidade de cada coluna marcada pelo seletor no cabeçalho.</div>
+                <div id="materials-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-material-btn" type="button">+ Adicionar material</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-currents">
+                <div class="editor-tab-hint">Perfis de velocidade×profundidade×ângulo (listas separadas por vírgula, mesma quantidade de valores nas três colunas, profundidade crescente a partir de 0=superfície).</div>
+                <div id="currents-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-current-btn" type="button">+ Adicionar corrente</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-waves">
+                <div class="editor-tab-hint">Onda regular ou espectro JONSWAP -- metadados de análise dinâmica (v1 não inclui movimento de topo/RAO real).</div>
+                <div id="waves-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-wave-btn" type="button">+ Adicionar onda</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-lines">
+                <div class="editor-tab-hint">Cada linha tem o topo fixo no espaço (sem corpo flutuante, v1) -- posição, ângulo de catenária e azimute definem a geometria; a âncora é resolvida automaticamente. O modelo inteiro (todas as linhas) aparece sempre no visualizador 3D ao lado.</div>
+                <div class="line-picker-row">
+                    <label for="line-select" style="margin:0;">Linha:</label>
+                    <select id="line-select"></select>
+                    <button class="btn small" id="add-line-btn" type="button">+ Nova linha</button>
+                    <button class="btn small danger" id="delete-line-btn" type="button">🗑 Apagar esta linha</button>
+                </div>
+                <div class="line-fields-grid" id="line-fields"></div>
+
+                <div class="control-title" style="margin-top:6px;">SEGMENTOS</div>
+                <div id="segments-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-segment-btn" type="button">+ Adicionar segmento</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-loadcases">
+                <div class="editor-tab-hint">Combina uma corrente + uma onda num cenário nomeado (ex. "Near"/"Far") -- referenciado pelas análises na próxima aba.</div>
+                <div id="loadcases-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-loadcase-btn" type="button">+ Adicionar caso de carga</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-analyses">
+                <div class="editor-tab-hint">Uma configuração de solver (estático/dinâmico) aplicada a uma lista de casos de carga -- cada combinação (análise, caso) vira uma rodada possível no projeto.</div>
+                <div id="analyses-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-analysis-btn" type="button">+ Adicionar análise</button>
+            </div>
+        </div>
+
+        <div id="resizer-h" title="Arraste para redimensionar o painel de dados e o canvas 3D"></div>
+
+        <div id="sidebar">
+            <div class="control-group">
+                <div class="control-title">🎥 VISTAS</div>
+                <div class="icon-toolbar">
+                    <button class="btn-icon-sm btn-primary" id="view-iso-btn" data-tip="Vista isométrica">🎲</button>
+                    <button class="btn-icon-sm" id="view-xy-btn" data-tip="Vista superior (plano XY)">XY</button>
+                    <button class="btn-icon-sm" id="view-xz-btn" data-tip="Vista de elevação / perfil (plano XZ)">XZ</button>
+                    <button class="btn-icon-sm" id="view-yz-btn" data-tip="Vista frontal transversal (plano YZ)">YZ</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <div class="control-title">🔍 ZOOM</div>
+                <div class="icon-toolbar">
+                    <button class="btn-icon-sm" id="zoom-fit-btn" data-tip="Enquadrar o modelo inteiro (zoom extents), sem mudar o ângulo de vista">⤢</button>
+                    <button class="btn-icon-sm" id="zoom-in-btn" data-tip="Aproximar (zoom +)">+</button>
+                    <button class="btn-icon-sm" id="zoom-out-btn" data-tip="Afastar (zoom −)">−</button>
+                    <button class="btn-icon-sm" id="zoom-window-btn" data-tip="Zoom por janela: clique e depois arraste um retângulo na cena para aproximar da área selecionada">⛶</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="canvas-container">
+            <canvas id="three-canvas"></canvas>
+            <div id="zoom-rect"></div>
+
+            <div id="preview-empty-state" style="display:flex;">
+                <div>📏 Crie uma linha na aba "Linhas" para visualizar o modelo aqui.</div>
+            </div>
+
+            <div class="error-text" id="preview-error" style="display:none;"></div>
+
+            <div id="colorbar-legend" style="display:none;">
+                <div class="colorbar-caption">Diâmetro externo (m)</div>
+                <div class="colorbar-ticks-row">
+                    <div id="colorbar-ticks">
+                        <span id="cbar-max">-</span>
+                        <span id="cbar-mid2">-</span>
+                        <span id="cbar-mid1">-</span>
+                        <span id="cbar-min">-</span>
+                    </div>
+                    <div id="colorbar-bar"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/editor_app.js"></script>
+</body>
+</html>

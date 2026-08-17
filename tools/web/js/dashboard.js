@@ -51,6 +51,7 @@ class Dashboard {
         document.getElementById('new-project-confirm-btn').addEventListener('click', () => this.submitNewProject());
         document.getElementById('source-tab-example-btn').addEventListener('click', () => this.setSourceTab('example'));
         document.getElementById('source-tab-upload-btn').addEventListener('click', () => this.setSourceTab('upload'));
+        document.getElementById('source-tab-blank-btn').addEventListener('click', () => this.setSourceTab('blank'));
         document.getElementById('example-select').addEventListener('change', (e) => {
             const opt = e.target.selectedOptions[0];
             const nameInput = document.getElementById('project-name-input');
@@ -261,13 +262,16 @@ class Dashboard {
         `;
     }
 
-    /** Switches between the "New Project" modal's two source tabs: pre-discovered example vs. manual upload. */
+    /** Switches between the "New Project" modal's three source tabs: pre-discovered example,
+     * manual upload, or blank (docs/roadmap.md, Eixo 3a). */
     setSourceTab(tab) {
         this.sourceTab = tab;
         document.getElementById('source-tab-example').style.display = tab === 'example' ? '' : 'none';
         document.getElementById('source-tab-upload').style.display = tab === 'upload' ? '' : 'none';
+        document.getElementById('source-tab-blank').style.display = tab === 'blank' ? '' : 'none';
         document.getElementById('source-tab-example-btn').className = tab === 'example' ? 'btn-tab active' : 'btn-tab';
         document.getElementById('source-tab-upload-btn').className = tab === 'upload' ? 'btn-tab active' : 'btn-tab';
+        document.getElementById('source-tab-blank-btn').className = tab === 'blank' ? 'btn-tab active' : 'btn-tab';
         document.getElementById('new-project-error').innerText = '';
     }
 
@@ -330,9 +334,10 @@ class Dashboard {
         document.getElementById('new-project-backdrop').classList.remove('open');
     }
 
-    /** Dispatches to one of the two creation flows depending on the modal's active tab (see setSourceTab). */
+    /** Dispatches to one of the three creation flows depending on the modal's active tab (see setSourceTab). */
     async submitNewProject() {
         if (this.sourceTab === 'upload') return this.submitUploadProject();
+        if (this.sourceTab === 'blank') return this.submitBlankProject();
         return this.submitExampleProject();
     }
 
@@ -408,6 +413,78 @@ class Dashboard {
             confirmBtn.innerText = 'Criar Projeto';
         }
     }
+
+    /** The "✏️ Em branco" tab: creates a project from a minimal-but-valid default "JSON de
+     * interface" (docs/roadmap.md, Eixo 3a) -- one soil/material/line/analysis, no vessel motion
+     * -- then navigates straight into the editor (not project.html) so the user starts adjusting
+     * values immediately, same "land on the thing you came to do" pattern as the example/upload
+     * flows landing on project.html. Reuses `POST /api/projects/blank`
+     * (`risersim_projects.py::create_blank_project()`), which validates/compiles server-side --
+     * any structural issue with the default itself would surface here as a clear error, not a
+     * silent broken project. */
+    async submitBlankProject() {
+        const nameInput = document.getElementById('project-name-input');
+        const errorEl = document.getElementById('new-project-error');
+        const confirmBtn = document.getElementById('new-project-confirm-btn');
+        const name = nameInput.value.trim();
+        if (!name) { errorEl.innerText = 'Informe um nome para o projeto.'; return; }
+
+        confirmBtn.disabled = true;
+        confirmBtn.innerText = 'Criando…';
+        errorEl.innerText = '';
+        try {
+            const project = await fetchJSON('/api/projects/blank', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, interface: buildDefaultInterface() }),
+            });
+            window.location.href = `editor.html?project=${encodeURIComponent(project.id)}`;
+        } catch (err) {
+            errorEl.innerText = err.message;
+            confirmBtn.disabled = false;
+            confirmBtn.innerText = 'Criar Projeto';
+        }
+    }
+}
+
+/** The starting point for a "projeto em branco" (docs/roadmap.md, Eixo 3a) -- one of everything
+ * needed for `build_config_from_interface()` to compile a valid (if physically arbitrary) model
+ * right away: a generic riser-like material, a soft/generic soil, a single 500m line with a
+ * modest catenary angle (topo fixo no espaço, sem corpo flutuante -- v1 não inclui movimento de
+ * topo/RAO), one load case with no current/wave (both optional -- the compiler falls back to
+ * zero/defaults), and one analysis covering it. The editor is where the user actually shapes
+ * this into their real model -- these values only need to be schema-valid, not meaningful. */
+function buildDefaultInterface() {
+    return {
+        schema_version: 1,
+        title: 'Novo modelo',
+        global: { water_depth_m: 100.0, gravity_ms2: 9.81, water_specific_weight_kNm3: 10.0553, steel_specific_weight_kNm3: 77.0 },
+        soils: [{
+            id: 1, name: 'Solo_1', model: 'uncoupled', friction_axial: 0.5, friction_lateral: 0.5,
+            deflection_axial_m: 0.03, deflection_lateral_m: 0.2, spring_stiffness_kNm: 800.0,
+        }],
+        materials: [{
+            id: 1, name: 'Material_1', diameter_external_m: 0.25, diameter_internal_m: 0.20,
+            weight_dry_kNm: 1.0, weight_wet_kNm: 0.4, morison_inertia_Cm: 2.0, morison_drag_Cd: 1.0,
+            stiffness_axial_kN: 360000.0, stiffness_bending_kNm2: 21.7, stiffness_torsional_kNm2: 3200.0,
+            rayleigh_period_first_s: 0.0, rayleigh_period_second_s: 0.0,
+            rayleigh_damping_first: 0.0, rayleigh_damping_second: 0.0,
+        }],
+        currents: [],
+        waves: [],
+        lines: [{
+            id: 1, name: 'Linha_1', top_position_m: [0.0, 0.0, 100.0],
+            catenary_angle_deg: 25.0, azimuth_deg: 0.0,
+            segments: [{ id: 1, length_m: 150.0, material_id: 1, soil_id: 1, element_length_m: 3.0 }],
+        }],
+        load_cases: [{ id: 1, name: 'Caso_1', current_id: null, wave_id: null }],
+        analyses: [{
+            id: 1, name: 'Analise_1',
+            static: { steps: 20, max_iterations: 300, tolerance: 0.01 },
+            dynamic: { enabled: true, duration_s: 20.0, dt_s: 0.05, max_iterations: 20, tolerance: 1.0e-4 },
+            load_case_ids: [1],
+        }],
+    };
 }
 
 window.addEventListener('DOMContentLoaded', () => {

@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from risersim_version import WEB_VERSION
-from risersim_runner import list_aml_load_cases, build_config_from_aml
+from risersim_runner import list_interface_runs, build_config_from_interface
 
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 
@@ -193,28 +193,60 @@ class ProjectStore:
             stored["aml_path"] = f"source/{aml_name}"
         return stored
 
-    def create_project(self, name, config, xml_path=None, h5_path=None, aml_path=None, origin=None, description=""):
+    def create_project(self, name, config, xml_path=None, h5_path=None, aml_path=None,
+                        interface_json=None, origin=None, description=""):
         """Creates a new project: `project.json` + `input_simulation.json` (the compiled config,
         ready for `ModelBuilder` to consume), copying the real source files into the project's own
         directory (`_store_source_files`). Doesn't trigger any run -- that's a separate step
         (`create_run`).
 
-        `xml_path`+`h5_path` (a real XML+H5 export) and `aml_path` alone (an `.aml`-only project,
-        see `risersim_runner.py::build_config_from_aml()`) are the two supported combinations --
-        the caller (`run_server.py`) is responsible for compiling `config` with whichever pipeline
-        matches what was actually given here; this method itself doesn't care which one produced
-        `config`, it only stores whatever source files it was handed.
+        `xml_path`+`h5_path` (a real XML+H5 export), `aml_path` alone (an `.aml`-only project),
+        and `interface_json` alone (a blank/hand-built project, docs/roadmap.md Eixo 3a -- see
+        `create_blank_project()` below, the usual caller for this case) are the three supported
+        combinations -- the caller (`run_server.py`) is responsible for compiling `config` with
+        whichever pipeline matches what was actually given here; this method itself doesn't care
+        which one produced `config`, it only stores whatever source files it was handed.
+
+        A "JSON de interface" (`source/interface.json`) is stored for TWO of those three cases:
+        given directly (`interface_json` -- stays editable, `source["interface_editable"]=True`),
+        or auto-derived from a just-copied `.aml` (`aml_reader.py::to_interface_json()` -- NOT
+        editable, since round-tripping a derived interface JSON back into a hand-edited `.aml` is
+        out of scope, see roadmap "Eixo 3a fora de escopo"). Either way, its presence
+        (`source["interface_path"]`) is what lets `create_run(analysis_id=..., load_case_id=...)`
+        recompile a different run than the project-level default -- an XML+H5-only project (no
+        `.aml` alongside it) has neither, and `create_run()` degrades to always freezing the
+        project-level snapshot for it, same as before this feature existed.
 
         `origin` is reference metadata about where the model came from (e.g.
         `{"example_id": "..."}` for the pre-discovered-example flow, `{"kind": "upload"}` for the
-        upload flow) -- merged with the internal paths already copied into
-        `project.json["source"]`, with no purpose beyond display/debugging."""
+        upload flow, `{"kind": "blank"}` for the web editor's "novo projeto em branco" flow) --
+        merged with the internal paths already copied into `project.json["source"]`, with no
+        purpose beyond display/debugging."""
         project_id = generate_project_id(name, self.root)
         pdir = self.project_dir(project_id)
         (pdir / "runs").mkdir(parents=True, exist_ok=True)
 
         stored_source = self._store_source_files(pdir, xml_path, h5_path, aml_path)
         source = {**(origin or {}), **stored_source}
+
+        interface_editable = interface_json is not None
+        if interface_json is None and stored_source.get("aml_path"):
+            try:
+                from aml_reader import ANFLEXAMLReader
+                reader = ANFLEXAMLReader(str(pdir / stored_source["aml_path"]))
+                interface_json, iface_warnings = reader.to_interface_json()
+                for w in iface_warnings:
+                    print(f"⚠️ {w}")
+            except Exception as exc:
+                print(f"⚠️ Não foi possível derivar a JSON de interface do .aml ({exc}) -- "
+                      "create_run(analysis_id=...) não vai funcionar para este projeto.")
+                interface_json = None
+        if interface_json is not None:
+            (pdir / "source").mkdir(parents=True, exist_ok=True)
+            (pdir / "source" / "interface.json").write_text(
+                json.dumps(interface_json, indent=2, ensure_ascii=False), encoding="utf-8")
+            source["interface_path"] = "source/interface.json"
+            source["interface_editable"] = interface_editable
 
         project = {
             "id": project_id,
@@ -227,6 +259,63 @@ class ProjectStore:
         self._write_project(project_id, project)
         (pdir / "input_simulation.json").write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
         return project
+
+    def create_blank_project(self, name, interface_json, description=""):
+        """Creates a new project directly from a hand-built "JSON de interface"
+        (docs/roadmap.md, Eixo 3a) -- the web editor's "novo projeto em branco" path, no
+        XML/H5/AML source at all. Compiles the project-level `input_simulation.json` from the
+        FIRST valid `(analysis_id, load_case_id)` combination (`list_interface_runs()`), same
+        "first case in the file" default the `.aml` path already used for its own project-level
+        config -- a run for a DIFFERENT combination (`create_run(analysis_id=..., load_case_id=
+        ...)`) recompiles straight from `source/interface.json` regardless, this project-level
+        snapshot is only the "current default view".
+
+        Raises `ValueError` if `interface_json` defines no valid combination at all (e.g. no
+        lines, or no analysis references any load case)."""
+        runs = list_interface_runs(interface_json)
+        if not runs:
+            raise ValueError(
+                "A JSON de interface não define nenhuma combinação (análise, caso de "
+                "carregamento) válida -- é preciso pelo menos uma análise com load_case_ids.")
+        config, _warnings = build_config_from_interface(
+            interface_json, runs[0]['analysis_id'], runs[0]['load_case_id'])
+        return self.create_project(
+            name=name, config=config, interface_json=interface_json,
+            origin={"kind": "blank"}, description=description,
+        )
+
+    def update_interface(self, project_id, interface_json):
+        """Overwrites `source/interface.json` for a project created via `create_blank_project()`
+        (the web editor's "save" action) -- recompiles the project-level `input_simulation.json`
+        too, using the same "first valid combination" default `create_blank_project()` uses.
+
+        Raises `FileNotFoundError` if the project doesn't exist, `ValueError` if it isn't
+        `interface_editable` (an AML/XML-derived project's `interface.json`, when present, is a
+        read-only compiler input -- see `create_project()`'s docstring -- not something the
+        editor should overwrite; reopening/editing an imported project is out of scope, see
+        roadmap "Eixo 3a fora de escopo") or if `interface_json` defines no valid combination.
+
+        Returns the compiler's warnings (list of str) for the editor to display."""
+        project = self.get_project(project_id)
+        if project is None:
+            raise FileNotFoundError(f"projeto '{project_id}' não encontrado")
+        if not (project.get("source") or {}).get("interface_editable"):
+            raise ValueError(f"projeto '{project_id}' não é editável (não foi criado como projeto em branco)")
+
+        runs = list_interface_runs(interface_json)
+        if not runs:
+            raise ValueError(
+                "A JSON de interface não define nenhuma combinação (análise, caso de "
+                "carregamento) válida -- é preciso pelo menos uma análise com load_case_ids.")
+        config, warnings = build_config_from_interface(
+            interface_json, runs[0]['analysis_id'], runs[0]['load_case_id'])
+
+        pdir = self.project_dir(project_id)
+        (pdir / "source" / "interface.json").write_text(
+            json.dumps(interface_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        (pdir / "input_simulation.json").write_text(
+            json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        return warnings
 
     def _write_project(self, project_id, project):
         # Writes to a temp file + atomic rename -- same pattern as `_write_run` (only `web` writes
@@ -317,19 +406,25 @@ class ProjectStore:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def create_run(self, project_id, load_case_id=None, force=False):
+    def create_run(self, project_id, analysis_id=None, load_case_id=None, force=False):
         """Creates a new run and writes `run.json` with `status: "pending"`. Doesn't block waiting
         for the run to finish -- `run_worker.py` (a separate process) is what picks it up from the
         queue and executes it.
 
-        `load_case_id=None` (default): identical to this method's original behavior -- freezes
-        (snapshots) the project's current `input_simulation.json` unchanged. `load_case_id` given:
-        the project must have an `.aml` in `source` (raises `ValueError` if not); rebuilds the
-        config for that specific %LOAD_CASE via `build_config_from_aml()` (risersim_runner.py,
-        the same pipeline `run_from_aml.py --load-case-id` uses, including the MoorPy mesh-length
-        correction -- docs/roadmap.md, Eixo 2a) instead of reusing the project-level snapshot --
-        different load cases of the same physical model need different current/wave data, so a
-        single project-level `input_simulation.json` can't represent all of them at once.
+        `analysis_id`/`load_case_id` both `None` (default): identical to this method's original
+        behavior -- freezes (snapshots) the project's current `input_simulation.json` unchanged.
+        `load_case_id` given (with or without `analysis_id`): the project must have a
+        `source/interface.json` (raises `ValueError` if not -- present for every project created
+        via the blank-project editor, and auto-derived for every `.aml`-sourced project too, see
+        `create_project()`'s docstring); rebuilds the config for that `(analysis_id, load_case_id)`
+        combination via `build_config_from_interface()` (risersim_runner.py, docs/roadmap.md Eixo
+        3a) instead of reusing the project-level snapshot -- different load cases of the same
+        physical model need different current/wave data, so a single project-level
+        `input_simulation.json` can't represent all of them at once. `analysis_id=None` with a
+        `load_case_id` given auto-resolves to the first analysis that covers it (backward-
+        compatible with callers that only ever passed `load_case_id` -- works transparently for
+        every `.aml`-derived interface JSON, which `to_interface_json()` always gives exactly ONE
+        analysis covering every load case in the file).
 
         Also records here the provenance that's already knowable at creation time (see
         docs/roadmap.md, Axis 3b): `model_hash` (sha256 of the config bytes this run will actually
@@ -364,23 +459,34 @@ class ProjectStore:
 
         pdir = self.project_dir(project_id)
         load_case_name = None
+        analysis_name = None
 
-        if load_case_id is None:
+        if load_case_id is None and analysis_id is None:
             input_json = pdir / "input_simulation.json"
             if not input_json.is_file():
                 raise FileNotFoundError(f"projeto '{project_id}' não tem input_simulation.json")
             config_bytes = input_json.read_bytes()
         else:
-            aml_rel = (project.get("source") or {}).get("aml_path")
-            if not aml_rel:
-                raise ValueError(f"projeto '{project_id}' não tem .aml associado -- não é possível selecionar caso de carregamento")
-            aml_path = pdir / aml_rel
-            load_cases = list_aml_load_cases(aml_path)
-            match = next((lc for lc in load_cases if lc.get("id") == load_case_id), None)
+            interface_rel = (project.get("source") or {}).get("interface_path")
+            if not interface_rel:
+                raise ValueError(
+                    f"projeto '{project_id}' não tem JSON de interface associada -- não é "
+                    "possível selecionar análise/caso de carregamento")
+            interface_json = json.loads((pdir / interface_rel).read_text(encoding="utf-8"))
+            runs_catalog = list_interface_runs(interface_json)
+            if analysis_id is None:
+                match = next((r for r in runs_catalog if r['load_case_id'] == load_case_id), None)
+            else:
+                match = next(
+                    (r for r in runs_catalog
+                     if r['analysis_id'] == analysis_id and r['load_case_id'] == load_case_id), None)
             if match is None:
-                raise ValueError(f"load_case_id {load_case_id} não encontrado no .aml do projeto '{project_id}'")
-            load_case_name = match.get("name")
-            config = build_config_from_aml(aml_path, load_case_id=load_case_id)
+                raise ValueError(
+                    f"combinação (analysis_id={analysis_id}, load_case_id={load_case_id}) não "
+                    f"encontrada no projeto '{project_id}'")
+            analysis_id, load_case_id = match['analysis_id'], match['load_case_id']
+            analysis_name, load_case_name = match['analysis_name'], match['load_case_name']
+            config, _warnings = build_config_from_interface(interface_json, analysis_id, load_case_id)
             config_bytes = json.dumps(config, indent=2, ensure_ascii=False).encode("utf-8")
 
         model_hash = hashlib.sha256(config_bytes).hexdigest()
@@ -417,6 +523,8 @@ class ProjectStore:
             "exit_code": None,
             "model_hash": model_hash,
             "schema_version": schema_version,
+            "analysis_id": analysis_id,
+            "analysis_name": analysis_name,
             "load_case_id": load_case_id,
             "load_case_name": load_case_name,
             "web_version": WEB_VERSION,

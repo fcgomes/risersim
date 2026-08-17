@@ -1,6 +1,6 @@
 import { initThemeToggle } from './ui/ThemeToggle.js';
 import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
-import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun as apiCreateRun, fetchLoadCases, DuplicateRunError } from './utils/runManagerFormat.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun as apiCreateRun, fetchRunsCatalog, DuplicateRunError } from './utils/runManagerFormat.js';
 
 /**
  * project.js
@@ -26,11 +26,12 @@ class ProjectPage {
         // tab/run is reopened, which would lose the viewer's camera/zoom position).
         this.currentView = 'manager';
         this.currentRun = undefined;
-        // Load cases available for this project's .aml (see GET .../load-cases), fetched once
-        // (not on every scheduleAutoRefresh() poll -- they never change while the page is open,
-        // unlike run status). Empty until the first load() resolves; renderLoadCaseSelect() only
-        // shows the selector once populated with >1 case.
-        this.loadCases = [];
+        // (analysis_id, load_case_id) combinations available for this project's interface JSON
+        // (see GET .../runs-catalog), fetched once (not on every scheduleAutoRefresh() poll --
+        // they never change while the page is open, unlike run status). Empty until the first
+        // load() resolves; renderRunSelectors() only shows the selectors once populated with >1
+        // combination.
+        this.runsCatalog = [];
         this.bindEvents();
         this.load().then(() => this.applyViewFromUrl());
     }
@@ -56,6 +57,11 @@ class ProjectPage {
         document.querySelectorAll('.btn-tab[data-view]').forEach(btn => {
             btn.addEventListener('click', () => this.switchView(btn.getAttribute('data-view')));
         });
+
+        // Selecting an analysis filters the load-case <select> to just that analysis's own
+        // load_case_ids (see renderRunSelectors()) -- a load case picked under one analysis may
+        // not be valid under another.
+        document.getElementById('analysis-select').addEventListener('change', () => this.renderLoadCaseOptions());
 
         // Delegated (not rebound per element) because "View input"/"Input used"/"View
         // results" are recreated all the time in renderHeader()/renderActionsCell() -- a single
@@ -99,7 +105,8 @@ class ProjectPage {
      *   button works).
      */
     switchView(view, { run, pushHistory = true } = {}) {
-        if (!['manager', 'pre', 'post'].includes(view)) view = 'manager';
+        if (!['manager', 'pre', 'post', 'edit'].includes(view)) view = 'manager';
+        if (view === 'edit' && !this.isEditable()) view = 'manager';
 
         document.querySelectorAll('.workspace-view').forEach(el => { el.style.display = 'none'; });
         document.getElementById(`view-${view}`).style.display = '';
@@ -126,6 +133,9 @@ class ProjectPage {
                 emptyEl.style.display = '';
             }
             run = resolvedRun || undefined;
+        } else if (view === 'edit') {
+            const url = `editor.html?project=${encodeURIComponent(this.projectId)}`;
+            this._loadFrameIfNeeded('edit-frame', url);
         }
 
         this.currentView = view;
@@ -147,6 +157,13 @@ class ProjectPage {
         }
     }
 
+    /** Whether this project's `source/interface.json` accepts edits (only projects created via
+     * the dashboard's "✏️ Em branco" tab, see `risersim_projects.py::update_interface()`'s
+     * docstring) -- gates both the "✏️ Editar" workspace tab and its underlying view. */
+    isEditable() {
+        return !!(this.project && (this.project.source || {}).interface_editable);
+    }
+
     /** `this.project.runs` already comes most-recent-first (see list_runs) -- used as the Post
      * tab's default when it's opened without a specific run in mind (clicking the generic tab,
      * not a row's "View results" link). */
@@ -165,34 +182,60 @@ class ProjectPage {
             document.getElementById('runs-container').innerHTML = '';
             return;
         }
-        if (!this.loadCasesFetched) {
-            this.loadCasesFetched = true;
-            const data = await fetchLoadCases(this.projectId);
-            this.loadCases = data.load_cases || [];
-            this.renderLoadCaseSelect();
+        if (!this.runsCatalogFetched) {
+            this.runsCatalogFetched = true;
+            const data = await fetchRunsCatalog(this.projectId);
+            this.runsCatalog = data.runs || [];
+            this.renderRunSelectors();
         }
         this.renderHeader();
         this.renderRuns();
         this.scheduleAutoRefresh();
     }
 
-    /** Populates/toggles the "new run" load-case <select> -- only shown when the project's .aml
-     * defines more than one %LOAD_CASE (backward-compat: a project with no .aml, or one with 0-1
-     * cases, keeps the selector hidden and run creation behaves exactly as before this feature). */
-    renderLoadCaseSelect() {
-        const select = document.getElementById('load-case-select');
-        if (this.loadCases.length <= 1) {
-            select.style.display = 'none';
-            select.innerHTML = '';
+    /** Populates/toggles the "new run" analysis+load-case <select> pair -- only shown when the
+     * project's interface JSON defines more than one (analysis_id, load_case_id) combination
+     * (backward-compat: a project with no interface JSON at all, or one with a single
+     * combination, keeps both selectors hidden and run creation behaves exactly as before this
+     * feature). The analysis <select> lists each DISTINCT analysis once; picking one filters the
+     * load-case <select> to just that analysis's own combinations (see renderLoadCaseOptions()). */
+    renderRunSelectors() {
+        const analysisSelect = document.getElementById('analysis-select');
+        const loadCaseSelect = document.getElementById('load-case-select');
+        if (this.runsCatalog.length <= 1) {
+            analysisSelect.style.display = 'none';
+            loadCaseSelect.style.display = 'none';
+            analysisSelect.innerHTML = '';
+            loadCaseSelect.innerHTML = '';
             return;
         }
-        select.innerHTML = this.loadCases.map(lc =>
-            `<option value="${lc.id}">${escapeHtml(lc.name)} (ID ${lc.id})</option>`
+        const analysesById = new Map();
+        for (const r of this.runsCatalog) {
+            if (!analysesById.has(r.analysis_id)) analysesById.set(r.analysis_id, r.analysis_name);
+        }
+        analysisSelect.innerHTML = Array.from(analysesById.entries()).map(([id, name]) =>
+            `<option value="${id}">${escapeHtml(name || `Análise ${id}`)}</option>`
         ).join('');
-        select.style.display = '';
+        analysisSelect.style.display = '';
+        this.renderLoadCaseOptions();
+    }
+
+    /** Fills the load-case <select> with only the combinations belonging to the CURRENTLY
+     * selected analysis (see renderRunSelectors()) -- called on load and whenever the analysis
+     * <select> changes. */
+    renderLoadCaseOptions() {
+        const analysisSelect = document.getElementById('analysis-select');
+        const loadCaseSelect = document.getElementById('load-case-select');
+        const analysisId = parseInt(analysisSelect.value, 10);
+        const options = this.runsCatalog.filter(r => r.analysis_id === analysisId);
+        loadCaseSelect.innerHTML = options.map(r =>
+            `<option value="${r.load_case_id}">${escapeHtml(r.load_case_name || `Caso ${r.load_case_id}`)}</option>`
+        ).join('');
+        loadCaseSelect.style.display = '';
     }
 
     renderHeader() {
+        document.getElementById('tab-edit-btn').style.display = this.isEditable() ? '' : 'none';
         document.getElementById('project-name').innerText = this.project.name;
         document.getElementById('project-meta').innerText =
             `ID: ${this.project.id} · Criado em ${formatDate(this.project.created_at)}`;
@@ -259,7 +302,7 @@ class ProjectPage {
                     <thead>
                         <tr>
                             <th>Simulação</th>
-                            <th>Caso</th>
+                            <th>Análise / Caso</th>
                             <th>Status</th>
                             <th>Criada</th>
                             <th>Início</th>
@@ -373,10 +416,13 @@ class ProjectPage {
             ? ` <span class="badge-dup" title="mesmo model_hash da simulação ${escapeHtml(dupOf)}">= ${escapeHtml(dupOf)}</span>`
             : '';
 
+        const caseLabel = run.analysis_name && run.load_case_name
+            ? `${run.analysis_name} / ${run.load_case_name}`
+            : (run.load_case_name || '—');
         return `
             <tr>
                 <td class="run-id-cell mono">${escapeHtml(run.id)}${dupBadge}</td>
-                <td>${escapeHtml(run.load_case_name || '—')}</td>
+                <td>${escapeHtml(caseLabel)}</td>
                 <td id="status-${escapeHtml(run.id)}">${statusPill(run.status)}</td>
                 <td class="mono">${formatDate(run.created_at)}</td>
                 <td id="started-${escapeHtml(run.id)}" class="mono">${formatDate(run.started_at)}</td>
@@ -456,11 +502,13 @@ class ProjectPage {
         const btn = document.getElementById('new-run-btn');
         btn.disabled = true;
         btn.innerText = 'Criando…';
-        const select = document.getElementById('load-case-select');
-        const load_case_id = (select && select.style.display !== 'none' && select.value)
-            ? parseInt(select.value, 10) : null;
+        const analysisSelect = document.getElementById('analysis-select');
+        const loadCaseSelect = document.getElementById('load-case-select');
+        const hasSelection = loadCaseSelect && loadCaseSelect.style.display !== 'none' && loadCaseSelect.value;
+        const analysis_id = hasSelection ? parseInt(analysisSelect.value, 10) : null;
+        const load_case_id = hasSelection ? parseInt(loadCaseSelect.value, 10) : null;
         try {
-            await apiCreateRun(this.projectId, { force, load_case_id });
+            await apiCreateRun(this.projectId, { force, analysis_id, load_case_id });
             await this.load();
         } catch (err) {
             if (err instanceof DuplicateRunError) {

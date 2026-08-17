@@ -3,6 +3,11 @@ import sys
 import json
 import math
 
+from catenary_geometry import (
+    solve_catenary_geometry, correct_line_mesh_via_moorpy, build_section_properties,
+    synthesize_mesh, compute_rayleigh_alpha, compute_rayleigh_beta, static_robustness_overrides,
+)
+
 class ANFLEXAMLReader:
     """
     ANFLEX AML Reader & Model Extractor (v2)
@@ -535,8 +540,8 @@ class ANFLEXAMLReader:
                     'damping_ratio_1': rayleigh_xi1,
                     'damping_ratio_2': rayleigh_xi2,
                     # Alpha/beta coefficients if the periods are defined
-                    'alpha': self._compute_rayleigh_alpha(rayleigh_T1, rayleigh_T2, rayleigh_xi1, rayleigh_xi2),
-                    'beta':  self._compute_rayleigh_beta(rayleigh_T1, rayleigh_T2, rayleigh_xi1, rayleigh_xi2),
+                    'alpha': compute_rayleigh_alpha(rayleigh_T1, rayleigh_T2, rayleigh_xi1, rayleigh_xi2),
+                    'beta':  compute_rayleigh_beta(rayleigh_T1, rayleigh_T2, rayleigh_xi1, rayleigh_xi2),
                 },
             },
             'lines': lines_data,
@@ -558,30 +563,6 @@ class ANFLEXAMLReader:
                 }
             }
         }
-
-    @staticmethod
-    def _compute_rayleigh_alpha(T1, T2, xi1, xi2):
-        """Rayleigh damping coefficient α: C = α*M + β*K."""
-        if T1 > 0 and T2 > 0 and T1 != T2:
-            w1 = 2 * math.pi / T1
-            w2 = 2 * math.pi / T2
-            # [xi1; xi2] = (1/2) * [[1/w1, w1], [1/w2, w2]] * [alpha; beta]
-            det = (1/w1) * w2 - (1/w2) * w1
-            if abs(det) > 1e-12:
-                alpha = 2.0 * (xi1 * w2 - xi2 * w1) / (w2**2 - w1**2) * w1 * w2
-                return alpha
-        return 0.0
-
-    @staticmethod
-    def _compute_rayleigh_beta(T1, T2, xi1, xi2):
-        """Rayleigh damping coefficient β: C = α*M + β*K."""
-        if T1 > 0 and T2 > 0 and T1 != T2:
-            w1 = 2 * math.pi / T1
-            w2 = 2 * math.pi / T2
-            if abs(w2**2 - w1**2) > 1e-12:
-                beta = 2.0 * (xi2 * w2 - xi1 * w1) / (w2**2 - w1**2)
-                return beta
-        return 0.0
 
     # -------------------------------------------------------------------------
     # CONFIGURATION METHOD FOR riserSim
@@ -912,117 +893,6 @@ class ANFLEXAMLReader:
         global_coords = [origin[0] + rx, origin[1] + ry, origin[2] + lz]
         return global_coords, ship
 
-    def _solve_catenary_geometry(self, connection_global, angle_deg_from_vertical, azimuth_deg,
-                                  total_length_m, ea_n, w_wet_n_m, friction_coeff=0.5):
-        """Solves for the real horizontal span (and resulting anchor/touchdown position) implied
-        by the line's real %LINE.CATENARY.ANGLE boundary condition, given the now-known real
-        connection position (see _resolve_connection_global()) -- this is the piece
-        _synthesize_mesh() was missing: without it, the synthetic mesh's span comes from a
-        length-only heuristic (`0.70*L`) with no relation to the real angle/depth/length
-        boundary-value problem, which is most of why a pure-.aml run's static T_eff (~1100+ kN
-        on Exemplo_01a) is ~5x the real XML+H5 result (~217 kN) -- see docs/roadmap.md.
-
-        The vertical drop (moorpy's `ZF`) is taken as `connection_global[2]` itself, NOT the
-        nominal water depth -- the real ANFLEX global frame always has the seabed at Z=0 (see
-        _resolve_connection_global()'s own `origin.z = seabed_depth_m - draft` derivation, and
-        model_builder.cpp's generic min(Z)=seabed re-derivation), and the connection sits BELOW
-        the nominal water surface by the vessel's draft, so `water_depth_m` alone overshoots the
-        real vertical drop by that draft (confirmed: using water_depth_m first gave an anchor Z
-        of -8m instead of the real ~0m for Exemplo_01a's Cross case -- 13m draft, 5m local Z
-        offset, 8m net).
-
-        The real ANFLEX pre-processor solves this exact problem with an external, closed-source
-        library (`tec_line`, `interfaces/src/line.cpp`'s `TEC_ANGLE_B` boundary condition) not
-        available in this repo. Standard catenary equations are not ANFLEX-proprietary, though:
-        this uses moorpy.Catenary.catenary() (XF, ZF, L, EA, W -> tension; already validated
-        against real ANFLEX in spikes/mooring_validation/, ~1% error) as the forward "given a
-        span, what's the resulting angle" evaluator, wrapped in a small outer bisection on the
-        span XF to match the target top angle -- moorpy itself has no direct "solve for span
-        given an angle" mode (confirmed: catenary() takes XF as an input, not an unknown it
-        solves for).
-
-        The `90 - azimuth_deg` direction convention (mirroring _resolve_connection_global()'s
-        own ship-orientation formula) was validated end-to-end against real data: applied to
-        Exemplo_01a's real numbers, it reproduces the "Cross" load case's actual exported anchor
-        node (XML+H5 path) almost exactly (predicted vs. real anchor position within the
-        expected error margin of the ~1%-validated moorpy solver itself).
-
-        Lazily imports moorpy (an optional runtime dependency, see Dockerfile) -- returns None
-        if it isn't installed, or if the bisection can't bracket a span matching the target
-        angle (e.g. physically unreachable for this length/depth combination), so callers fall
-        back to the old heuristic span (see to_risersim_json()/_synthesize_mesh()).
-        """
-        try:
-            from moorpy.Catenary import catenary
-        except ImportError:
-            return None
-
-        zf = connection_global[2]
-        if zf <= 0.0:
-            return None
-
-        # interfaces/src/line.cpp's own "90.0 - bc.angle" -- CATENARY.ANGLE is from vertical,
-        # moorpy's catenary() tension angle (atan2(VF,HF)) is from horizontal.
-        target_angle_deg = 90.0 - angle_deg_from_vertical
-
-        def top_angle_deg(xf):
-            try:
-                _, _, _, _, info = catenary(xf, zf, total_length_m, ea_n, w_wet_n_m, CB=friction_coeff)
-            except Exception:
-                return None
-            return math.degrees(math.atan2(info['VF'], info['HF']))
-
-        # Coarse scan for a sign change (bracket), then bisection -- more robust than a raw
-        # bisection from the domain's ends, since moorpy's solver can fail to converge (raises)
-        # for XF values very close to 0 or to the fully-taut limit (total_length_m).
-        n_scan = 60
-        max_xf = total_length_m * 0.999
-        prev_x, prev_err = None, None
-        bracket = None
-        for i in range(1, n_scan + 1):
-            x = max_xf * i / n_scan
-            ang = top_angle_deg(x)
-            if ang is None:
-                continue
-            err = ang - target_angle_deg
-            if prev_err is not None and prev_err * err <= 0:
-                bracket = (prev_x, x)
-                break
-            prev_x, prev_err = x, err
-        if bracket is None:
-            return None
-
-        lo, hi = bracket
-        lo_err = top_angle_deg(lo) - target_angle_deg
-        xf = lo
-        for _ in range(60):
-            mid = 0.5 * (lo + hi)
-            ang = top_angle_deg(mid)
-            if ang is None:
-                break
-            err = ang - target_angle_deg
-            xf = mid
-            if abs(err) < 1.0e-3:
-                break
-            if lo_err * err <= 0:
-                hi = mid
-            else:
-                lo, lo_err = mid, err
-
-        try:
-            _, _, _, _, info = catenary(xf, zf, total_length_m, ea_n, w_wet_n_m, CB=friction_coeff)
-        except Exception:
-            return None
-        t_eff_top_n = math.hypot(info['HF'], info['VF'])
-
-        direction_rad = math.radians(90.0 - azimuth_deg)
-        anchor_global = [
-            connection_global[0] + xf * math.cos(direction_rad),
-            connection_global[1] + xf * math.sin(direction_rad),
-            0.0,  # seabed, in the real ANFLEX global frame this connection_global is also in
-        ]
-        return anchor_global, t_eff_top_n
-
     def _parse_function_tables(self):
         """Parses every %TIME_FUNCTION/%DISPLACEMENT_FUNCTION/%ROTATIONAL_FUNCTION block into a
         dict keyed by its real ID, each value a list of (x, y) points -- used to evaluate the
@@ -1236,7 +1106,7 @@ class ANFLEXAMLReader:
         `movement_center` is written relative to the GAP between the real connection position
         (`connection_global`) and wherever node 1 (the riser's top) actually ended up in the
         JSON's "model.nodes" (`top_node_position` -- the real global connection position when
-        _solve_catenary_geometry() converges, or the synthetic (0,0,0) origin otherwise, the
+        solve_catenary_geometry() converges, or the synthetic (0,0,0) origin otherwise, the
         default here), NOT relative to `top_node_position` alone -- VesselMotion (C++) computes
         the lever arm as `node->current_coords() - (movement_center + offset)`; for that to
         equal the real physical lever arm `connection_global - (movement_center_real + offset)`
@@ -1317,135 +1187,6 @@ class ANFLEXAMLReader:
             },
         }
 
-    # -------------------------------------------------------------------------
-    # MESH SYNTHESIS (no pre-solved geometry in a plain .aml, unlike xml_h5_reader.py)
-    # -------------------------------------------------------------------------
-    def _synthesize_mesh(self, line, depth, span_x, num_elements_fallback, num_elements_override=None,
-                          top_override=None, bottom_override=None, id_offset=0, element_id_offset=None):
-        """Synthesizes an initial straight-line node/element mesh from the line's segment
-        lengths -- there's no pre-solved geometry to copy out of a plain .aml the way
-        xml_h5_reader.py copies real solved coordinates out of the H5 (see extract_nodes()
-        there). Confirmed by reading static_analysis.cpp: the solver treats whatever
-        `nodes[i].coords` are given as an initial/reference configuration and deforms it via
-        load-stepping Newton-Raphson (an "assembly phase" that ramps up load) to reach the real
-        equilibrium catenary shape -- a straight line between anchor and touchdown is an
-        adequate starting guess, it does not need to be physically accurate.
-
-        Top anchor at (0, 0, 0) (surface), bottom point at (span_x, 0, -depth) -- the same
-        "Surface at Z=0, Seabed at Z=-water_depth" convention already documented in
-        to_risersim_config()'s 'geometry' block. `depth` must be the real water depth (positive
-        magnitude): model_builder.cpp re-derives the seabed's actual Z-position as the true
-        min(Z) among the loaded nodes, so the very last node is forced to land exactly at
-        Z=-depth (not just approximately, in case of float drift from the per-segment stepping
-        below) for that re-derivation to be correct.
-
-        `top_override`/`bottom_override` (from to_risersim_json(), when a real
-        %CONNECTION/%FLOATING + a converged moorpy catenary solve are available -- see
-        _resolve_connection_global()/_solve_catenary_geometry()) replace the synthetic
-        (0,0,0)/(span_x,0,-depth) endpoints with the REAL global connection and anchor
-        positions instead, in the SAME real ANFLEX global frame the XML/H5 path already uses
-        (seabed Z~0, surface Z~+depth) -- still just an initial guess for the Newton-Raphson
-        solver, but a much better one (real span, not a length-only heuristic), and the one
-        _resolve_vessel_motion() needs node 1's position to actually agree with (see its own
-        docstring on why movement_center is expressed relative to node 1's position).
-
-        When `line` has real segments (the common case), nodes are distributed by walking each
-        segment's own element count in turn (cumulative arc-length), so a segment's elements
-        land contiguously instead of being smeared uniformly across the whole line --
-        mirrors xml_h5_reader.py's extract_elements() building sequential connectivity, just
-        computing the node positions here too since there's no H5 to read them from.
-        `num_elements_override` (from run_from_aml.py's --num-elements) replaces the segment
-        breakdown with a single uniform mesh of that many elements instead -- there's nothing
-        riding on preserving per-segment boundaries today since aml_reader.py only resolves one
-        global material for the whole line, not a per-segment one by %LINE.SEGMENT.MATERIAL_ID.
-
-        `id_offset`/`element_id_offset` (default 0/None -- None means "same as id_offset", the
-        single-line default of both starting at the next id after 0): shifts this line's node/
-        element ids so multiple lines can be merged into one flat `model.nodes`/`model.elements`
-        list with globally-unique ids (to_risersim_json_multiline()) -- ModelBuilder resolves
-        every id by lookup, not by assuming a dense 1..N sequence (see model_builder.cpp), so ids
-        only need to be unique across the WHOLE model, not contiguous per line.
-        """
-        if element_id_offset is None:
-            element_id_offset = id_offset
-        segments = line.get('segments') or []
-        total_length = line.get('total_length_m', 500.0)
-        if total_length <= 0:
-            total_length = 500.0
-
-        if num_elements_override:
-            seg_lengths = [total_length]
-            seg_elem_counts = [max(1, int(num_elements_override))]
-        elif segments:
-            seg_lengths = [s.get('length_m', 0.0) for s in segments]
-            seg_elem_counts = [max(1, s.get('num_elements', 1)) for s in segments]
-        else:
-            seg_lengths = [total_length]
-            seg_elem_counts = [max(1, int(num_elements_fallback))]
-
-        top = tuple(top_override) if top_override is not None else (0.0, 0.0, 0.0)
-        bottom = tuple(bottom_override) if bottom_override is not None else (span_x, 0.0, -depth)
-
-        nodes = [{"id": id_offset + 1, "coords": list(top)}]
-        node_id = id_offset + 1
-        cum_length = 0.0
-        for seg_len, seg_n in zip(seg_lengths, seg_elem_counts):
-            step = seg_len / seg_n
-            for _ in range(seg_n):
-                cum_length += step
-                t = min(1.0, cum_length / total_length)
-                coords = [top[j] + t * (bottom[j] - top[j]) for j in range(3)]
-                node_id += 1
-                nodes.append({"id": node_id, "coords": coords})
-
-        nodes[-1]["coords"] = list(bottom)  # exact touchdown/anchor point, no float drift
-
-        elements = []
-        for i in range(len(nodes) - 1):
-            elements.append({
-                "id": element_id_offset + i + 1,
-                "node1_id": nodes[i]["id"],
-                "node2_id": nodes[i + 1]["id"],
-            })
-        return nodes, elements
-
-    @staticmethod
-    def _static_robustness_overrides(ei_nm2: float) -> dict:
-        """Escape hatch for a real static-solver instability found on
-        exemplos/Multilinhas/Multilinhas.aml (EI=6.27 kN.m^2, 2070 elements/line, 2200m water
-        depth): full-step Newton blows up in ROTATIONAL DOFs (not the already-known seabed
-        contact/friction chattering) for very bendable, finely-meshed lines. Root cause: with
-        EI this low, the rotational stiffness terms are near-singular, so a full Newton step
-        overcorrects rotation wildly instead of converging.
-
-        Fix requires zero C++ change: `enable_step_limiting` (already implemented, off by
-        default) with a MUCH tighter rotation cap than its own default (0.01 rad vs 0.3 rad)
-        resolves it completely -- confirmed on all 7 Multilinhas.aml lines individually and on
-        the combined multi-line model, all converging to the identical T_eff (2361 kN).
-        `unbalanced_force_tol`/`unbalanced_moment_tol` also loosened (5->30 N) -- with the
-        tighter rotation cap alone, convergence was real but needed hundreds of iterations per
-        step (chasing a residual that was already physically negligible); loosening these too
-        cut that back down to ~15-40 iterations/step. This deliberately overrides any real
-        %ANALYSIS_CASE.STATIC.CONVERGENCE_CRITERIUM value already extracted from the .aml (see
-        extract_static_convergence_criterium() call sites below) -- a documented departure from
-        fidelity, justified because the alternative is non-convergence for this class of case.
-
-        Verified harmless on an already-validated normal case too (Exemplo_01a/Cross, EI=21.7
-        kN.m^2, 500 elements): same T_eff (217.3 kN) as the unmodified baseline, converging in
-        FEWER iterations -- so the EI threshold below only needs to separate the two real data
-        points found so far, not be exact; erring toward triggering more often costs a little
-        compute, not correctness. See docs/roadmap.md Eixo 2c.
-        """
-        EI_THRESHOLD_NM2 = 15_000.0  # between the two real data points: 6 270 (unstable) / 21 700 (fine)
-        if ei_nm2 >= EI_THRESHOLD_NM2:
-            return {}
-        return {
-            "enable_step_limiting": True,
-            "max_translation_step_m": 0.2,
-            "max_rotation_step_rad": 0.01,
-            "unbalanced_force_tol": 30.0,
-            "unbalanced_moment_tol": 30.0,
-        }
 
     # -------------------------------------------------------------------------
     # STRUCTURED JSON (the schema ModelBuilder::load_from_json actually reads)
@@ -1489,7 +1230,7 @@ class ANFLEXAMLReader:
 
         # Real initial mesh endpoints, when resolvable: the connection's real global position
         # (see _resolve_connection_global()) for the top, and a moorpy-solved real anchor
-        # position (see _solve_catenary_geometry()) for the bottom -- instead of the synthetic
+        # position (see solve_catenary_geometry()) for the bottom -- instead of the synthetic
         # (0,0,0)/heuristic-span_x placeholder _synthesize_mesh() falls back to otherwise. None
         # for any .aml without real %CONNECTION/%FLOATING data, or if moorpy isn't installed/
         # can't converge -- same graceful fallback philosophy as vessel_motion below.
@@ -1498,7 +1239,7 @@ class ANFLEXAMLReader:
         conn_result = self._resolve_connection_global(line)
         if conn_result is not None:
             connection_global, _ship = conn_result
-            catenary_result = self._solve_catenary_geometry(
+            catenary_result = solve_catenary_geometry(
                 connection_global, line.get('catenary_angle_deg', 5.0), line.get('azimuth_deg', 0.0),
                 line.get('total_length_m', 500.0), mat['EA_N'], mat['weight_wet_kNm'] * 1000.0,
                 soil.get('friction_lateral', 0.5),
@@ -1512,32 +1253,15 @@ class ANFLEXAMLReader:
                       f"âncora ({bottom_override[0]:.2f}, {bottom_override[1]:.2f}, {bottom_override[2]:.2f}) m, "
                       f"T_eff estimado {t_eff_estimate_n / 1000.0:.1f} kN")
 
-        nodes, elements = self._synthesize_mesh(
-            line, depth, span_x, flat['geometry']['num_elements'], num_elements_override,
-            top_override=top_override, bottom_override=bottom_override,
+        nodes, elements = synthesize_mesh(
+            line.get('segments') or [], line.get('total_length_m', 500.0),
+            flat['geometry']['num_elements'], num_elements_override,
+            top_override=top_override, bottom_override=bottom_override, depth=depth, span_x=span_x,
         )
 
-        section_properties = {
-            "E": mat['E_Pa'], "G": mat['G_Pa'], "A": mat['A_m2'],
-            "IY": mat['IY_m4'], "IZ": mat['IZ_m4'], "J": mat['J_m4'],
-            "EI": mat['EI_Nm2'],
-            "weight_wet_kNm": mat['weight_wet_kNm'],
-            "rho": mat['rho_kgm3'],
-            "D_outer": mat['outer_diameter_m'], "D_inner": mat['inner_diameter_m'],
-            "rho_fluid": glb['water_density_kgm3'],
-            "Ca": mat['Cm'] - 1.0,
-            "Cd": mat['Cd'],
-            # "rho_structural" deliberately omitted: the .aml only exposes
-            # %MATERIAL.WEIGHT.DRY/.WET (already net of/inclusive of buoyancy), not a distinct
-            # raw structural/dry density independent of the wet weight the way the XML's
-            # material <density> tag is (xml_h5_reader.extract_material_properties()'s
-            # density_kNm3) -- mat['rho_kgm3'] here (dry_mass_kgm/area_struct) is already the
-            # right "rho", but there's no second, independently-sourced number to put in
-            # "rho_structural" that wouldn't just be relabeling the same one under a different
-            # key. Leaving it out and letting the C++ side's documented rho-derived fallback
-            # (model_builder.cpp) apply is more honest than passing a value with false
-            # provenance.
-        }
+        # See catenary_geometry.build_section_properties()'s docstring for why
+        # "rho_structural" is deliberately omitted here.
+        section_properties = build_section_properties(mat, glb)
         for elem in elements:
             elem["section_properties"] = dict(section_properties)
 
@@ -1622,7 +1346,7 @@ class ANFLEXAMLReader:
             if max_unbalanced is not None:
                 static_opts['unbalanced_force_tol'] = max_unbalanced
                 static_opts['unbalanced_moment_tol'] = max_unbalanced
-        robustness_overrides = self._static_robustness_overrides(mat['EI_Nm2'])
+        robustness_overrides = static_robustness_overrides(mat['EI_Nm2'])
         if robustness_overrides:
             static_opts['enable_unbalanced_criteria'] = True
             static_opts.update(robustness_overrides)
@@ -1669,63 +1393,6 @@ class ANFLEXAMLReader:
             },
         }
 
-    @staticmethod
-    def _moorpy_correct_line_mesh(nodes, elements, top_id, anchor_id, total_length_m, seabed_dict):
-        """Per-line counterpart of `risersim_runner.py::_apply_moorpy_mesh_correction()` --
-        overwrites `nodes[i]["coords"]` in place with MoorPy's own solved equilibrium shape,
-        exactly like that function, but scoped to ONE line's own nodes/elements instead of a
-        whole `input_simulation.json`.
-
-        Why a separate copy instead of just calling `_apply_moorpy_mesh_correction()`: that
-        function (and `moorpy_warm_start.py::compute_warm_start_positions()`/
-        `build_from_risersim_json.py::build_system_from_json()` underneath it) assumes the WHOLE
-        `model.elements` array forms ONE continuous chain (`node_order = [elements[0].node1_id] +
-        [e.node2_id for e in elements]`) -- true for a single-line JSON, but for a multi-line
-        JSON's flat merged `all_elements` this would walk straight across a line boundary as if
-        two unrelated lines' elements were connected. Calling it per-line, on a throwaway
-        single-line JSON slice built from just this line's own `nodes`/`elements` (already
-        contiguous and self-consistent, straight out of `_synthesize_mesh()`), reuses the exact
-        same MoorPy solve/resample logic without duplicating it, sidestepping the chain
-        assumption entirely instead of trying to teach it about line boundaries. Also avoids a
-        circular import: `_apply_moorpy_mesh_correction()` lives in `risersim_runner.py`, which
-        imports `aml_reader.py`, not the other way around.
-
-        Same best-effort contract as `_apply_moorpy_mesh_correction()`: any exception (MoorPy
-        unavailable, solve failure, ...) leaves `nodes` unchanged (the straight chord --
-        length may be off) and prints a warning, never raises.
-        """
-        import json
-        import tempfile
-        from pathlib import Path
-
-        try:
-            from moorpy_warm_start import compute_warm_start_positions
-        except Exception as exc:
-            print(f"⚠️ MoorPy indisponível ({exc}) -- linha mantém a malha reta original (comprimento pode ficar incorreto).")
-            return
-
-        line_doc = {
-            "model": {"nodes": nodes, "elements": elements, "total_length_m": total_length_m},
-            "boundary_conditions": {
-                "prescribed_dofs": [{"node_id": top_id, "dofs": [-1] * 6}],
-                "restrained_dofs": [{"node_id": anchor_id, "dofs": [-1] * 6}],
-            },
-            "environmental": {"seabed": seabed_dict},
-        }
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                scratch_path = Path(tmp) / "input_simulation.json"
-                with open(scratch_path, "w", encoding="utf-8") as f:
-                    json.dump(line_doc, f)
-                node_positions, _meta = compute_warm_start_positions(str(scratch_path))
-            coords_by_id = {p["node_id"]: p["coords"] for p in node_positions}
-            for n in nodes:
-                if n["id"] in coords_by_id:
-                    n["coords"] = coords_by_id[n["id"]]
-        except Exception as exc:
-            print(f"⚠️ Não foi possível corrigir a malha desta linha via MoorPy ({exc}) -- "
-                  "mantém a malha reta original (comprimento pode ficar incorreto).")
-
     def to_risersim_json_multiline(self, line_indices=None, num_elements_override=None, load_case_id=None):
         """Multi-line sibling of to_risersim_json() (docs/roadmap.md backlog: "múltiplas linhas
         com corpo flutuante compartilhado", driven by exemplos/Multilinhas/Multilinhas.aml -- 7
@@ -1771,17 +1438,7 @@ class ANFLEXAMLReader:
         wave = self._resolve_wave(load_case)
         depth = glb['seabed_depth_m']
 
-        section_properties = {
-            "E": mat['E_Pa'], "G": mat['G_Pa'], "A": mat['A_m2'],
-            "IY": mat['IY_m4'], "IZ": mat['IZ_m4'], "J": mat['J_m4'],
-            "EI": mat['EI_Nm2'],
-            "weight_wet_kNm": mat['weight_wet_kNm'],
-            "rho": mat['rho_kgm3'],
-            "D_outer": mat['outer_diameter_m'], "D_inner": mat['inner_diameter_m'],
-            "rho_fluid": glb['water_density_kgm3'],
-            "Ca": mat['Cm'] - 1.0,
-            "Cd": mat['Cd'],
-        }
+        section_properties = build_section_properties(mat, glb)
 
         GLOBAL_REF_ID = 0
         all_nodes, all_elements = [], []
@@ -1807,7 +1464,7 @@ class ANFLEXAMLReader:
                     "real resolvível -- multi-linha exige que TODAS as linhas selecionadas "
                     "resolvam sua conexão (ver to_risersim_json_multiline()).")
             connection_global, ship = conn_result
-            catenary_result = self._solve_catenary_geometry(
+            catenary_result = solve_catenary_geometry(
                 connection_global, line.get('catenary_angle_deg', 5.0), line.get('azimuth_deg', 0.0),
                 line.get('total_length_m', 500.0), mat['EA_N'], mat['weight_wet_kNm'] * 1000.0,
                 soil.get('friction_lateral', 0.5),
@@ -1823,9 +1480,11 @@ class ANFLEXAMLReader:
                   f"({anchor_global[0]:.2f}, {anchor_global[1]:.2f}, {anchor_global[2]:.2f}) m, "
                   f"T_eff estimado {t_eff_estimate_n / 1000.0:.1f} kN")
 
-            nodes, elements = self._synthesize_mesh(
-                line, depth, flat['geometry']['span_x_m'], flat['geometry']['num_elements'], num_elements_override,
+            nodes, elements = synthesize_mesh(
+                line.get('segments') or [], line.get('total_length_m', 500.0),
+                flat['geometry']['num_elements'], num_elements_override,
                 top_override=connection_global, bottom_override=anchor_global,
+                depth=depth, span_x=flat['geometry']['span_x_m'],
                 id_offset=node_id_offset, element_id_offset=elem_id_offset,
             )
             for elem in elements:
@@ -1835,8 +1494,8 @@ class ANFLEXAMLReader:
             # correção que to_risersim_json()/build_config_from_aml() aplicam no caminho
             # single-line (risersim_runner.py::_apply_moorpy_mesh_correction()), sem a qual
             # L_unstretched (model_builder.cpp) sai curto e a tração estática fica várias vezes
-            # maior que a real (ver docstring de _moorpy_correct_line_mesh() acima).
-            self._moorpy_correct_line_mesh(
+            # maior que a real (ver docstring de catenary_geometry.correct_line_mesh_via_moorpy()).
+            correct_line_mesh_via_moorpy(
                 nodes, elements, top_id, anchor_id, line.get('total_length_m', 500.0), {"depth_m": -abs(depth)},
             )
             all_nodes.extend(nodes)
@@ -1920,7 +1579,7 @@ class ANFLEXAMLReader:
             if max_unbalanced is not None:
                 static_opts['unbalanced_force_tol'] = max_unbalanced
                 static_opts['unbalanced_moment_tol'] = max_unbalanced
-        robustness_overrides = self._static_robustness_overrides(mat['EI_Nm2'])
+        robustness_overrides = static_robustness_overrides(mat['EI_Nm2'])
         if robustness_overrides:
             static_opts['enable_unbalanced_criteria'] = True
             static_opts.update(robustness_overrides)
@@ -1964,6 +1623,219 @@ class ANFLEXAMLReader:
                 "dynamic": dynamic_opts,
             },
         }
+
+    def to_interface_json(self):
+        """Converts the already-parsed `self.model_data` into the "JSON de interface" schema
+        (docs/roadmap.md, Eixo 3a) -- the format the planned web editor and the planned
+        interface->simulation compiler (`risersim_runner.py::build_config_from_interface()`) both
+        consume. Unlike `to_risersim_json()`/`to_risersim_json_multiline()`, this does NOT resolve
+        IDs, synthesize a mesh, or solve catenary geometry -- it only translates the .aml's
+        already-parsed logical objects (soils/material/currents/waves/lines/load_cases/analysis)
+        into the new ID-based schema, preserving the .aml's real IDs wherever available. Geometry/
+        mesh resolution moves to the compiler -- the single source of truth for both AML-derived
+        and hand-built interface JSONs (avoids the duplicated catenary/ID-resolution logic
+        `to_risersim_json()` and `to_risersim_json_multiline()` each carried independently).
+
+        v1 scope (see roadmap): no vessel motion/RAO -- each line's `top_position_m` is the
+        STATIC connection point resolved via `_resolve_connection_global()` (vessel origin +
+        draft + connection local coords -- pure geometry, independent of dynamic top motion),
+        falling back to `(0, 0, seabed_depth)` with a warning when no real %CONNECTION/%FLOATING
+        data exists for a line.
+
+        Only ONE material is ever produced: `model_data['material']` is itself a single global
+        dict, not a per-ID catalog -- the .aml parser has never resolved
+        %LINE.SEGMENT.MATERIAL_ID against multiple %MATERIAL blocks, since every example file
+        read so far only defines one. Every segment's `material_id` in the output points at that
+        one entry, regardless of what the raw .aml's SEGMENT.MATERIAL_ID said -- a warning is
+        emitted when a segment's real material_id doesn't match, since faithfully supporting
+        multiple materials is new parser work, out of scope here (this method's job is a
+        behavior-preserving reroute, not a scope expansion).
+
+        Returns `(interface_json, warnings)` -- same return-value convention as
+        `build_config_from_interface()` (planned), never raises for a resolvable business-logic
+        issue (unresolvable IDs, missing blocks -- all fall back with a warning).
+        """
+        warnings = []
+        glb = self.model_data['global']
+        mat = self.model_data['material']
+
+        material_id = int(self._get_float('%MATERIAL.ID', 1))
+        materials = [{
+            "id": material_id,
+            "name": mat['name'],
+            "diameter_external_m": mat['outer_diameter_m'],
+            "diameter_internal_m": mat['inner_diameter_m'],
+            "weight_dry_kNm": mat['weight_dry_kNm'],
+            "weight_wet_kNm": mat['weight_wet_kNm'],
+            "morison_inertia_Cm": mat['Cm'],
+            "morison_drag_Cd": mat['Cd'],
+            "stiffness_axial_kN": mat['EA_N'] / 1000.0,
+            "stiffness_bending_kNm2": mat['EI_Nm2'] / 1000.0,
+            "stiffness_torsional_kNm2": mat['GJ_Nm2'] / 1000.0,
+            "rayleigh_period_first_s": mat['rayleigh']['period_1_s'],
+            "rayleigh_period_second_s": mat['rayleigh']['period_2_s'],
+            "rayleigh_damping_first": mat['rayleigh']['damping_ratio_1'],
+            "rayleigh_damping_second": mat['rayleigh']['damping_ratio_2'],
+        }]
+
+        soils = []
+        for s in self.model_data['soils']:
+            s_id = s['id'] if s['id'] and s['id'] > 0 else (len(soils) + 1)
+            entry = {
+                "id": s_id, "name": s['name'],
+                "model": self.model_data.get('soil_model') or "uncoupled",
+                "friction_axial": s['friction_axial'], "friction_lateral": s['friction_lateral'],
+                "spring_stiffness_kNm": s['stiffness_kNm'],
+            }
+            if s.get('axial_elastic_deflection_limit') is not None:
+                entry['deflection_axial_m'] = s['axial_elastic_deflection_limit']
+            if s.get('lateral_elastic_deflection_limit') is not None:
+                entry['deflection_lateral_m'] = s['lateral_elastic_deflection_limit']
+            soils.append(entry)
+        if not soils:
+            # Legacy fallback -- .aml with no ID-tagged %SOIL block at all (see model_data['soil']).
+            legacy = self.model_data['soil']
+            soils.append({
+                "id": 1, "name": legacy['name'], "model": self.model_data.get('soil_model') or "uncoupled",
+                "friction_axial": legacy['friction_axial'], "friction_lateral": legacy['friction_lateral'],
+                "spring_stiffness_kNm": legacy['stiffness_kNm'],
+            })
+        default_soil_id = soils[0]['id']
+
+        currents = [{
+            "id": c['id'] if c['id'] and c['id'] > 0 else (i + 1),
+            "name": c['name'],
+            "depth_below_surface_m": c['depths_m'],
+            "velocities_ms": c['velocities_ms'],
+            "angles_deg": c['angles_deg'],
+        } for i, c in enumerate(self.model_data['currents'])]
+
+        waves = [{
+            "id": w['id'] if w['id'] and w['id'] > 0 else (i + 1),
+            "name": f"Onda_{w['id']}" if w['id'] and w['id'] > 0 else f"Onda_{i + 1}",
+            "type": "JONSWAP" if w.get('jonswap', True) else "REGULAR",
+            "period_s": w['period_s'], "height_m": w['height_m'],
+            "angle_deg": w['angle_deg'], "gamma": w['gamma'],
+            "alpha": w.get('alpha', 0.0), "wini_rad_s": w.get('wini_rad_s', 0.2),
+            "wfin_rad_s": w.get('wfin_rad_s', 3.0), "nwave": w.get('nwave', 100),
+        } for i, w in enumerate(self.model_data['waves'])]
+
+        lines = []
+        for i, line in enumerate(self.model_data['lines']):
+            conn_result = self._resolve_connection_global(line)
+            if conn_result is not None:
+                top_position_m = list(conn_result[0])
+            else:
+                top_position_m = [0.0, 0.0, glb['seabed_depth_m']]
+                warnings.append(f"Linha '{line.get('name')}': sem %CONNECTION/%FLOATING real "
+                                 "resolvível -- topo posicionado em (0,0,profundidade) sintético.")
+
+            segments = []
+            for seg in line.get('segments', []):
+                seg_material_id = material_id
+                if seg.get('material_id') is not None and seg['material_id'] > 0 and seg['material_id'] != material_id:
+                    warnings.append(
+                        f"Linha '{line.get('name')}': segmento referencia material_id="
+                        f"{seg['material_id']}, mas só o material '{mat['name']}' (id={material_id}) "
+                        "foi entendido do .aml -- múltiplos materiais por linha ainda não são "
+                        "suportados pelo importador AML; segmento usará o único material disponível.")
+                seg_soil_id = default_soil_id
+                if seg.get('soil_id') is not None and seg['soil_id'] > 0:
+                    if any(s['id'] == seg['soil_id'] for s in soils):
+                        seg_soil_id = seg['soil_id']
+                    else:
+                        warnings.append(
+                            f"Linha '{line.get('name')}': segmento referencia soil_id="
+                            f"{seg['soil_id']}, não encontrado entre os solos entendidos -- "
+                            "usando o solo padrão.")
+                elem_len = 5.0
+                if seg.get('num_elements') and seg.get('length_m'):
+                    elem_len = seg['length_m'] / seg['num_elements']
+                segments.append({
+                    "length_m": seg['length_m'], "material_id": seg_material_id,
+                    "soil_id": seg_soil_id, "element_length_m": elem_len,
+                })
+            if not segments:
+                segments = [{"length_m": line.get('total_length_m', 500.0), "material_id": material_id,
+                             "soil_id": default_soil_id, "element_length_m": 5.0}]
+
+            lines.append({
+                "id": i + 1, "name": line.get('name', f'Line{i + 1}'),
+                "top_position_m": top_position_m,
+                "catenary_angle_deg": line.get('catenary_angle_deg', 5.0),
+                "azimuth_deg": line.get('azimuth_deg', 0.0),
+                "segments": segments,
+            })
+
+        load_cases = []
+        for i, lc in enumerate(self.model_data['load_cases']):
+            lc_id = lc['id'] if lc['id'] is not None else (i + 1)
+            entry = {"id": lc_id, "name": lc['name']}
+            if lc.get('current_id') is not None:
+                entry['current_id'] = lc['current_id']
+            elif currents:
+                entry['current_id'] = currents[0]['id']
+            if lc.get('wave_id') is not None:
+                entry['wave_id'] = lc['wave_id']
+            elif waves:
+                entry['wave_id'] = waves[0]['id']
+            load_cases.append(entry)
+        if not load_cases:
+            # Legacy: plain .aml with no %LOAD_CASE block at all -- single implicit case.
+            entry = {"id": 1, "name": "Default"}
+            if currents:
+                entry['current_id'] = currents[0]['id']
+            if waves:
+                entry['wave_id'] = waves[0]['id']
+            load_cases.append(entry)
+
+        # Lazy import, same reasoning as to_risersim_json()'s own (avoids a hard h5py
+        # dependency on a plain .aml-only workflow that never calls this method).
+        from xml_h5_reader import extract_assembly_flag, extract_static_convergence_criterium
+
+        static_opts = {
+            "steps": max(1, int(self.model_data['analysis']['static']['total_time'] /
+                                 (self.model_data['analysis']['static']['time_step'] or 1.0))),
+            "max_iterations": self.model_data['analysis']['static']['max_iter'],
+            "tolerance": self.model_data['analysis']['static']['tolerance'],
+        }
+        assembly_flag = extract_assembly_flag(self.filepath)
+        if assembly_flag is not None:
+            static_opts['use_assembly_phase'] = assembly_flag
+        enable_unbalanced, max_unbalanced = extract_static_convergence_criterium(self.filepath)
+        if enable_unbalanced:
+            static_opts['enable_unbalanced_criteria'] = True
+            if max_unbalanced is not None:
+                static_opts['unbalanced_force_tol'] = max_unbalanced
+                static_opts['unbalanced_moment_tol'] = max_unbalanced
+
+        an = self.model_data['analysis']
+        analyses = [{
+            "id": 1, "name": "A1",
+            "static": static_opts,
+            "dynamic": {
+                "enabled": True,
+                "duration_s": an['dynamic']['total_time'],
+                "dt_s": an['dynamic']['time_step'],
+                "max_iterations": an['dynamic']['max_iter'],
+                "tolerance": an['dynamic']['tolerance'],
+            },
+            "load_case_ids": [lc['id'] for lc in load_cases],
+        }]
+
+        interface_json = {
+            "schema_version": 1,
+            "title": self.model_data['title'],
+            "global": {
+                "water_depth_m": glb['seabed_depth_m'],
+                "gravity_ms2": glb['gravity_ms2'],
+                "water_specific_weight_kNm3": glb['water_specific_weight_kNm3'],
+                "steel_specific_weight_kNm3": glb['steel_specific_weight_kNm3'],
+            },
+            "soils": soils, "materials": materials, "currents": currents, "waves": waves,
+            "lines": lines, "load_cases": load_cases, "analyses": analyses,
+        }
+        return interface_json, warnings
 
     def list_load_cases(self) -> list:
         """Public enumeration of every %LOAD_CASE this .aml defines (e.g. 'Near'/'Far'/

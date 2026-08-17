@@ -1,0 +1,175 @@
+/*
+ * editor.css
+ * Styles specific to editor.html (the "JSON de interface" form editor, docs/roadmap.md Eixo 3a) --
+ * additive to shared.css/dashboard.css. shared.css supplies the whole 3-region layout skeleton
+ * (#main-layout/#sidebar/#canvas-container/#resizer-h/#data-panel, .control-group, .btn-tab,
+ * .bottom-tab-panel show/hide+scroll) and dashboard.css supplies .btn/.empty-state -- this file is
+ * only what's left: the editor's own tab content (the Site/Linhas field grids + the Tabulator
+ * theme override every catalog table uses, see js/ui/SpreadsheetTable.js) and the two tweaks
+ * needed because this page mirrors the preprocessor/postprocessor layout left-right (data panel on
+ * the LEFT, camera sidebar + 3D canvas on the RIGHT, see editor_app.js's module docstring for
+ * why) -- shared.css hardcodes border sides for the opposite arrangement, and the drag-resize
+ * direction needs flipping to match (handled in editor_app.js, not here).
+ */
+
+#data-panel { border-left: none; border-right: 2px solid var(--border); }
+#sidebar { border-right: none; border-left: 2px solid var(--border); }
+
+/* Diameter legend sizing -- shared.css deliberately leaves this page-specific (see its header
+   comment); same simple 140px version as preprocessor.html's (this canvas also colors by D_outer,
+   not a solved result). */
+#colorbar-legend { position: absolute; top: 20px; right: 25px; padding: 12px 16px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); pointer-events: none; z-index: 30; }
+#colorbar-ticks { display: flex; flex-direction: column; justify-content: space-between; height: 140px; font-size: 11px; font-weight: bold; text-align: right; line-height: 1; }
+#colorbar-bar { width: 20px; height: 140px; border-radius: 4px; border: 1px solid #94a3b8; box-sizing: border-box; }
+
+/* Generic (unscoped) versions of two dashboard.css helpers that are normally only defined scoped
+   to `.modal`/`.page-header-row` -- both are used standalone in the editor toolbar above. */
+.error-text { color: var(--status-failed); font-size: 12px; }
+.subtitle { font-size: 12px; opacity: .7; margin-top: 4px; }
+
+/* "No lines yet" overlay, centered over the 3D canvas -- shown/hidden by editor_app.js based on
+   `this.model.lines.length`, same empty-state look as dashboard.css's `.empty-state` but floated
+   over the canvas instead of taking up document flow. */
+#preview-empty-state {
+    position: absolute; inset: 0; z-index: 20;
+    display: none;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 40px;
+    color: var(--text-muted); font-size: 14px;
+    background: var(--bg);
+}
+
+#canvas-container .error-text {
+    position: absolute; left: 16px; bottom: 16px; z-index: 25;
+    max-width: calc(100% - 32px);
+    background: color-mix(in srgb, var(--bg-recessed) 90%, transparent);
+    border: 1px solid var(--status-failed); border-radius: 8px;
+    padding: 8px 12px;
+}
+
+.editor-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.editor-toolbar .actions { display: flex; gap: 8px; align-items: center; }
+
+.editor-warnings {
+    margin-bottom: 14px;
+}
+.editor-warnings ul { margin: 6px 0 0; padding-left: 18px; }
+.editor-warnings li { margin: 2px 0; }
+
+.editor-tab-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.editor-add-row-btn { margin-top: 8px; }
+
+.line-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.line-picker-row select { width: auto; min-width: 180px; }
+
+.line-fields-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px 14px;
+    margin-bottom: 16px;
+}
+.line-fields-grid label {
+    display: block;
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+.line-fields-grid input, .line-fields-grid select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+}
+
+.empty-state-small {
+    padding: 14px;
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+}
+
+/* Tabulator (MIT) theme override -- every catalog table (Solos/Materiais/Correntes/Ondas/Casos de
+   Carga/Análises, plus a line's Segmentos) is a Tabulator grid via js/ui/SpreadsheetTable.js; this
+   maps its default light theme onto our own tokens instead of shipping/maintaining a second theme
+   file. Selectors match Tabulator 5.5's actual class names, not a version-agnostic guess. */
+.tabulator {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text);
+}
+.tabulator .tabulator-header {
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+}
+.tabulator .tabulator-col {
+    background: var(--surface-2);
+    border-right: 1px solid var(--border);
+}
+.tabulator .tabulator-col-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    white-space: normal;
+}
+.tabulator .tabulator-row {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+}
+.tabulator .tabulator-row.tabulator-row-even { background: var(--bg); }
+.tabulator .tabulator-row:hover { background: var(--surface-2); }
+.tabulator .tabulator-cell { border-right: 1px solid var(--border); }
+.tabulator .tabulator-cell.tabulator-editing input,
+.tabulator .tabulator-cell.tabulator-editing select {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--accent);
+}
+.tabulator .tabulator-footer {
+    background: var(--surface-2);
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+}
+
+/* Per-column unit dropdown, embedded directly in a Tabulator header cell (SpreadsheetTable.js's
+   unitColumn(), `type: 'unit'`). */
+.th-unit-wrap { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; }
+.th-unit-select {
+    font-size: 10px;
+    padding: 1px 3px;
+    border-radius: 4px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
+    width: auto;
+    min-width: 0;
+}

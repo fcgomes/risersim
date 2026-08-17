@@ -31,6 +31,7 @@ Functions here:
   directory).
 """
 
+import math
 import shutil
 import subprocess
 import platform
@@ -248,137 +249,415 @@ def list_aml_load_cases(aml_path):
     return ANFLEXAMLReader(str(aml_path)).list_load_cases()
 
 
-def _apply_moorpy_mesh_correction(config):
-    """Overwrites `config['model']['nodes'][i]['coords']` in place with MoorPy's own solved
-    equilibrium shape, extracted from `run_from_aml.py`'s original inline mesh-correction block
-    (docs/roadmap.md, Eixo 2a Atualização 5).
+def list_interface_runs(interface_json):
+    """Expands `analyses[].load_case_ids` (the "JSON de interface" schema, docs/roadmap.md Eixo
+    3a) into the catalog of valid `(analysis_id, load_case_id)` combinations a run can be created
+    from -- an analysis (solver config) applies to a LIST of load cases (current+wave scenarios),
+    not the other way around (confirmed decision, see roadmap). Mirrors `list_aml_load_cases()`'s
+    role for the AML path: cheap, side-effect-free, safe to call on every API request.
 
-    Why this exists: `_synthesize_mesh()` (aml_reader.py) places the initial nodes on the STRAIGHT
-    LINE (chord) between the real top/anchor points -- fine as a Newton-Raphson starting guess, but
-    `model_builder.cpp:149` derives each element's `L_unstretched` (unstressed reference length,
-    used for axial strain) from the EUCLIDEAN distance between a pair of input node coordinates,
-    not from the line's real declared segment length. A chord is always shorter than the real
-    (sagging) catenary arc length it connects -- this under-length reference produced several times
-    too much static top tension (994 kN vs. the real, XML+H5-validated 217 kN for Exemplo_01a/
-    Cross). Fix: replace the straight-line coordinates with MoorPy's own equilibrium shape (arc-
-    length-consistent) BEFORE `model_builder.cpp` ever computes `L_unstretched` from them.
-
-    Unlike the original inline version (which read/rewrote the real `input_simulation.json` output
-    file directly, since it ran after that file was already written to disk), this takes/returns an
-    in-memory `config` dict -- `compute_warm_start_positions()` (moorpy_warm_start.py) only accepts
-    a file PATH, not a dict, so this round-trips through a throwaway `tempfile.TemporaryDirectory()`
-    instead of the caller's real output path (which may not exist yet, e.g. at web run-creation
-    time, before any run directory has been allocated).
-
-    Best-effort: any exception (MoorPy unavailable, solve failure, ...) falls back to the original
-    straight-line mesh unchanged, with a warning -- never fails the whole config-build over this.
+    Returns a flat list of `{analysis_id, analysis_name, load_case_id, load_case_name}` dicts --
+    one per valid combination, in `analyses[]`/`load_case_ids[]` order.
     """
-    import json
-    import tempfile
-
-    try:
-        from moorpy_warm_start import compute_warm_start_positions
-    except Exception as exc:
-        print(f"⚠️ MoorPy indisponível ({exc}) -- usando a malha reta original (comprimento pode ficar incorreto).")
-        return config
-
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            scratch_path = Path(tmp) / 'input_simulation.json'
-            with open(scratch_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f)
-            node_positions, _meta = compute_warm_start_positions(str(scratch_path))
-        coords_by_id = {p['node_id']: p['coords'] for p in node_positions}
-        for n in config['model']['nodes']:
-            if n['id'] in coords_by_id:
-                n['coords'] = coords_by_id[n['id']]
-        print("⚓ Malha inicial corrigida via MoorPy: comprimento real do cabo preservado "
-              "(evita o encurtamento artificial da corda reta topo-âncora).")
-    except Exception as exc:
-        print(f"⚠️ Não foi possível corrigir a malha inicial via MoorPy ({exc}) -- "
-              f"usando a malha reta original (comprimento pode ficar incorreto).")
-    return config
+    load_cases_by_id = {lc['id']: lc for lc in interface_json.get('load_cases', [])}
+    result = []
+    for an in interface_json.get('analyses', []):
+        for lc_id in an.get('load_case_ids', []):
+            lc = load_cases_by_id.get(lc_id)
+            result.append({
+                'analysis_id': an['id'],
+                'analysis_name': an.get('name'),
+                'load_case_id': lc_id,
+                'load_case_name': lc.get('name') if lc is not None else None,
+            })
+    return result
 
 
-def build_config_from_aml(aml_path, line_index=0, num_elements_override=None, load_case_id=None,
-                           duration=None, dt=None, static_only=False, apply_moorpy_correction=True):
-    """Compiles the simulation JSON from a plain `.aml` (no XML+H5 export needed), using
-    `aml_reader.py` as-is -- the `.aml`-pure counterpart of `build_config_from_xml_h5()` above.
+def build_config_from_interface(interface_json, analysis_id, load_case_id, num_elements_override=None,
+                                 duration=None, dt=None, static_only=False):
+    """Compiles the simulation JSON (the schema `ModelBuilder` reads) from a "JSON de interface"
+    (docs/roadmap.md, Eixo 3a) -- the single compiler both `build_config_from_aml()` (below, now a
+    thin wrapper around `aml_reader.py::to_interface_json()` + this function) and the planned web
+    editor's "blank project" path use, so AML-derived and hand-built interface JSONs are compiled
+    identically (avoids the catenary/ID-resolution logic duplication `to_risersim_json()`/
+    `to_risersim_json_multiline()` used to each carry independently).
 
-    Extracted from `run_from_aml.py`'s original `.aml`-pure branch (the `else:` of its
-    `use_xml_h5` check) so both the CLI and the web run manager build this config identically,
-    including the MoorPy mesh-length correction (see `_apply_moorpy_mesh_correction()`) -- without
-    it, a caller would silently reintroduce the ~4x static tension over-prediction bug it fixes.
+    `analysis_id`/`load_case_id`: the run to compile -- `load_case_id` must be one of
+    `interface_json['analyses'][analysis_id]['load_case_ids']` (see `list_interface_runs()`).
 
-    `load_case_id`: which %LOAD_CASE (current+wave pairing) to resolve, when the `.aml` defines
-    more than one (e.g. "Near"/"Far") -- `None` picks the first in the file, same default as
-    `ANFLEXAMLReader.to_risersim_json()` itself.
-    `duration`/`dt`/`static_only`: same override semantics as `build_config_from_xml_h5()` (only
-    applied when not `None`/`False`, so as not to mask the `.aml`'s own real values).
-    `apply_moorpy_correction`: set `False` only for diagnostics that want the raw, uncorrected
-    straight-chord mesh -- every normal caller (CLI, web) should leave this at its default.
+    v1 scope (see roadmap): no vessel motion/RAO -- every line's TOP is treated as a fixed point
+    in space (a `GLOBAL` reference, same as the anchor), not a moving `FLOATING` one. Multiple
+    lines are independent (no shared floating body).
+
+    Known engine limitation, not fixable here (zero C++ change in this whole effort): the
+    simulation JSON's `environmental.seabed` is a SINGLE global config -- there is no per-node/
+    per-segment seabed spring in the schema `ModelBuilder` reads. `segments[].soil_id` is honored
+    faithfully in the interface JSON (mirrors real ANFLEX's %LINE.SEGMENT.SOIL_ID), but only the
+    FIRST soil actually referenced by any segment (in line/segment order) is used to build
+    `environmental.seabed` -- any other distinct soil referenced elsewhere is silently ignored
+    for the seabed's own spring/friction values (a warning is returned, never raised).
+
+    Returns `(simulation_json, warnings)` -- never raises for a resolvable business-logic issue
+    (an id that isn't found elsewhere still raises `ValueError`, since there's no reasonable
+    fallback for "which material/soil should this segment even use").
+    """
+    from catenary_geometry import (
+        solve_catenary_geometry, correct_line_mesh_via_moorpy, build_section_properties,
+        synthesize_mesh, compute_rayleigh_alpha, compute_rayleigh_beta, static_robustness_overrides,
+    )
+    from xml_h5_reader import SCHEMA_VERSION
+
+    warnings = []
+
+    soils_by_id = {s['id']: s for s in interface_json.get('soils', [])}
+    materials_by_id = {m['id']: m for m in interface_json.get('materials', [])}
+    currents_by_id = {c['id']: c for c in interface_json.get('currents', [])}
+    waves_by_id = {w['id']: w for w in interface_json.get('waves', [])}
+    load_cases_by_id = {lc['id']: lc for lc in interface_json.get('load_cases', [])}
+    analyses_by_id = {a['id']: a for a in interface_json.get('analyses', [])}
+
+    analysis = analyses_by_id.get(analysis_id)
+    if analysis is None:
+        raise ValueError(f"analysis_id={analysis_id} não encontrado na JSON de interface.")
+    if load_case_id not in analysis.get('load_case_ids', []):
+        raise ValueError(
+            f"load_case_id={load_case_id} não está associado à análise "
+            f"'{analysis.get('name')}' (id={analysis_id}).")
+    load_case = load_cases_by_id.get(load_case_id)
+    if load_case is None:
+        raise ValueError(f"load_case_id={load_case_id} não encontrado na JSON de interface.")
+
+    current = currents_by_id.get(load_case.get('current_id'))
+    wave = waves_by_id.get(load_case.get('wave_id'))
+
+    glb = interface_json.get('global', {})
+    water_depth_m = glb.get('water_depth_m', 100.0)
+    water_sp_wt_kNm3 = glb.get('water_specific_weight_kNm3', 10.0553)
+    gravity = glb.get('gravity_ms2', 9.81)
+    water_density_kgm3 = (water_sp_wt_kNm3 * 1000.0) / gravity if gravity > 0 else 1025.0
+
+    def _material_props(m):
+        """Derives the same E/G/A/IY/IZ/J/rho fields aml_reader.py's `beam_props` block does,
+        from the interface JSON's AML-like material fields."""
+        do, di = m['diameter_external_m'], m['diameter_internal_m']
+        w_dry_kNm, w_wet_kNm = m['weight_dry_kNm'], m['weight_wet_kNm']
+        ea_N = m['stiffness_axial_kN'] * 1000.0
+        ei_Nm2 = m['stiffness_bending_kNm2'] * 1000.0
+        gj_Nm2 = m['stiffness_torsional_kNm2'] * 1000.0
+        area_outer = math.pi * do ** 2 / 4.0
+        area_inner = math.pi * di ** 2 / 4.0
+        area_struct = area_outer - area_inner
+        j_tors = math.pi * (do ** 4 - di ** 4) / 32.0
+        E = ea_N / area_struct if area_struct > 0 else 2.1e11
+        # I_y from EI/E, not the geometric tube formula -- same reasoning as
+        # aml_reader.py's own beam_props block (a flexible riser's real bending stiffness is much
+        # lower than a solid tube of the same OD/ID).
+        I_y = ei_Nm2 / E if E > 0 else 5.0e-5
+        G = gj_Nm2 / j_tors if j_tors > 0 else 8.0e10
+        dry_mass_kgm = (w_dry_kNm * 1000.0) / gravity if gravity > 0 else 0.0
+        return {
+            'E_Pa': E, 'G_Pa': G, 'A_m2': area_struct, 'IY_m4': I_y, 'IZ_m4': I_y, 'J_m4': j_tors,
+            'EI_Nm2': ei_Nm2, 'EA_N': ea_N,
+            'weight_wet_kNm': w_wet_kNm,
+            'rho_kgm3': dry_mass_kgm / area_struct if area_struct > 0 else 7850.0,
+            'outer_diameter_m': do, 'inner_diameter_m': di,
+            'Cd': m['morison_drag_Cd'], 'Cm': m['morison_inertia_Cm'],
+        }
+
+    material_props_by_id = {mid: _material_props(m) for mid, m in materials_by_id.items()}
+
+    GLOBAL_REF_ID = 0
+    all_nodes, all_elements = [], []
+    prescribed_nodes, restrained_nodes = [], []
+    references_json = [{"id": GLOBAL_REF_ID, "type": "GLOBAL", "name": "fixed"}]
+    connections_json, lines_json = [], []
+    node_id_offset, elem_id_offset, next_connection_id = 0, 0, 1
+    seabed_soil = None  # first non-null soil referenced by any segment -- see docstring above
+    min_ei_nm2 = None
+
+    lines = interface_json.get('lines', [])
+    if not lines:
+        raise ValueError("A JSON de interface não define nenhuma linha.")
+
+    for line_num, line in enumerate(lines, start=1):
+        segments = line.get('segments') or []
+        if not segments:
+            raise ValueError(f"Linha '{line.get('name')}' (id={line.get('id')}) não tem segmentos.")
+
+        # Catenary BVP solve + Rayleigh damping both use the FIRST segment's material/soil as a
+        # representative approximation (same simplification aml_reader.py's single-material path
+        # always used) -- a real varying-EA/weight-along-the-line solve is out of scope here.
+        first_seg = segments[0]
+        first_mat = material_props_by_id.get(first_seg.get('material_id'))
+        if first_mat is None:
+            raise ValueError(
+                f"Linha '{line.get('name')}': segmento referencia material_id="
+                f"{first_seg.get('material_id')}, não encontrado.")
+        first_soil = soils_by_id.get(first_seg.get('soil_id'))
+        friction_coeff = first_soil['friction_lateral'] if first_soil else 0.5
+
+        total_length_m = sum(s['length_m'] for s in segments)
+        top_position_m = line.get('top_position_m') or [0.0, 0.0, water_depth_m]
+
+        catenary_result = solve_catenary_geometry(
+            top_position_m, line.get('catenary_angle_deg', 5.0), line.get('azimuth_deg', 0.0),
+            total_length_m, first_mat['EA_N'], first_mat['weight_wet_kNm'] * 1000.0, friction_coeff,
+        )
+        if catenary_result is None:
+            raise ValueError(
+                f"Linha '{line.get('name')}': não foi possível resolver a geometria de catenária "
+                "(MoorPy indisponível, ou ângulo/comprimento/profundidade incompatíveis).")
+        anchor_global, _t_eff_estimate_n = catenary_result
+
+        seg_specs = []
+        for seg in segments:
+            elem_len = seg.get('element_length_m') or 1.0
+            seg_specs.append({
+                'length_m': seg['length_m'],
+                'num_elements': max(1, int(round(seg['length_m'] / elem_len))),
+            })
+
+        nodes, elements = synthesize_mesh(
+            seg_specs, total_length_m, num_elements_fallback=max(1, len(seg_specs)),
+            num_elements_override=num_elements_override,
+            top_override=top_position_m, bottom_override=anchor_global,
+            id_offset=node_id_offset, element_id_offset=elem_id_offset,
+        )
+
+        # Per-segment section_properties: unlike aml_reader.py's single-material path, every
+        # segment here can carry its own real material, resolved by id -- genuinely finer
+        # fidelity than any AML-derived interface JSON produces today (which only ever has one).
+        elem_idx = 0
+        for seg, spec in zip(segments, seg_specs):
+            seg_mat = material_props_by_id.get(seg.get('material_id'))
+            if seg_mat is None:
+                raise ValueError(
+                    f"Linha '{line.get('name')}': segmento referencia material_id="
+                    f"{seg.get('material_id')}, não encontrado.")
+            if num_elements_override is None:
+                sp = build_section_properties(seg_mat, {'water_density_kgm3': water_density_kgm3})
+                for _ in range(spec['num_elements']):
+                    elements[elem_idx]['section_properties'] = dict(sp)
+                    elem_idx += 1
+            if min_ei_nm2 is None or seg_mat['EI_Nm2'] < min_ei_nm2:
+                min_ei_nm2 = seg_mat['EI_Nm2']
+
+            seg_soil = soils_by_id.get(seg.get('soil_id'))
+            if seg_soil is not None:
+                if seabed_soil is None:
+                    seabed_soil = seg_soil
+                elif seabed_soil['id'] != seg_soil['id']:
+                    warnings.append(
+                        f"Linha '{line.get('name')}': segmento referencia soil_id={seg_soil['id']}, "
+                        f"diferente do solo já em uso para o leito ({seabed_soil['id']}) -- o motor "
+                        "hoje só suporta UM solo global; este segundo solo será ignorado no cálculo "
+                        "de reação do leito (mas continua registrado na JSON de interface).")
+        if num_elements_override is not None:
+            # A single uniform mesh replaced the per-segment breakdown (synthesize_mesh's own
+            # num_elements_override branch) -- every element gets the FIRST segment's material,
+            # same "no per-segment boundary to preserve" fallback aml_reader.py's own
+            # num_elements_override path always used.
+            sp = build_section_properties(first_mat, {'water_density_kgm3': water_density_kgm3})
+            for elem in elements:
+                elem['section_properties'] = dict(sp)
+
+        # Fixes the straight-chord initial mesh to MoorPy's real equilibrium shape (arc-length-
+        # consistent) -- same technique aml_reader.py's multi-line path already uses per line.
+        top_id, anchor_id = nodes[0]["id"], nodes[-1]["id"]
+        correct_line_mesh_via_moorpy(
+            nodes, elements, top_id, anchor_id, total_length_m, {"depth_m": -abs(water_depth_m)},
+        )
+
+        all_nodes.extend(nodes)
+        all_elements.extend(elements)
+        node_id_offset += len(nodes)
+        elem_id_offset += len(elements)
+        prescribed_nodes.append({"node_id": top_id, "dofs": [-1] * 6})
+        restrained_nodes.append({"node_id": anchor_id, "dofs": [-1] * 6})
+
+        # v1 scope: no vessel motion -- every line's top is ALSO just a fixed point in space (the
+        # same GLOBAL reference the anchor uses), not a moving FLOATING reference.
+        top_conn_id = next_connection_id; next_connection_id += 1
+        connections_json.append({"id": top_conn_id, "reference_id": GLOBAL_REF_ID, "node_id": top_id})
+        anchor_conn_id = next_connection_id; next_connection_id += 1
+        connections_json.append({"id": anchor_conn_id, "reference_id": GLOBAL_REF_ID, "node_id": anchor_id})
+        lines_json.append({
+            "id": line.get('id', line_num), "name": line.get('name', f'Line{line_num}'),
+            "top_connection_id": top_conn_id, "anchor_connection_id": anchor_conn_id,
+        })
+
+    if seabed_soil is None:
+        raise ValueError("Nenhum segmento de nenhuma linha referencia um solo válido -- é preciso pelo menos um.")
+
+    seabed_dict = {
+        "depth_m": -abs(water_depth_m),
+        "stiffness_Nm": seabed_soil['spring_stiffness_kNm'] * 1000.0,
+        "friction_coeff": seabed_soil['friction_lateral'],
+        "axial_friction": seabed_soil['friction_axial'],
+        "lateral_friction": seabed_soil['friction_lateral'],
+        "soil_model": seabed_soil.get('model', 'uncoupled'),
+    }
+    if seabed_soil.get('deflection_axial_m') is not None:
+        seabed_dict['axial_elastic_deflection_limit'] = seabed_soil['deflection_axial_m']
+    if seabed_soil.get('deflection_lateral_m') is not None:
+        seabed_dict['lateral_elastic_deflection_limit'] = seabed_soil['deflection_lateral_m']
+
+    current_dict = {
+        "depth_below_surface_m": (current or {}).get('depth_below_surface_m', [0.0, water_depth_m]),
+        "velocities_ms": (current or {}).get('velocities_ms', [0.0, 0.0]),
+        "angles_deg": (current or {}).get('angles_deg', [0.0, 0.0]),
+    }
+    wave_dict = {
+        "type": (wave or {}).get('type', 'REGULAR'),
+        "period_s": (wave or {}).get('period_s', 10.0),
+        "height_m": (wave or {}).get('height_m', 2.0),
+        "amplitude_m": (wave or {}).get('height_m', 2.0) / 2.0,
+        "gamma": (wave or {}).get('gamma', 3.3),
+        "angle_deg": (wave or {}).get('angle_deg', 0.0),
+    }
+
+    static_opts = dict(analysis.get('static', {}))
+    static_opts.setdefault('steps', 20)
+    static_opts.setdefault('max_iterations', 300)
+    static_opts.setdefault('tolerance', 0.01)
+    static_opts.setdefault('vessel_offset', {"near_m": 0.0, "far_m": 0.0})
+    robustness_overrides = static_robustness_overrides(min_ei_nm2 if min_ei_nm2 is not None else 1.0e9)
+    if robustness_overrides:
+        static_opts['enable_unbalanced_criteria'] = True
+        static_opts.update(robustness_overrides)
+        static_opts['max_iterations'] = max(static_opts.get('max_iterations', 300), 400)
+
+    dyn_src = analysis.get('dynamic', {})
+    dynamic_opts = {
+        "enabled": dyn_src.get('enabled', True),
+        "duration_s": dyn_src.get('duration_s', 20.0),
+        "dt_s": dyn_src.get('dt_s', 0.05),
+        "max_iterations": dyn_src.get('max_iterations', 20),
+        "tolerance": dyn_src.get('tolerance', 1.0e-4),
+    }
+
+    # Rayleigh alpha/beta: derived from the first line's first segment's material (same
+    # single-representative-material simplification as the catenary BVP solve above) -- the
+    # simulation JSON schema only has ONE global alpha/beta, not per-material.
+    first_line_first_mat_id = lines[0]['segments'][0].get('material_id')
+    rm = materials_by_id.get(first_line_first_mat_id, {})
+    alpha = compute_rayleigh_alpha(
+        rm.get('rayleigh_period_first_s', 0.0), rm.get('rayleigh_period_second_s', 0.0),
+        rm.get('rayleigh_damping_first', 0.0), rm.get('rayleigh_damping_second', 0.0))
+    beta = compute_rayleigh_beta(
+        rm.get('rayleigh_period_first_s', 0.0), rm.get('rayleigh_period_second_s', 0.0),
+        rm.get('rayleigh_damping_first', 0.0), rm.get('rayleigh_damping_second', 0.0))
+    # Safety-net floor -- same as build_config_from_aml()'s own (avoids divergence in the dynamic
+    # phase when the source has zero/no Rayleigh data, common for hand-built interface JSONs).
+    dynamic_opts['rayleigh_damping'] = {"alpha": max(alpha, 0.05), "beta": max(beta, 0.005)}
+
+    if duration is not None:
+        dynamic_opts['duration_s'] = duration
+    if dt is not None:
+        dynamic_opts['dt_s'] = dt
+    if static_only:
+        dynamic_opts['enabled'] = False
+
+    config = {
+        "title": interface_json.get('title', 'Interface Model'),
+        "schema_version": SCHEMA_VERSION,
+        "model": {"nodes": all_nodes, "elements": all_elements},
+        "boundary_conditions": {
+            "prescribed_dofs": prescribed_nodes,
+            "restrained_dofs": restrained_nodes,
+        },
+        "references": references_json,
+        "connections": connections_json,
+        "lines": lines_json,
+        "environmental": {
+            "seabed": seabed_dict,
+            "water_density": water_density_kgm3,
+            "current": current_dict,
+            "wave": wave_dict,
+        },
+        "analysis_options": {
+            "static": static_opts,
+            "dynamic": dynamic_opts,
+        },
+    }
+    return config, warnings
+
+
+def _build_config_from_aml_via_interface(aml_path, line_filter, num_elements_override, load_case_id,
+                                          duration, dt, static_only):
+    """Shared body of `build_config_from_aml()`/`build_config_from_aml_multiline()` below --
+    both are now thin wrappers around `aml_reader.py::to_interface_json()` (the AML->interface
+    translation) + `build_config_from_interface()` above (the single interface->simulation
+    compiler, also used by the planned web editor's "blank project" path). `line_filter`, when
+    not `None`, is a list of 0-based line indices (matching the old `line_index`/`line_indices`
+    selection) to keep -- `None` keeps every line the `.aml` defines.
+
+    Since `to_interface_json()` only ever produces ONE `%ANALYSIS_CASE`-derived analysis (see its
+    own docstring), `analysis_id` is always that analysis's id -- there is nothing for a caller to
+    choose yet on the AML path (no CLI flag added for it in this round; every `.aml` file read so
+    far only defines one analysis anyway, so there is nothing to choose between).
     """
     from aml_reader import ANFLEXAMLReader
 
     reader = ANFLEXAMLReader(str(aml_path))
-    config = reader.to_risersim_json(
-        line_index=line_index, num_elements_override=num_elements_override,
-        load_case_id=load_case_id,
+    interface_json, iface_warnings = reader.to_interface_json()
+    for w in iface_warnings:
+        print(f"⚠️ {w}")
+
+    if line_filter is not None:
+        interface_json = dict(interface_json)
+        interface_json['lines'] = [interface_json['lines'][i] for i in line_filter]
+
+    analysis_id = interface_json['analyses'][0]['id']
+    if load_case_id is None:
+        load_case_id = interface_json['analyses'][0]['load_case_ids'][0]
+
+    config, warnings = build_config_from_interface(
+        interface_json, analysis_id, load_case_id,
+        num_elements_override=num_elements_override, duration=duration, dt=dt, static_only=static_only,
     )
-
-    if duration is not None:
-        config['analysis_options']['dynamic']['duration_s'] = duration
-    if dt is not None:
-        config['analysis_options']['dynamic']['dt_s'] = dt
-    if static_only:
-        config['analysis_options']['dynamic']['enabled'] = False
-
-    # Safety-net Rayleigh damping if the AML computed zero (avoids divergence in the dynamic
-    # phase) -- same floor `run_from_aml.py` always applied on this path.
-    ray = config['analysis_options']['dynamic']['rayleigh_damping']
-    ray['alpha'] = max(ray.get('alpha', 0.0), 0.05)
-    ray['beta'] = max(ray.get('beta', 0.0), 0.005)
-
-    if apply_moorpy_correction:
-        config = _apply_moorpy_mesh_correction(config)
-
+    for w in warnings:
+        print(f"⚠️ {w}")
     return config
+
+
+def build_config_from_aml(aml_path, line_index=None, num_elements_override=None, load_case_id=None,
+                           duration=None, dt=None, static_only=False):
+    """Compiles the simulation JSON from a plain `.aml` (no XML+H5 export needed) -- the
+    `.aml`-pure counterpart of `build_config_from_xml_h5()` above. Thin wrapper: translates the
+    `.aml` to a "JSON de interface" (`aml_reader.py::to_interface_json()`) and hands it to
+    `build_config_from_interface()`, the single compiler also used by the web editor's "blank
+    project" path (docs/roadmap.md, Eixo 3a) -- both AML-derived and hand-built interface JSONs
+    compile identically, including the MoorPy mesh-length correction and the EI-based robustness
+    overrides (both now inside `build_config_from_interface()` itself).
+
+    `line_index`: 0-based index of the single `%LINE` to keep -- `None` (default) keeps every
+    line the `.aml` defines (for the common single-line case this is the same result as before;
+    for a genuine multi-line `.aml` this now behaves like `build_config_from_aml_multiline()`
+    unless a specific line is requested, since the compiler no longer has a separate single-line
+    code path to default to).
+    `load_case_id`: which %LOAD_CASE (current+wave pairing) to resolve, when the `.aml` defines
+    more than one (e.g. "Near"/"Far") -- `None` picks the first in the file, same default as
+    before.
+    `duration`/`dt`/`static_only`: same override semantics as `build_config_from_xml_h5()`.
+    """
+    return _build_config_from_aml_via_interface(
+        aml_path, [line_index] if line_index is not None else None,
+        num_elements_override, load_case_id, duration, dt, static_only,
+    )
 
 
 def build_config_from_aml_multiline(aml_path, line_indices=None, num_elements_override=None, load_case_id=None,
                                      duration=None, dt=None, static_only=False):
-    """Multi-line sibling of build_config_from_aml() (docs/roadmap.md backlog: "múltiplas linhas
-    com corpo flutuante compartilhado") -- same override semantics (duration/dt/static_only/
-    Rayleigh safety net), but calls `ANFLEXAMLReader.to_risersim_json_multiline()` instead of
-    `to_risersim_json()`.
-
-    No separate `apply_moorpy_correction` step here (unlike build_config_from_aml() above):
-    `to_risersim_json_multiline()` already applies the MoorPy mesh correction ITSELF, per line
-    (`ANFLEXAMLReader._moorpy_correct_line_mesh()`) -- the whole-file `_apply_moorpy_mesh_correction()`
-    below assumes `model.elements` forms one continuous chain, which isn't true once multiple
-    lines' elements are merged into one flat list, so it can't be reused unmodified here (see that
-    method's own docstring for why the correction had to move per-line instead).
+    """Multi-line sibling of `build_config_from_aml()` (docs/roadmap.md backlog: "múltiplas
+    linhas") -- same wrapper, `line_indices=None` (default) keeps every line, same as
+    `build_config_from_aml()`'s own default now. Kept as a separate function for backward
+    compatibility with existing callers (`run_from_aml.py --all-lines`); the two are otherwise
+    identical after the interface-JSON reroute.
     """
-    from aml_reader import ANFLEXAMLReader
-
-    reader = ANFLEXAMLReader(str(aml_path))
-    config = reader.to_risersim_json_multiline(
-        line_indices=line_indices, num_elements_override=num_elements_override,
-        load_case_id=load_case_id,
+    return _build_config_from_aml_via_interface(
+        aml_path, line_indices, num_elements_override, load_case_id, duration, dt, static_only,
     )
-
-    if duration is not None:
-        config['analysis_options']['dynamic']['duration_s'] = duration
-    if dt is not None:
-        config['analysis_options']['dynamic']['dt_s'] = dt
-    if static_only:
-        config['analysis_options']['dynamic']['enabled'] = False
-
-    ray = config['analysis_options']['dynamic']['rayleigh_damping']
-    ray['alpha'] = max(ray.get('alpha', 0.0), 0.05)
-    ray['beta'] = max(ray.get('beta', 0.0), 0.005)
-
-    return config
 
 
 def run_simulation_subprocess(exe_path, input_json_path, out_dir, stdout_file=None):

@@ -8,7 +8,7 @@ import { bindCameraToolbar } from './ui/CameraToolbar.js';
 import { switchTab } from './ui/TabPanel.js';
 import { initThemeToggle } from './ui/ThemeToggle.js';
 import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
-import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun, fetchLoadCases, DuplicateRunError } from './utils/runManagerFormat.js';
+import { statusPill, formatDate, escapeHtml, fetchJSON, modelSourceHtml, createRun, fetchRunsCatalog, DuplicateRunError } from './utils/runManagerFormat.js';
 
 /**
  * preprocessor_app.js
@@ -72,29 +72,52 @@ class PreprocessorApp {
             this.switchParentView('manager');
         });
 
-        this.loadCases = [];
-        fetchLoadCases(this.projectId).then((data) => {
-            this.loadCases = data.load_cases || [];
-            this.renderLoadCaseSelect();
+        this.runsCatalog = [];
+        fetchRunsCatalog(this.projectId).then((data) => {
+            this.runsCatalog = data.runs || [];
+            this.renderRunSelectors();
         });
+
+        document.getElementById('runs-tab-analysis-select').addEventListener('change', () => this.renderLoadCaseOptions());
 
         this.loadProjectMeta();
     }
 
-    /** Same idea as project.js::renderLoadCaseSelect() -- populates/toggles the "new run"
-     * load-case <select> in the Simulações tab, shown only when the project's .aml defines more
-     * than one %LOAD_CASE. */
-    renderLoadCaseSelect() {
-        const select = document.getElementById('runs-tab-load-case-select');
-        if (this.loadCases.length <= 1) {
-            select.style.display = 'none';
-            select.innerHTML = '';
+    /** Same idea as project.js::renderRunSelectors() -- populates/toggles the "new run"
+     * analysis+load-case <select> pair in the Simulações tab, shown only when the project's
+     * interface JSON defines more than one (analysis_id, load_case_id) combination. */
+    renderRunSelectors() {
+        const analysisSelect = document.getElementById('runs-tab-analysis-select');
+        const loadCaseSelect = document.getElementById('runs-tab-load-case-select');
+        if (this.runsCatalog.length <= 1) {
+            analysisSelect.style.display = 'none';
+            loadCaseSelect.style.display = 'none';
+            analysisSelect.innerHTML = '';
+            loadCaseSelect.innerHTML = '';
             return;
         }
-        select.innerHTML = this.loadCases.map(lc =>
-            `<option value="${lc.id}">${escapeHtml(lc.name)} (ID ${lc.id})</option>`
+        const analysesById = new Map();
+        for (const r of this.runsCatalog) {
+            if (!analysesById.has(r.analysis_id)) analysesById.set(r.analysis_id, r.analysis_name);
+        }
+        analysisSelect.innerHTML = Array.from(analysesById.entries()).map(([id, name]) =>
+            `<option value="${id}">${escapeHtml(name || `Análise ${id}`)}</option>`
         ).join('');
-        select.style.display = '';
+        analysisSelect.style.display = '';
+        this.renderLoadCaseOptions();
+    }
+
+    /** Same idea as project.js::renderLoadCaseOptions() -- fills the load-case <select> with
+     * only the combinations belonging to the currently selected analysis. */
+    renderLoadCaseOptions() {
+        const analysisSelect = document.getElementById('runs-tab-analysis-select');
+        const loadCaseSelect = document.getElementById('runs-tab-load-case-select');
+        const analysisId = parseInt(analysisSelect.value, 10);
+        const options = this.runsCatalog.filter(r => r.analysis_id === analysisId);
+        loadCaseSelect.innerHTML = options.map(r =>
+            `<option value="${r.load_case_id}">${escapeHtml(r.load_case_name || `Caso ${r.load_case_id}`)}</option>`
+        ).join('');
+        loadCaseSelect.style.display = '';
     }
 
     /**
@@ -666,11 +689,13 @@ class PreprocessorApp {
         const btn = document.getElementById('runs-tab-new-run-btn');
         btn.disabled = true;
         btn.innerText = 'Criando…';
-        const select = document.getElementById('runs-tab-load-case-select');
-        const load_case_id = (select && select.style.display !== 'none' && select.value)
-            ? parseInt(select.value, 10) : null;
+        const analysisSelect = document.getElementById('runs-tab-analysis-select');
+        const loadCaseSelect = document.getElementById('runs-tab-load-case-select');
+        const hasSelection = loadCaseSelect && loadCaseSelect.style.display !== 'none' && loadCaseSelect.value;
+        const analysis_id = hasSelection ? parseInt(analysisSelect.value, 10) : null;
+        const load_case_id = hasSelection ? parseInt(loadCaseSelect.value, 10) : null;
         try {
-            await createRun(this.projectId, { force, load_case_id });
+            await createRun(this.projectId, { force, analysis_id, load_case_id });
             await this.loadProjectMeta();
             if (window.parent !== window && window.parent.projectPage) window.parent.projectPage.load();
         } catch (err) {
