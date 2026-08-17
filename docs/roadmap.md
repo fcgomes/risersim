@@ -1106,6 +1106,100 @@ robustez genérica do ANFLEX resolve o problema por conta própria, independente
 exatamente o caminho que o Fortran de referência tomou. O item 3 do Eixo 1b/2a, aberto desde a
 Atualização 6, está **resolvido**.
 
+**Atualização 18** (2026-08-17): novo tipo de comparação, nunca feita antes nesta investigação --
+deslocamento nodal estático (a FORMA da catenária inteira), não o movimento do topo/RAO (já validado
+em rodadas anteriores) nem a convergência (já validada). Metodologia: `.SAI` real tem uma tabela
+`NODAL DATA` (echo, `NearSI.SAI` etc.) com a posição XYZ final de cada nó nomeado real (confirmado
+empiricamente ser a posição JÁ CONVERGIDA, não uma referência pré-carga -- somar a tabela
+`NODAL DISPLACEMENTS` do `SS.SAI` por cima dá resultado sem sentido físico, ex. a âncora "andando"
+3,85m de sua posição real). Comparado contra `node_positions` final do HDF5 do risersim
+(`--static-only`), pareando por comprimento de arco acumulado (541 nós reais vs 529 do risersim,
+comprimentos totais batem em 522,00m vs ~521,95m).
+
+**Achado**: nos três casos (Near/Transverse/Cross), o trecho apoiado no leito (a partir de s/L≈0,53-
+0,54) bate quase exato (erro horizontal médio ~0,09m). O trecho suspenso em catenária diverge
+consistentemente -- pior no Near (médio 5,81m, máximo 8,23m), moderado no Cross (2,71m/4,66m), menor
+no Transverse (1,77m/3,34m). O perfil de profundidade (Z) está correto em todo o trecho (erro médio
+~0,2m); é especificamente a posição HORIZONTAL (deriva lateral induzida por corrente) que diverge.
+
+**Hipótese testada**: `CurrentProfile::get_drag_force_per_meter` (agora `get_drag_force_per_length`,
+`current_profile.hpp`) aplicava a força de arrasto em direção global fixa (`heading` da tabela),
+usando o módulo COMPLETO da velocidade de corrente, sem projetar na direção perpendicular ao eixo
+local do elemento -- diferente do `MorisonForce` de onda (`hydrodynamics.hpp`), que já faz essa
+projeção, e diferente do real `cMorison::calc_distributed_load`
+(`anf_analysis/src/morison.cpp:49-124`), que projeta velocidade/aceleração relativas em componentes
+normal E tangencial ao elemento antes de aplicar a lei de arrasto quadrática (`normal_rel_vel`/
+`tan_rel_vel`, com coeficientes `m_normal_drag_coef`/`m_tangential_drag_coef` separados). Corrigido:
+`get_drag_force_per_length(z, D, rho, elem_axis)` agora projeta a velocidade de corrente
+perpendicular a `elem_axis` antes da lei quadrática (sem termo tangencial, mesma simplificação já
+usada pelo `MorisonForce` de onda -- "standard practice for risers/mooring lines" já documentado
+ali), retornando um vetor 3D completo (incluindo componente Z, que antes não existia -- um elemento
+inclinado sob corrente horizontal gera força de arrasto com componente vertical, que
+`static_integrator.cpp`/`dynamic_analysis.cpp` agora também aplicam em `eq1_z`/`eq2_z`, antes
+ignorado). Suíte: 405/405, zero regressão.
+
+**Resultado**: teoricamente mais correto (bate com a formulação real do `cMorison`), mas efeito
+PEQUENO na prática -- erro horizontal médio do Near caiu de 5,81m pra 5,72m (~1,5%), Transverse de
+1,77m pra 1,70m, Cross praticamente inalterado (2,71m→2,71m). **Mantido** (é a formulação certa,
+consistente com o resto do código, não piora nada), mas **não explica a maior parte do gap** --
+causa raiz do erro de deriva horizontal na catenária suspensa segue **em aberto**.
+
+**Hipóteses descartadas nesta mesma rodada, com evidência direta**:
+- **Deriva média de onda na estática real**: descartada. O deck Fortran real
+  (`Exemplo_01c_A1_NearS.DAT:163-165`, flags `IWAVE ICURR IDEAD ...`) tem `IWAVE=0` explícito --
+  onda desligada na análise estática real, só corrente (`ICURR=1`) + peso (`IDEAD=1`), exatamente o
+  que o risersim já faz no `--static-only`.
+- **Convenção de profundidade da corrente invertida**: descartada. O arquivo `.cur` real usado pelo
+  Fortran (`includes/Cor_SW.cur`, convenção "Z=altura acima do leito", 0=leito) bate espelhado
+  ponto-a-ponto com os blocos `%CURRENT` do `.aml` (convenção "profundidade abaixo da superfície",
+  0=superfície) -- mesmos 8 valores de velocidade E ângulo, sem inversão de sinal nem erro de
+  mapeamento entre os dois formatos.
+- **Coeficiente de arrasto (Cd) via Reynolds automático**: descartada. `%MATERIAL.MORISON.DRAG =
+  1.0` está explícito no `.aml` (não `0.0`, que dispararia o cálculo automático via Reynolds em
+  `cMorison::calc_distributed_load`, `anf_analysis/src/morison.cpp:88-98`) -- real e risersim usam
+  o mesmo `Cd=1,0` fixo.
+
+**Mais uma descartada, também com evidência direta**: risersim convergindo pra um equilíbrio
+geometricamente diferente do real por sub-convergência (múltiplos quase-equilíbrios não seria
+implausível numa linha com EI muito baixo, ~21,7 kN·m²). Testado: re-rodado o Near com 60 passos de
+carga (vs 11 do real), `tolerance=1e-8` (vs 1e-3 -- afeta diretamente `transl_tol`/`rot_tol`, o
+critério de razão de incremento, `static_analysis.cpp:330-332`), `max_iterations=200`. Convergiu em
+9 iterações no último passo com norma de resíduo ~3,6e-4 N (desprezível pra um sistema com trações
+em escala kN) -- e o erro horizontal médio no trecho suspenso ficou **idêntico**: 5,726m vs 5,724m
+antes (11 passos/tol=1e-3). Não é sub-convergência nem múltiplos equilíbrios -- risersim converge
+de forma tight pro MESMO formato, que diverge do real por uma diferença de física/formulação
+genuína, não um artefato numérico.
+
+**Rigidez estrutural (EI/EA) do elemento -- também descartada**, via agente Explore dedicado a
+comparar `CorotationalBeam3D` (`element_beam.cpp`) contra o elemento real (confirmado ser `cBeam`/
+`beam.cpp`, `%MATERIAL.FINITE_ELEMENT 'beam'` no `.aml` -- não é o Timoshenko, essa linha não usa
+cisalhamento):
+- Coeficientes da rigidez geométrica batem em forma (`6/5·P/L`, `L/10·P/L` etc., `beam.cpp:361,368`
+  vs `element_beam.cpp:66-67`); termos extras do real (`ZI/YI`, ordem `I/(A·L²)`) são ~1e-3 a 1e-4
+  relativos ao termo principal -- desprezíveis.
+- A "tração efetiva" com termos de pressão interna/externa (`p_e*A_e - p_i*A_i`) que alimenta a
+  rigidez geométrica do risersim (`tension_effective`, `element_beam.hpp:155-160`) tem seu
+  equivalente real (`FR`, `bar.cpp:1037-1085`) usado só pra RELATÓRIO no real -- a rigidez de fato
+  usa tração pura sem pressão (`beam.cpp:1310-1354`). E no risersim, `p_e`/`p_i` nunca são
+  atribuídos em lugar nenhum do solver (só expostos via bindings pra ferramentas externas) --
+  ficam sempre 0.0. Ou seja, `tension_effective ≡ tension_true` nos DOIS códigos nesse caso: não é
+  uma diferença, é um empate (hipótese inicial do agente, de dupla-contagem de pressão hidrostática,
+  descartada).
+- Comprimento no denominador (`current_length()` no risersim vs `m_original_length` no real,
+  `beam.cpp:1246,343`) é uma diferença real confirmada, mas a deformação elástica axial é ~1e-5
+  (EA=360MN) -- 3+ ordens de magnitude pequena demais pra explicar 8m em 522m.
+
+**Conclusão desta rodada**: 6 hipóteses testadas (1 mantida com efeito real mas pequeno --
+projeção perpendicular da corrente; 5 descartadas com evidência direta -- onda estática,
+convenção de profundidade, Cd/Reynolds, convergência/múltiplos-equilíbrios, rigidez EI/EA do
+elemento). Causa raiz segue **em aberto**. Próximas hipóteses candidatas, não testadas ainda,
+sugeridas pelo agente: (1) a mecânica do "ghost frame"/atualização de tríade corrotacional
+(`compute_corotational_forces`, `element_beam.cpp:168-219`, vs `calc_init_rot_mt`/`BTTIL`/
+`element.cpp:215-257` do real) -- MAIS provável que seja sutil o bastante pra escapar de uma
+auditoria de fórmula isolada; (2) `%CURRENT.ANGLE` varia com profundidade nos dados reais (perfil
+completo já confirmado propagado corretamente ponto-a-ponto, mas pode haver erro de
+interpolação/sinal em algum lugar do caminho de aplicação da força não auditado a fundo ainda).
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio

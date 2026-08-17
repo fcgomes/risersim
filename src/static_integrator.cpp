@@ -72,17 +72,20 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
 
             if (exposed_fraction > 0.0) {
                 double avg_z = 0.5 * (z1 + z2);
-                double f_drag_x = 0.0, f_drag_y = 0.0;
-                analysis->current.get_drag_force_per_meter(avg_z, elem->props.D_outer, analysis->water_density_for_mass, f_drag_x, f_drag_y);
+                Eigen::Vector3d elem_axis = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
+                Eigen::Vector3d f_drag = analysis->current.get_drag_force_per_length(
+                    avg_z, elem->props.D_outer, analysis->water_density_for_mass, elem_axis);
 
                 int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
                 int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
 
                 double L_exposed = L * exposed_fraction;
-                if (eq1_x >= 0) F_ext[eq1_x] += f_drag_x * L_exposed * 0.5 * current_factor;
-                if (eq2_x >= 0) F_ext[eq2_x] += f_drag_x * L_exposed * 0.5 * current_factor;
-                if (eq1_y >= 0) F_ext[eq1_y] += f_drag_y * L_exposed * 0.5 * current_factor;
-                if (eq2_y >= 0) F_ext[eq2_y] += f_drag_y * L_exposed * 0.5 * current_factor;
+                if (eq1_x >= 0) F_ext[eq1_x] += f_drag.x() * L_exposed * 0.5 * current_factor;
+                if (eq2_x >= 0) F_ext[eq2_x] += f_drag.x() * L_exposed * 0.5 * current_factor;
+                if (eq1_y >= 0) F_ext[eq1_y] += f_drag.y() * L_exposed * 0.5 * current_factor;
+                if (eq2_y >= 0) F_ext[eq2_y] += f_drag.y() * L_exposed * 0.5 * current_factor;
+                if (eq1_z >= 0) F_ext[eq1_z] += f_drag.z() * L_exposed * 0.5 * current_factor;
+                if (eq2_z >= 0) F_ext[eq2_z] += f_drag.z() * L_exposed * 0.5 * current_factor;
             }
         }
     }

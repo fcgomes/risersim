@@ -348,16 +348,18 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
 
                 if (enable_current) {
                     double avg_z = 0.5 * (elem->node1->current_coords().z() + elem->node2->current_coords().z());
-                    double f_drag_x = 0.0, f_drag_y = 0.0;
-                    current.get_drag_force_per_meter(avg_z, elem->props.D_outer, water_density_for_mass, f_drag_x, f_drag_y);
+                    Eigen::Vector3d cur_elem_axis = (elem->node2->current_coords() - elem->node1->current_coords()).normalized();
+                    Eigen::Vector3d f_drag = current.get_drag_force_per_length(avg_z, elem->props.D_outer, water_density_for_mass, cur_elem_axis);
 
                     int eq1_x = elem->node1->eq_numbers[0]; int eq2_x = elem->node2->eq_numbers[0];
                     int eq1_y = elem->node1->eq_numbers[1]; int eq2_y = elem->node2->eq_numbers[1];
 
-                    if (eq1_x >= 0) st.F_ext[eq1_x] += f_drag_x * L * 0.5;
-                    if (eq2_x >= 0) st.F_ext[eq2_x] += f_drag_x * L * 0.5;
-                    if (eq1_y >= 0) st.F_ext[eq1_y] += f_drag_y * L * 0.5;
-                    if (eq2_y >= 0) st.F_ext[eq2_y] += f_drag_y * L * 0.5;
+                    if (eq1_x >= 0) st.F_ext[eq1_x] += f_drag.x() * L * 0.5;
+                    if (eq2_x >= 0) st.F_ext[eq2_x] += f_drag.x() * L * 0.5;
+                    if (eq1_y >= 0) st.F_ext[eq1_y] += f_drag.y() * L * 0.5;
+                    if (eq2_y >= 0) st.F_ext[eq2_y] += f_drag.y() * L * 0.5;
+                    if (eq1_z >= 0) st.F_ext[eq1_z] += f_drag.z() * L * 0.5;
+                    if (eq2_z >= 0) st.F_ext[eq2_z] += f_drag.z() * L * 0.5;
                 }
 
                 if (wave_kinematics.has_value()) {

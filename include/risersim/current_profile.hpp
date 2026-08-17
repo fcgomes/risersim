@@ -7,7 +7,10 @@
 #define RISERSIM_CURRENT_PROFILE_HPP
 
 #include "risersim/config.hpp"
+#include <Eigen/Dense>
 #include <algorithm>
+#include <cmath>
+#include <numbers>
 #include <vector>
 
 
@@ -122,20 +125,37 @@ public:
     }
 
     /**
-     * @brief Static (quadratic) drag force per unit length at depth z, resolved by get_heading(z).
+     * @brief Static (quadratic) drag force per unit length at depth z, projected perpendicular to
+     * the element's current axis (no axial/tangential drag term -- same simplification already
+     * used by the dynamic wave Morison force, `MorisonForce::calculate_force_per_length` in
+     * `hydrodynamics.hpp`, "standard practice for risers/mooring lines").
+     *
+     * Real ANFLEX (`cMorison::calc_distributed_load`, `anf_analysis/src/morison.cpp:49-124`)
+     * projects the relative fluid velocity onto normal/tangential element directions before
+     * applying the quadratic drag law -- a full 3D vector, not a fixed-heading force applied
+     * uniformly regardless of the element's local orientation. This class used to do the latter
+     * (`F = f_mag * (cos(heading), sin(heading), 0)`, ignoring `elem_axis` entirely), which
+     * over-applies drag on steep/inclined sections of the suspended catenary span (the current's
+     * full magnitude counted even where the element runs nearly parallel to it) -- confirmed via
+     * a static NODAL DISPLACEMENTS comparison against the real `.SAI` (Near/Transverse/Cross,
+     * `Exemplo_01c`): the seabed-lying portion matched to ~0.1m, but the suspended portion was off
+     * by up to 8m horizontally, worst for Near. See docs/roadmap.md, Eixo 2a.
+     *
      * @param z Elevation (m).
      * @param D_outer Outer diameter used for the projected area (m).
      * @param rho_water Seawater density (kg/m^3).
-     * @param[out] F_drag_x Drag force per meter along X (N/m).
-     * @param[out] F_drag_y Drag force per meter along Y (N/m).
+     * @param elem_axis Unit vector along the element's current axis.
+     * @return Drag force per unit length (N/m), perpendicular to `elem_axis`.
      */
-    void get_drag_force_per_meter(double z, double D_outer, double rho_water, double& F_drag_x, double& F_drag_y) const {
+    Eigen::Vector3d get_drag_force_per_length(double z, double D_outer, double rho_water,
+                                               const Eigen::Vector3d& elem_axis) const {
         double v = get_velocity(z);
-        double f_mag = 0.5 * rho_water * Cd * D_outer * v * v;
-
         double rad = get_heading(z) * std::numbers::pi / 180.0;
-        F_drag_x = f_mag * std::cos(rad);
-        F_drag_y = f_mag * std::sin(rad);
+        Eigen::Vector3d v_fluid(v * std::cos(rad), v * std::sin(rad), 0.0);
+
+        Eigen::Vector3d v_perp = v_fluid - (v_fluid.dot(elem_axis)) * elem_axis;
+
+        return 0.5 * rho_water * Cd * D_outer * v_perp.norm() * v_perp;
     }
 
 private:
