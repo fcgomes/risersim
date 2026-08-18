@@ -1464,6 +1464,18 @@ dropdowns de referência cruzada mostram os rótulos certos (ex. caso de carga "
 inteiras (`static.steps`/`static.max_iterations`) mostravam "20.000"/"300.000" com o default de 3
 casas decimais -- setado `decimals: 0` nessas duas.
 
+**Atualização 5** (bug real achado pelo usuário no uso real, não em teste): abrindo o editor pela
+aba "✏️ Editar" de `project.html` (via `<iframe id="edit-frame">`), o cabeçalho inteiro do
+`editor.html` (marca + título "RiserSim - Editor de Modelo" + seu PRÓPRIO botão de tema) renderizava
+duplicado por cima do cabeçalho de `project.html` -- `editor_app.js` era a única das quatro páginas
+com iframe (pré-processador/pós-processador/editor) que não tinha a checagem `window.self !==
+window.top` que esconde o cabeçalho próprio quando embutida (`preprocessor_app.js::initUI()`/
+`app.js::initUI()` já tinham). Faltou copiar esse guard ao criar `editor_app.js` do zero nesta
+sessão. Corrigido em `initViewport()`, mesmo padrão exato das outras duas páginas. Verificado via
+Chrome headless contra `project.html?project=<id>&view=edit` (o caminho real de uso, não
+`editor.html` direto) -- um único cabeçalho, um único botão de tema, título do projeto aparece uma
+vez só acima das abas do editor.
+
 **Fora de escopo do v1** (explícito): movimento de topo real/RAO, upload de `.RAO`, corpo
 flutuante compartilhado entre linhas (fase 2 futura); editar/reabrir um projeto importado de AML/
 XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura.

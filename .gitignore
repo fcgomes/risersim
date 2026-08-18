@@ -35,3 +35,6 @@ input_simulation.json
 *.log
 *.tmp
 docs/doxygen/
+
+# Scratch comparison/debugging output (tools/run_from_aml.py etc.)
+_cmp_out/

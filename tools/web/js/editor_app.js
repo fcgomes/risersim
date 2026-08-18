@@ -129,6 +129,17 @@ class EditorApp {
      * preprocessor_app.js/app.js use, just wired to this page's own preview data instead of a
      * loaded input/results file. */
     initViewport() {
+        // When embedded in project.html's "Editar" tab <iframe> (the normal case -- same check
+        // as preprocessor_app.js::initUI()/app.js::initUI()), the parent page already shows a
+        // header with the brand mark, title, and theme toggle; showing this page's own copy too
+        // doubled it up on screen (a duplicate title bar with its own separate theme-toggle
+        // button). Hidden via inline style (not a body class) so it can't collide with
+        // ThemeToggle.js's `body.className = '...'` full overwrites.
+        if (window.self !== window.top) {
+            document.getElementById('header').style.display = 'none';
+            document.getElementById('main-layout').style.height = '100vh';
+        }
+
         const canvas = document.getElementById('three-canvas');
         this.renderer3D = new Riser3DRenderer(canvas);
         this.cameraController = new CameraViewController(this.renderer3D.camera, this.renderer3D.controls, this.renderer3D);
