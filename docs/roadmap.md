@@ -1495,16 +1495,36 @@ rodada (plano em `cozy-cooking-kazoo.md`): **sem clamp de compressão**, réplic
 real (que é uma barra bidirecional normal apesar do nome). Como todo `Element` monta num layout
 12x12/12x1 fixo (6 GDL/nó, ver `element.hpp`), as linhas/colunas rotacionais (3-5, 9-11) ficam
 zero -- reflete fielmente que `cTruss` real não tem GDL rotacional nenhum (`m_num_dof=3`).
-**Simplificação deliberada, MAIOR que a do `ScalarElement`**: sem peso próprio/empuxo/corrente --
-diferente de `cScalar` (que também não tem no ANFLEX real), o `cTruss` real HERDA essas cargas de
-`cBar::calc_weight_load`, então isso é uma divergência física real pra uma linha de amarração/tendão
-que dependa do próprio peso pra formar a catenária (tendões tensionados como TEND/AMAR sofrem menos
-com isso -- a rigidez axial domina; um cabo mais frouxo tipo Reboque sofreria mais). Fica registrado
-como lacuna conhecida pra uma rodada futura (precisaria de diâmetro externo/coef. de arrasto no
-`TrussProps`, hoje mínimo). Contato com o solo continua funcionando (esse loop é por NÓ, não por
-tipo de elemento). Massa: mass matrix concentrada simples (`rho*A*L_ref/2` por nó, só translação --
-mesmo termo líder de `cBar::calc_mass_vector`, sem fluido interno/massa adicionada hidrodinâmica).
-5 testes novos em `test_element.cpp`.
+Contato com o solo continua funcionando (esse loop é por NÓ, não por tipo de elemento). Massa: mass
+matrix concentrada simples (`rho*A*L_ref/2` por nó, só translação -- mesmo termo líder de
+`cBar::calc_mass_vector`, sem fluido interno/massa adicionada hidrodinâmica). 5 testes novos em
+`test_element.cpp`.
+
+**Peso próprio/empuxo/corrente pra `TrussElement`/`WinchElement` -- implementado (2026-08-18,
+rodada seguinte)**: era a lacuna documentada acima ("Simplificação deliberada, MAIOR que a do
+`ScalarElement`") -- diferente de `cScalar` (que também não tem essas cargas no ANFLEX real), o
+`cTruss` real HERDA `cBar::calc_weight_load` (classificado como carga EXTERNA no real, mesma
+categoria de `calc_load`, não força interna -- por isso a implementação segue o padrão já usado
+pra `CorotationalBeam3D`, não o padrão "força interna" usado pro `BuoyElement`). `TrussProps` ganhou
+`D_outer` (default 0.0 = sem envelope hidrostático/arrasto, retrocompatível com qualquer JSON
+anterior a este campo). Réplica direta do loop peso/empuxo/corrente já usado pra viga (`w_dry =
+rho*A*g`, `Hydrostatics(D_outer, L, water_density)` pra empuxo escalado por submersão + rigidez
+tangente correspondente, arrasto de corrente via `CurrentProfile` -- que já tem seu próprio Cd
+global de modelo, não precisou de um `Cd` por elemento), adicionado em 4 pontos
+(`static_integrator.cpp::assemble_load_vector`, `static_analysis.cpp` x2, `dynamic_analysis.cpp`)
++ `Analysis::assemble_buoyancy_stiffness()`. `WinchElement` ganha de graça (os loops casam em
+`TrussElement*`, que `WinchElement` também é). AINDA fora: arrasto/inércia de onda (Morison) --
+mesma lacuna documentada do `BuoyElement`, genuinamente mais complexo, sem caso real validado ainda.
+2 testes novos em `test_static_analysis.cpp` (peso/empuxo via `assemble_load_vector`, rigidez via
+`assemble_buoyancy_stiffness`), verificados recomputando com a mesma classe `Hydrostatics` usada
+pela implementação. **Nota sobre retrocompatibilidade**: só empuxo e arrasto de corrente são
+gateados por `D_outer` (zero por padrão = sem efeito, JSON antigo sem esse campo fica exatamente
+como antes NESSAS duas parcelas). O PESO SECO (`rho*A*g`) não é gateado -- é incondicional, igual
+ao `cTruss` real -- então qualquer elemento `truss`/`winch` já existente que configure `rho`/`A`
+(mesmo sem `D_outer`) passa a ter peso próprio agora, onde antes não tinha nenhum. Mudança de
+comportamento intencional (era exatamente a lacuna sendo fechada), não uma regressão -- mas
+modelos reais com `truss`/`winch` regenerados antes desta rodada podem mostrar uma leve mudança de
+forma (a linha agora cai sob o próprio peso) na próxima vez que forem resolvidos.
 
 **Fase 3 (`WinchElement`, extensão pequena da Fase 2) -- implementada (2026-08-18)**: novo
 `include/risersim/element_winch.hpp`, deriva de `TrussElement` e sobrescreve só
@@ -1567,10 +1587,12 @@ precisa de `water_surface_z` resolvido. 8 testes novos em `test_element.cpp`.
 módulo pybind e `risersim_diag_isolated_segment`) -- o teste de convergência estática completo
 (1339 iterações) reproduziu resultado idêntico de novo, zero regressão.
 
-**Plano de 4 fases concluído.** Únicas lacunas conhecidas remanescentes: peso/empuxo/corrente pra
-`TrussElement`/`WinchElement` (Fase 2), Morison/onda/corrente pra `BuoyElement` (Fase 4), e nenhuma
-integração JSON-round-trip end-to-end pra `ScalarElement`/`TrussElement`/`WinchElement`/`BuoyElement`
-ainda (só testes unitários da fórmula) -- nenhuma bloqueante, todas documentadas por tipo acima.
+**Plano de 4 fases concluído.** Peso/empuxo/corrente pra `TrussElement`/`WinchElement` (a lacuna da
+Fase 2) foi fechada na rodada seguinte, mesmo dia -- ver o parágrafo "Peso próprio/empuxo/corrente
+pra `TrussElement`/`WinchElement` -- implementado" logo após a Fase 2 acima. Lacunas conhecidas
+remanescentes: Morison/onda/corrente pra `BuoyElement` (Fase 4) e nenhuma integração JSON-round-trip
+end-to-end pra `ScalarElement`/`TrussElement`/`WinchElement`/`BuoyElement` ainda (só testes
+unitários da fórmula) -- nenhuma bloqueante, ambas documentadas por tipo acima.
 `cRigidBodyElement`/`cContactElement`/variantes alternativas de viga seguem fora de escopo (zero uso
 real neste repo).
 

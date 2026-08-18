@@ -326,8 +326,9 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // 1. External Load Vector F_ext
             st.F_ext = Eigen::VectorXd::Zero(num_dofs);
             for (const auto& elem_base : model->elements()) {
-                // Weight/buoyancy/current/Morison loading is beam-specific -- see the same
-                // treatment/comment in static_integrator.cpp::assemble_load_vector().
+                // Wave/Morison loading is still beam-specific (see TrussElement's own doc comment
+                // for why that part is a documented, deferred gap) -- weight/buoyancy/current is
+                // NOT anymore, TrussElement gets its own loop right below this one.
                 auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
                 if (!elem) continue;
 
@@ -421,6 +422,43 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     if (eq2_ym >= 0) st.F_ext[eq2_ym] += f_morison.y() * L * 0.5;
                     if (eq1_zm >= 0) st.F_ext[eq1_zm] += f_morison.z() * L * 0.5;
                     if (eq2_zm >= 0) st.F_ext[eq2_zm] += f_morison.z() * L * 0.5;
+                }
+            }
+            for (const auto& elem_base : model->elements()) {
+                // TrussElement/WinchElement weight/buoyancy/current -- see TrussElement's own doc
+                // comment; same formula as the beam loop above, minus wave/Morison (deferred gap).
+                auto* truss = dynamic_cast<TrussElement*>(elem_base.get());
+                if (!truss) continue;
+
+                double L = truss->initial_length();
+                double g = 9.81;
+                double z1 = truss->node1()->current_coords().z();
+                double z2 = truss->node2()->current_coords().z();
+
+                double w_dry = truss->props().rho * truss->props().A * g;
+                double zc[2] = {z1, z2};
+                Hydrostatics hydro(truss->props().D_outer, L, water_density);
+                hydro.compute(zc, model->environmental().water_surface_z);
+
+                int eq1_z = truss->node1()->eq_numbers[2];
+                int eq2_z = truss->node2()->eq_numbers[2];
+                if (eq1_z >= 0) st.F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
+                if (eq2_z >= 0) st.F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
+
+                if (enable_current) {
+                    double avg_z = 0.5 * (z1 + z2);
+                    Eigen::Vector3d cur_elem_axis = (truss->node2()->current_coords() - truss->node1()->current_coords()).normalized();
+                    Eigen::Vector3d f_drag = current.get_drag_force_per_length(avg_z, truss->props().D_outer, water_density_for_mass, cur_elem_axis);
+
+                    int eq1_x = truss->node1()->eq_numbers[0]; int eq2_x = truss->node2()->eq_numbers[0];
+                    int eq1_y = truss->node1()->eq_numbers[1]; int eq2_y = truss->node2()->eq_numbers[1];
+
+                    if (eq1_x >= 0) st.F_ext[eq1_x] += f_drag.x() * L * 0.5;
+                    if (eq2_x >= 0) st.F_ext[eq2_x] += f_drag.x() * L * 0.5;
+                    if (eq1_y >= 0) st.F_ext[eq1_y] += f_drag.y() * L * 0.5;
+                    if (eq2_y >= 0) st.F_ext[eq2_y] += f_drag.y() * L * 0.5;
+                    if (eq1_z >= 0) st.F_ext[eq1_z] += f_drag.z() * L * 0.5;
+                    if (eq2_z >= 0) st.F_ext[eq2_z] += f_drag.z() * L * 0.5;
                 }
             }
             for (const auto& elem_base : model->elements()) {

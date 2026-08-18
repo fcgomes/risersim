@@ -222,6 +222,7 @@ TrussProps parse_truss_properties(const json& tp) {
     props.A = tp.value("A", props.A);
     props.rho = tp.value("rho", props.rho);
     props.initial_tension = tp.value("initial_tension", props.initial_tension);
+    props.D_outer = tp.value("D_outer", props.D_outer);
     return props;
 }
 

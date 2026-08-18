@@ -18,7 +18,7 @@ namespace risersim {
 struct TrussProps {
     double E = 2.1e11;   ///< Young's modulus (Pa) -- same steel default as BeamMaterialProps::E.
     double A = 0.001;    ///< Cross-section area (m^2) -- a cable/tendon's, much smaller than a riser pipe wall's.
-    double rho = 7850.0; ///< Structural mass density (kg/m^3), for the lumped mass matrix.
+    double rho = 7850.0; ///< Structural mass density (kg/m^3), for the lumped mass matrix and dry weight.
     /**
      * @brief Axial pre-tension (N), added on top of the strain-derived force (real `cTruss`'s
      * `m_properties[0]->m_initial_tension`). Left at 0.0 for `WinchElement` (real `cWinch::
@@ -27,6 +27,14 @@ struct TrussProps {
      * be reused unchanged by both.
      */
     double initial_tension = 0.0;
+    /**
+     * @brief Outer diameter (m), for the buoyancy envelope (`Hydrostatics`) and current drag --
+     * see the weight/buoyancy/current loops in `static_integrator.cpp`/`static_analysis.cpp`/
+     * `dynamic_analysis.cpp`. Default 0.0 = no hydrostatic/drag envelope at all (a `Hydrostatics`
+     * built with a zero diameter always returns zero force/stiffness), so a JSON written before
+     * this field existed keeps behaving exactly as before (dry weight only, no buoyancy/current).
+     */
+    double D_outer = 0.0;
 };
 
 /**
@@ -42,18 +50,22 @@ struct TrussProps {
  * `cBar`-derived pipeline (`calc_stiff_mt`, `truss.cpp:229-298`; `calc_internal_forces`,
  * `truss.cpp:324-352`).
  *
- * **Deliberate simplification vs. real `cTruss`/`cBar`**: no self-weight, buoyancy, or current
- * (Morison) EXTERNAL load is contributed here -- real `cBar::calc_weight_load` needs an outer
- * diameter/hydrostatic area/drag coefficient this element's minimal `TrussProps` doesn't carry,
- * and (unlike `CorotationalBeam3D`) generalizing the weight/buoyancy/current loops in
- * `static_integrator.cpp`/`static_analysis.cpp`/`dynamic_analysis.cpp` to cover a second element
- * shape wasn't done this round -- same `dynamic_cast<CorotationalBeam3D*>`-skips-non-beam pattern
- * already used for `ScalarElement` applies here too, but is a BIGGER real deviation for a truss
- * than for a spring (a real mooring/tendon line's equilibrium shape and pretension level do depend
- * on its own submerged weight; a `cScalar` connector never had any). Tracked as a known gap in
- * `docs/roadmap.md`'s element-types entry -- add the missing hydrostatic/drag properties and
- * extend those loops if/when a real case shows the difference matters (e.g. a slack/sagging
- * mooring line, as opposed to a taut pretensioned tendon where axial stiffness dominates).
+ * **Self-weight/buoyancy/current** (real `cBar::calc_weight_load`, called from real `cTruss`'s own
+ * `calc_load` -- EXTERNAL load, same classification as `CorotationalBeam3D`'s own weight/buoyancy)
+ * -- filled in 2026-08-18 (was a documented gap through the initial Truss/Winch implementation):
+ * `dynamic_cast<TrussElement*>` loops in `static_integrator.cpp::assemble_load_vector()`,
+ * `static_analysis.cpp` (reference-norm + vessel-offset), and `dynamic_analysis.cpp` mirror
+ * `CorotationalBeam3D`'s own treatment exactly -- dry weight `rho*A*g` (50/50 split, doesn't depend
+ * on submersion) plus `Hydrostatics(D_outer, L, water_density)` for submersion-scaled buoyancy
+ * force AND its matching tangent stiffness (added via `Analysis::assemble_buoyancy_stiffness()`,
+ * also extended with a second `dynamic_cast<TrussElement*>` loop), plus current drag via the
+ * model-wide `CurrentProfile` (same call as the beam's: `current.get_drag_force_per_length(...)`,
+ * needs only `D_outer` -- current's own drag coefficient is a model-wide `CurrentProfile` field,
+ * not per-element, so no separate `Cd` was needed on `TrussProps`). `WinchElement` gets this for
+ * free (the loops match on `TrussElement*`, and `WinchElement` IS a `TrussElement`).
+ * **Still NOT included**: wave/Morison drag+inertia (the beam's own dynamic-analysis Morison block
+ * is a separate, more involved calculation than plain current drag) -- deferred, same documented
+ * gap `BuoyElement` has for the same reason.
  * Seabed contact IS still active for a truss's nodes -- that loop is node-based, not element-type-
  * specific (`Analysis::assemble_system`'s seabed section iterates `model->nodes()` directly).
  *

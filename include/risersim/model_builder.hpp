@@ -58,8 +58,9 @@ ScalarProps parse_scalar_properties(const nlohmann::json& sp);
 
 /**
  * @brief Converts a `truss_properties` JSON object into TrussProps (`E`, `A`, `rho`,
- * `initial_tension` -- plain numbers, defaulting to TrussProps's own field defaults when absent).
- * Shared by `element_type: "truss"` and `element_type: "winch"` (the latter also reads
+ * `initial_tension`, `D_outer` -- plain numbers, defaulting to TrussProps's own field defaults
+ * when absent; `D_outer` defaults to 0.0 = no buoyancy/current envelope). Shared by
+ * `element_type: "truss"` and `element_type: "winch"` (the latter also reads
  * `winch_properties.payout_curve`, see parse_winch_payout_curve()).
  */
 TrussProps parse_truss_properties(const nlohmann::json& tp);

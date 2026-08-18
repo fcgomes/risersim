@@ -18,9 +18,10 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
     double water_surface_z = model->environmental().water_surface_z;
 
     for (const auto& elem_base : model->elements()) {
-        // Weight/buoyancy/current loading is beam-specific (needs D_outer, material density,
-        // internal-fluid bore) -- an element type with none of that (e.g. a connector/spring)
-        // simply contributes no external load here, same as real ANFLEX's cScalar (no calc_load).
+        // Weight/buoyancy/current needs D_outer/material density -- an element type with none of
+        // that (e.g. a connector/spring) simply contributes no external load here, same as real
+        // ANFLEX's cScalar (no calc_load). CorotationalBeam3D and TrussElement (see its own loop
+        // below) both have it; ScalarElement doesn't (matches real cScalar exactly).
         auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
         if (!elem) continue;
 
@@ -84,6 +85,65 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
 
                 int eq1_x = elem->node1()->eq_numbers[0]; int eq2_x = elem->node2()->eq_numbers[0];
                 int eq1_y = elem->node1()->eq_numbers[1]; int eq2_y = elem->node2()->eq_numbers[1];
+
+                double L_exposed = L * exposed_fraction;
+                if (eq1_x >= 0) F_ext[eq1_x] += f_drag.x() * L_exposed * 0.5 * current_factor;
+                if (eq2_x >= 0) F_ext[eq2_x] += f_drag.x() * L_exposed * 0.5 * current_factor;
+                if (eq1_y >= 0) F_ext[eq1_y] += f_drag.y() * L_exposed * 0.5 * current_factor;
+                if (eq2_y >= 0) F_ext[eq2_y] += f_drag.y() * L_exposed * 0.5 * current_factor;
+                if (eq1_z >= 0) F_ext[eq1_z] += f_drag.z() * L_exposed * 0.5 * current_factor;
+                if (eq2_z >= 0) F_ext[eq2_z] += f_drag.z() * L_exposed * 0.5 * current_factor;
+            }
+        }
+    }
+
+    // Truss/Winch weight/buoyancy/current -- same formula as the beam loop just above (see
+    // TrussElement's own doc comment for why this was filled in, was a documented gap). Separate
+    // loop (not folded into the beam one) since `dynamic_cast<CorotationalBeam3D*>` and
+    // `dynamic_cast<TrussElement*>` are mutually exclusive -- each element only matches one.
+    for (const auto& elem_base : model->elements()) {
+        auto* truss = dynamic_cast<TrussElement*>(elem_base.get());
+        if (!truss) continue;
+
+        double L = truss->initial_length();
+        double g = 9.81;
+
+        double z1 = truss->node1()->current_coords().z();
+        double z2 = truss->node2()->current_coords().z();
+
+        double w_dry = truss->props().rho * truss->props().A * g;
+        double zc[2] = {z1, z2};
+        Hydrostatics hydro(truss->props().D_outer, L, analysis->water_density);
+        hydro.compute(zc, water_surface_z);
+
+        int eq1_z = truss->node1()->eq_numbers[2];
+        int eq2_z = truss->node2()->eq_numbers[2];
+
+        if (eq1_z >= 0) F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
+        if (eq2_z >= 0) F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
+
+        if (analysis->enable_current) {
+            double buried_threshold_z = analysis->seabed.seabed_depth() - 1.0;
+            bool node1_buried = z1 < buried_threshold_z;
+            bool node2_buried = z2 < buried_threshold_z;
+            double exposed_fraction = 1.0;
+            if (node1_buried && node2_buried) {
+                exposed_fraction = 0.0;
+            } else if (node1_buried != node2_buried) {
+                double dz = z2 - z1;
+                double t = (std::fabs(dz) > 1.0e-9) ? (buried_threshold_z - z1) / dz : 0.5;
+                t = std::clamp(t, 0.0, 1.0);
+                exposed_fraction = node1_buried ? (1.0 - t) : t;
+            }
+
+            if (exposed_fraction > 0.0) {
+                double avg_z = 0.5 * (z1 + z2);
+                Eigen::Vector3d elem_axis = (truss->node2()->current_coords() - truss->node1()->current_coords()).normalized();
+                Eigen::Vector3d f_drag = analysis->current.get_drag_force_per_length(
+                    avg_z, truss->props().D_outer, analysis->water_density_for_mass, elem_axis);
+
+                int eq1_x = truss->node1()->eq_numbers[0]; int eq2_x = truss->node2()->eq_numbers[0];
+                int eq1_y = truss->node1()->eq_numbers[1]; int eq2_y = truss->node2()->eq_numbers[1];
 
                 double L_exposed = L * exposed_fraction;
                 if (eq1_x >= 0) F_ext[eq1_x] += f_drag.x() * L_exposed * 0.5 * current_factor;

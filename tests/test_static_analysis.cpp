@@ -19,7 +19,10 @@
 #include "risersim/model.hpp"
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
+#include "risersim/element_truss.hpp"
 #include "risersim/static_analysis.hpp"
+#include "risersim/static_integrator.hpp"
+#include "risersim/hydrostatics.hpp"
 
 namespace {
 
@@ -134,4 +137,88 @@ TEST_CASE("StaticAnalysis converges on the synthetic fallback catenary", "[stati
             == Catch::Approx(expected_tension_effective_N).epsilon(0.005));
 
     delete model;
+}
+
+// Verifies the weight/buoyancy loop added for TrussElement/WinchElement (docs/roadmap.md,
+// element-types entry) actually wires TrussProps::rho/A/D_outer into StaticIntegrator::
+// assemble_load_vector() the same way CorotationalBeam3D's own weight/buoyancy already does --
+// this was a documented gap (no weight/buoyancy at all) through the initial Truss/Winch round.
+TEST_CASE("StaticIntegrator::assemble_load_vector applies weight/buoyancy to TrussElement", "[static_integrator][truss]") {
+    using namespace risersim;
+
+    RiserModel model;
+    // Horizontal, both ends at the same depth -- both ends land in Hydrostatics' simple
+    // "fully submerged" regime (5m >> D_outer), so the expected force is easy to recompute
+    // independently below without re-deriving the partial-submersion formula.
+    Node3D* n1 = model.add_node(1, 0.0, 0.0, -5.0);
+    Node3D* n2 = model.add_node(2, 2.0, 0.0, -5.0);
+    n1->eq_numbers = {0, 0, 0, 0, 0, 0}; // placeholder "free" sentinel -- assign_equation_numbers() below assigns the real indices
+    n2->eq_numbers = {0, 0, 0, 0, 0, 0};
+
+    TrussProps props;
+    props.A = 0.001;     // small structural area -- buoyancy (from D_outer) should dominate dry weight
+    props.rho = 7850.0;
+    props.D_outer = 0.2;
+    model.add_truss_element(1, n1, n2, props);
+
+    model.environmental().water_surface_z = 0.0;
+    model.environmental().water_density = 1000.0;
+
+    StaticAnalysis analysis;
+    analysis.model = &model;
+    analysis.water_density = 1000.0;
+    analysis.assign_equation_numbers();
+
+    StaticIntegrator integrator(&analysis);
+    Eigen::VectorXd F_ext = integrator.assemble_load_vector(1.0);
+
+    // Recompute the expected force with the same Hydrostatics helper the implementation itself
+    // uses -- this test checks the WIRING (TrussProps -> assemble_load_vector), not the
+    // Hydrostatics formula itself (already exercised by the beam's own path).
+    const double L = 2.0, g = 9.81;
+    const double w_dry = props.rho * props.A * g;
+    Hydrostatics hydro(props.D_outer, L, 1000.0);
+    double zc[2] = {-5.0, -5.0};
+    hydro.compute(zc, 0.0);
+    const double expected_total_z = hydro.end_force(0) * g + hydro.end_force(1) * g - w_dry * L;
+
+    double actual_total_z = F_ext[n1->eq_numbers[2]] + F_ext[n2->eq_numbers[2]];
+
+    REQUIRE(actual_total_z == Catch::Approx(expected_total_z).margin(1.0e-6));
+    REQUIRE(actual_total_z > 0.0); // net buoyant here: tiny structural area, sizeable D_outer
+}
+
+// Same gap, the matching tangent stiffness half (Analysis::assemble_buoyancy_stiffness()) --
+// needs a node straddling the water surface (partial submersion) to get a nonzero result, since
+// the fully-submerged/fully-dry regimes are zero-stiffness by construction (see hydrostatics.hpp).
+TEST_CASE("Analysis::assemble_buoyancy_stiffness includes TrussElement's submersion-dependent stiffness", "[analysis][truss]") {
+    using namespace risersim;
+
+    RiserModel model;
+    // D_outer=0.2 -> radius=0.1 -- both ends 0.05m below the surface sit inside (0, 2*radius),
+    // i.e. genuinely straddling, the only regime with nonzero stiffness.
+    Node3D* n1 = model.add_node(1, 0.0, 0.0, -0.05);
+    Node3D* n2 = model.add_node(2, 2.0, 0.0, -0.05);
+    n1->eq_numbers = {0, 0, 0, 0, 0, 0};
+    n2->eq_numbers = {0, 0, 0, 0, 0, 0};
+
+    TrussProps props;
+    props.A = 0.001;
+    props.D_outer = 0.2;
+    model.add_truss_element(1, n1, n2, props);
+
+    model.environmental().water_surface_z = 0.0;
+    model.environmental().water_density = 1000.0;
+
+    StaticAnalysis analysis;
+    analysis.model = &model;
+    analysis.water_density = 1000.0;
+    analysis.assign_equation_numbers();
+
+    Eigen::SparseMatrix<double> K = analysis.assemble_buoyancy_stiffness();
+
+    int eq1_z = n1->eq_numbers[2];
+    int eq2_z = n2->eq_numbers[2];
+    REQUIRE(K.coeff(eq1_z, eq1_z) > 0.0);
+    REQUIRE(K.coeff(eq2_z, eq2_z) > 0.0);
 }

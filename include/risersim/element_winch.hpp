@@ -18,8 +18,9 @@ namespace risersim {
  * `update_axial_strain_and_force()` (evaluates a time function instead of using a fixed
  * `m_original_length`, and has no `initial_tension` term -- see `TrussProps::initial_tension`'s
  * doc comment). Everything else -- `calc_stiff_mt`/`calc_internal_forces`'s formulas, the
- * self-weight/buoyancy/current simplification, the lumped mass -- is inherited from
- * `TrussElement` unchanged, both here and in real ANFLEX.
+ * self-weight/buoyancy/current loops (see `TrussElement`'s own doc comment), the lumped mass -- is
+ * inherited from `TrussElement` unchanged, both here and in real ANFLEX (the weight/buoyancy/
+ * current `dynamic_cast` loops match on `TrussElement*`, which `WinchElement` also is).
  *
  * Real `cWinch` has SEPARATE static-analysis and dynamic-analysis payout functions
  * (`m_static_function`/`m_dynamic_function`, `winch.cpp:124-153`) that compose

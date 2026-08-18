@@ -210,6 +210,22 @@ Eigen::SparseMatrix<double> Analysis::assemble_buoyancy_stiffness() const {
         if (eq2_z >= 0) triplets.push_back(Eigen::Triplet<double>(eq2_z, eq2_z, hydro.end_stiffness(1) * g));
     }
 
+    // Same treatment for TrussElement (and WinchElement, which IS a TrussElement) -- see
+    // TrussElement's own doc comment for why this was filled in (was a documented gap).
+    for (const auto& elem_base : model->elements()) {
+        auto* truss = dynamic_cast<TrussElement*>(elem_base.get());
+        if (!truss) continue;
+
+        double zc[2] = {truss->node1()->current_coords().z(), truss->node2()->current_coords().z()};
+        Hydrostatics hydro(truss->props().D_outer, truss->initial_length(), water_density);
+        hydro.compute(zc, water_surface_z);
+
+        int eq1_z = truss->node1()->eq_numbers[2];
+        int eq2_z = truss->node2()->eq_numbers[2];
+        if (eq1_z >= 0) triplets.push_back(Eigen::Triplet<double>(eq1_z, eq1_z, hydro.end_stiffness(0) * g));
+        if (eq2_z >= 0) triplets.push_back(Eigen::Triplet<double>(eq2_z, eq2_z, hydro.end_stiffness(1) * g));
+    }
+
     K_buoyancy.setFromTriplets(triplets.begin(), triplets.end());
     return K_buoyancy;
 }
