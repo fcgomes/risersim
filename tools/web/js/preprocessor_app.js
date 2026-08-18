@@ -211,8 +211,14 @@ class PreprocessorApp {
     /** Synthesizes a {nodes, elements} object that Riser3DRenderer/CameraViewController already understand, coloring by outer diameter (D_outer) instead of a solved result (which doesn't exist for input data). */
     getSyntheticStep() {
         if (!this.input || !this.input.valid) return null;
+        // `node1_id`/`node2_id` (from ElementSection, the input JSON's real connectivity) carried
+        // through so Riser3DRenderer.js can draw each element between its REAL nodes -- matters for
+        // any multi-line input (e.g. an AML import with several %LINE blocks): without them, a
+        // second line's elements are matched to whichever nodes sit at the same array position,
+        // drawing bogus cross-line cylinders and dropping each line's last real segment.
         const elements = this.input.elements.map(e => ({
             id: e.id,
+            node1_id: e.node1Id, node2_id: e.node2Id,
             tensionEffectiveKn: e.sectionProperties.D_outer ?? 0,
             bendingMomentKnm: 0, curvature: 0, vonMisesMpa: 0, mbrSafetyFactor: 1.0
         }));

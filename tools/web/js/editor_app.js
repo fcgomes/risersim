@@ -1,6 +1,6 @@
 import { switchTab } from './ui/TabPanel.js';
 import { initThemeToggle } from './ui/ThemeToggle.js';
-import { confirmDialog, alertDialog } from './ui/ConfirmDialog.js';
+import { alertDialog } from './ui/ConfirmDialog.js';
 import { escapeHtml, fetchJSON } from './utils/runManagerFormat.js';
 import { Riser3DRenderer } from './renderers/Riser3DRenderer.js';
 import { CameraViewController } from './renderers/CameraViewController.js';
@@ -169,12 +169,7 @@ class EditorApp {
         document.getElementById('add-loadcase-btn').addEventListener('click', () => this.addLoadCase());
         document.getElementById('add-analysis-btn').addEventListener('click', () => this.addAnalysis());
 
-        document.getElementById('line-select').addEventListener('change', (e) => {
-            this.activeLineId = parseInt(e.target.value, 10);
-            this.renderLine();
-        });
         document.getElementById('add-line-btn').addEventListener('click', () => this.addLine());
-        document.getElementById('delete-line-btn').addEventListener('click', () => this.deleteLine());
         document.getElementById('add-segment-btn').addEventListener('click', () => this.addSegment());
     }
 
@@ -220,8 +215,7 @@ class EditorApp {
         this.renderMaterials();
         this.renderCurrents();
         this.renderWaves();
-        this.renderLineSelect();
-        this.renderLine();
+        this.renderLines();
         this.renderLoadCases();
         this.renderAnalyses();
     }
@@ -400,39 +394,73 @@ class EditorApp {
     getActiveLine() {
         return this.model.lines.find(l => l.id === this.activeLineId) || null;
     }
-    renderLineSelect() {
-        const select = document.getElementById('line-select');
-        select.innerHTML = this.model.lines.map(l => `<option value="${l.id}" ${l.id === this.activeLineId ? 'selected' : ''}>${escapeHtml(l.name)} (ID ${l.id})</option>`).join('');
-    }
-    /** Renders the active line's own form fields + its segments table. Does NOT touch the 3D
-     * preview -- the canvas always shows the WHOLE model (every line), not just the one selected
-     * here for editing, so merely switching which line is active in this picker has nothing to
-     * redraw (see the module docstring). Callers that actually change geometry (field edits,
-     * addLine/deleteLine) trigger the preview themselves. */
-    renderLine() {
-        const line = this.getActiveLine();
-        const container = document.getElementById('line-fields');
-        if (!line) {
-            container.innerHTML = '<div class="empty-state-small">Nenhuma linha ainda -- clique em "+ Nova linha".</div>';
-            this.renderSegments();
-            return;
-        }
-        container.innerHTML = `
-            <div><label for="line-name">Nome</label><input type="text" id="line-name" value="${escapeHtml(line.name)}"></div>
-            <div><label for="line-top-x">Topo X (m)</label><input type="number" step="any" id="line-top-x" value="${escapeHtml(line.top_position_m[0])}"></div>
-            <div><label for="line-top-y">Topo Y (m)</label><input type="number" step="any" id="line-top-y" value="${escapeHtml(line.top_position_m[1])}"></div>
-            <div><label for="line-top-z">Topo Z (m)</label><input type="number" step="any" id="line-top-z" value="${escapeHtml(line.top_position_m[2])}"></div>
-            <div><label for="line-angle">Ângulo de catenária (°, da vertical)</label><input type="number" step="any" id="line-angle" value="${escapeHtml(line.catenary_angle_deg)}"></div>
-            <div><label for="line-azimuth">Azimute (°)</label><input type="number" step="any" id="line-azimuth" value="${escapeHtml(line.azimuth_deg)}"></div>
-        `;
-        document.getElementById('line-name').addEventListener('input', (e) => { line.name = e.target.value; this.renderLineSelect(); });
-        document.getElementById('line-top-x').addEventListener('input', (e) => { line.top_position_m[0] = parseFloat(e.target.value) || 0; this.renderPreviewFrame(); this.schedulePreviewUpdate(); });
-        document.getElementById('line-top-y').addEventListener('input', (e) => { line.top_position_m[1] = parseFloat(e.target.value) || 0; this.renderPreviewFrame(); this.schedulePreviewUpdate(); });
-        document.getElementById('line-top-z').addEventListener('input', (e) => { line.top_position_m[2] = parseFloat(e.target.value) || 0; this.renderPreviewFrame(); this.schedulePreviewUpdate(); });
-        document.getElementById('line-angle').addEventListener('input', (e) => { line.catenary_angle_deg = parseFloat(e.target.value) || 0; this.schedulePreviewUpdate(); });
-        document.getElementById('line-azimuth').addEventListener('input', (e) => { line.azimuth_deg = parseFloat(e.target.value) || 0; this.schedulePreviewUpdate(); });
 
+    /** Lines table -- same spreadsheet-grid pattern as every other catalog (Solos/Materiais/...),
+     * with one addition: `selectable: 1` (radio-button style, at most one highlighted row at a
+     * time) drives which line's segments show in the Segmentos table below (see onRowSelected).
+     * Top position is stored as `top_position_m: [x, y, z]` (an array, not three separate object
+     * properties), so those three columns use `type: 'custom'` (SpreadsheetTable.js) with
+     * accessors into that array instead of Tabulator's normal dot-notation field resolution. */
+    renderLines() {
+        if (this.tables.lines) return;
+        const posCol = (label, i) => ({
+            key: `top_${['x', 'y', 'z'][i]}`, label, type: 'custom', decimals: 2,
+            getValue: (line) => line.top_position_m[i],
+            setValue: (line, v) => { line.top_position_m[i] = v ?? 0; },
+        });
+        this.tables.lines = createSpreadsheetTable(
+            '#lines-table', this.model.lines,
+            [
+                { key: 'name', label: 'Nome', type: 'text' },
+                posCol('Topo X (m)', 0),
+                posCol('Topo Y (m)', 1),
+                posCol('Topo Z (m)', 2),
+                { key: 'catenary_angle_deg', label: 'Ângulo catenária (°, da vertical)', type: 'number', decimals: 2 },
+                { key: 'azimuth_deg', label: 'Azimute (°)', type: 'number', decimals: 2 },
+            ],
+            {
+                selectable: 1,
+                // Guarded against re-firing for the line that's already active -- addLine()/
+                // onLineDeleted() below set `activeLineId`/call renderSegments() themselves
+                // (synchronously, not dependent on Tabulator's row-selection timing) and only use
+                // selectRow() as a best-effort visual highlight, so this only needs to actually do
+                // something for a genuine user click on a DIFFERENT row.
+                onRowSelected: (line) => {
+                    if (this.activeLineId === line.id) return;
+                    this.activeLineId = line.id;
+                    this.renderSegments();
+                },
+                onDelete: (line) => this.onLineDeleted(line),
+                // Any field (name/position/angle/azimuth) can change the geometry shown in the 3D
+                // canvas -- unlike the per-field granularity the old form had, a table's onChange
+                // doesn't know which column changed, so just always recompute both (cheap either
+                // way).
+                onChange: () => { this.renderPreviewFrame(); this.schedulePreviewUpdate(); },
+            },
+        );
+        // `this.activeLineId` is already correct at this point (set in load(), or by
+        // addLine()/onLineDeleted() on later calls) -- render its segments right away rather than
+        // waiting on Tabulator's own (possibly still-building) row-selection state. The visual
+        // highlight catches up once the table finishes building.
+        this.tables.lines.table.on('tableBuilt', () => {
+            if (this.activeLineId != null) this.tables.lines.selectRow(this.activeLineId);
+        });
         this.renderSegments();
+    }
+
+    /** After a line is deleted (via its own row's 🗑, same as any other catalog -- no separate
+     * "select then delete" step anymore), picks a new active line if the deleted one was it, and
+     * always reframes -- the model's bounding box can shrink regardless of which line went away. */
+    onLineDeleted(line) {
+        if (this.activeLineId === line.id) {
+            this.activeLineId = (this.model.lines[0] || {}).id ?? null;
+            this.renderSegments();
+            if (this.activeLineId != null) this.tables.lines.selectRow(this.activeLineId);
+        }
+        this._hasFramedReal = false;
+        this.renderPreviewFrame();
+        this.reframeCamera();
+        this.schedulePreviewUpdate();
     }
 
     /** Instant "context" frame -- sea/seabed planes + a bounding box around every line's top
@@ -512,8 +540,13 @@ class EditorApp {
             // instead, same substitute trick preprocessor_app.js::getSyntheticStep() already
             // uses to reuse Riser3DRenderer (built for solved *results*) on unsolved input, and
             // the same "Diâmetro externo (m)" legend caption already in editor.html.
+            // `node1_id`/`node2_id` carried through from the backend's own element objects --
+            // Riser3DRenderer.js needs them to draw each element between its REAL nodes, not
+            // whichever nodes happen to sit at the same array position (breaks for 2+ lines, see
+            // its own comment).
             const elements = (res.elements || []).map(e => ({
                 id: e.id,
+                node1_id: e.node1_id, node2_id: e.node2_id,
                 tensionEffectiveKn: (e.section_properties && e.section_properties.D_outer) ?? 0,
                 bendingMomentKnm: 0, curvature: 0, vonMisesMpa: 0, mbrSafetyFactor: 1.0,
             }));
@@ -555,14 +588,15 @@ class EditorApp {
     }
 
     /** Unlike the other catalog tables (created once, updated in place), the segments table is
-     * bound to the ACTIVE LINE's own `segments` array -- a different array reference every time
-     * the line-select picker changes -- so it's destroyed and rebuilt from scratch on every call,
-     * rather than trying to repoint an existing Tabulator instance at a new backing array. */
+     * bound to the ACTIVE LINE's own `segments` array -- a different array reference every time a
+     * different row is selected in the Lines table -- so it's destroyed and rebuilt from scratch
+     * on every call, rather than trying to repoint an existing Tabulator instance at a new backing
+     * array. */
     renderSegments() {
         if (this.tables.segments) { this.tables.segments.destroy(); this.tables.segments = null; }
         const line = this.getActiveLine();
         const container = document.getElementById('segments-table');
-        if (!line) { container.innerHTML = ''; return; }
+        if (!line) { container.innerHTML = '<div class="empty-state-small">Selecione uma linha na tabela acima.</div>'; return; }
         // Segments coming from an AML-derived interface JSON (aml_reader.py::to_interface_json())
         // never carry an `id` (only the line itself does, not its segments) -- Tabulator's row
         // index defaults to that field, so it needs a stable numeric id per row -- backfill any
@@ -593,24 +627,14 @@ class EditorApp {
                 element_length_m: 5.0,
             }],
         };
-        this.model.lines.push(line);
+        this.tables.lines.addRow(line);
+        // Set directly rather than relying on selectRow()'s rowSelected event -- Tabulator's
+        // addData() is promise-based internally, so the new row isn't guaranteed selectable the
+        // instant addRow() returns. selectRow() is still called, best-effort, for the visual
+        // highlight once the row actually exists.
         this.activeLineId = line.id;
-        this.renderLineSelect();
-        this.renderLine();
-        this._hasFramedReal = false;
-        this.renderPreviewFrame();
-        this.reframeCamera();
-        this.schedulePreviewUpdate();
-    }
-    async deleteLine() {
-        const line = this.getActiveLine();
-        if (!line) return;
-        const ok = await confirmDialog({ title: 'Apagar linha', message: `Apagar a linha "${line.name}"?`, confirmLabel: 'Apagar' });
-        if (!ok) return;
-        this.model.lines = this.model.lines.filter(l => l !== line);
-        this.activeLineId = (this.model.lines[0] || {}).id ?? null;
-        this.renderLineSelect();
-        this.renderLine();
+        this.renderSegments();
+        this.tables.lines.selectRow(line.id);
         this._hasFramedReal = false;
         this.renderPreviewFrame();
         this.reframeCamera();

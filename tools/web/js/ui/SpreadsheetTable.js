@@ -179,6 +179,47 @@ function textColumn(col) {
     return { field: col.key, title: col.label, editor: 'input', widthGrow: col.widthGrow ?? 1 };
 }
 
+/** `{key, label, type: 'custom', getValue: (item) => number|string, setValue: (item, value) =>
+ * void, decimals?}` -- for a field Tabulator's own dot-notation field resolution can't reach
+ * cleanly, e.g. one slot of an array (a line's `top_position_m[0]`) rather than a plain object
+ * property. `key` still needs to be a unique string (Tabulator's internal bookkeeping wants a
+ * `field` on every column), but reads/writes go through `getValue`/`setValue` against the whole
+ * row object (`cell.getData()`), not through `key` itself -- Tabulator ends up also writing the
+ * committed value onto `data[key]` as a side effect of how its editor API works, which is a
+ * harmless unused property (same idea as the synthetic `id` backfill segments get). */
+function customColumn(col) {
+    const { key: field, label, getValue, setValue, decimals } = col;
+    return {
+        field, title: label, hozAlign: 'right', widthGrow: 1,
+        formatter(cell) {
+            const v = getValue(cell.getData());
+            if (v === null || v === undefined || v === '') return '';
+            return decimals != null ? Number(v).toFixed(decimals) : String(v);
+        },
+        editor(cell, onRendered, success, cancel) {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.step = 'any';
+            const v = getValue(cell.getData());
+            input.value = (v === null || v === undefined) ? '' : v;
+            input.style.width = '100%';
+            input.style.boxSizing = 'border-box';
+            onRendered(() => { input.focus(); input.select(); });
+            const finish = () => {
+                const val = input.value === '' ? null : parseFloat(input.value);
+                setValue(cell.getData(), val === null || Number.isNaN(val) ? null : val);
+                success(val);
+            };
+            input.addEventListener('blur', finish);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') finish();
+                else if (e.key === 'Escape') cancel();
+            });
+            return input;
+        },
+    };
+}
+
 function buildColumn(col) {
     switch (col.type) {
         case 'unit': return unitColumn(col);
@@ -186,6 +227,7 @@ function buildColumn(col) {
         case 'select': return selectColumn(col);
         case 'checkbox': return checkboxColumn(col);
         case 'list': return listColumn(col);
+        case 'custom': return customColumn(col);
         default: return textColumn(col);
     }
 }
@@ -198,12 +240,16 @@ function buildColumn(col) {
  * columns -- an ID column and a delete-row column are added automatically, don't include them.
  * `key` may use dot notation for a nested field (e.g. `"static.steps"`) -- Tabulator resolves
  * that natively, both for display and for edits.
- * @param {{onDelete?: (item: object) => void, onChange?: () => void}} [callbacks] `onDelete`
- * fires after a row is removed from `items` AND from the table. `onChange` fires after any cell
- * edit commits.
- * @returns {{addRow: (item: object) => void, destroy: () => void, table: object}}
+ * @param {{onDelete?: (item: object) => void, onChange?: () => void, selectable?: boolean|number,
+ * onRowSelected?: (item: object) => void}} [callbacks] `onDelete` fires after a row is removed
+ * from `items` AND from the table. `onChange` fires after any cell edit commits. `selectable`
+ * turns on click-to-highlight rows (pass `1` for "at most one row at a time", radio-button style
+ * -- e.g. the Linhas tab picking which line's Segmentos table to show); `onRowSelected` fires with
+ * the newly-selected row's data, from both a real click AND a programmatic `handle.selectRow(id)`.
+ * @returns {{addRow: (item: object) => void, selectRow: (id: number) => void, refresh: () => void,
+ * destroy: () => void, table: object}}
  */
-export function createSpreadsheetTable(container, items, columns, { onDelete, onChange } = {}) {
+export function createSpreadsheetTable(container, items, columns, { onDelete, onChange, selectable, onRowSelected } = {}) {
     const tableColumns = [
         { field: 'id', title: 'ID', width: 55, hozAlign: 'right', editable: false },
         ...columns.map(buildColumn),
@@ -227,9 +273,11 @@ export function createSpreadsheetTable(container, items, columns, { onDelete, on
         columns: tableColumns,
         clipboard: true,
         clipboardPasteAction: 'range',
+        selectable: selectable ?? false,
     });
 
     table.on('cellEdited', () => { onChange && onChange(); });
+    if (onRowSelected) table.on('rowSelected', (row) => onRowSelected(row.getData()));
 
     // Tabulator measures its container's width when it's built -- if that happens while the
     // container is `display:none` (any tab other than the one active when this table is first
@@ -251,6 +299,14 @@ export function createSpreadsheetTable(container, items, columns, { onDelete, on
         addRow(item) {
             items.push(item);
             table.addData([item]);
+        },
+        /** Highlights row `id` as selected (only meaningful with `selectable` on) -- also fires
+         * `onRowSelected`, same as a real click. Silently does nothing if the row isn't rendered
+         * yet (e.g. called synchronously right after construction, before Tabulator's own async
+         * build finishes) -- callers doing that should wait for the table's `tableBuilt` event
+         * (`handle.table.on('tableBuilt', ...)`) instead. */
+        selectRow(id) {
+            try { table.selectRow(id); } catch { /* row not found/not built yet -- ignore */ }
         },
         /** Forces every cell to re-run its formatter -- for when something a formatter reads
          * (e.g. a referenced catalog's name, via a `select` column's `options()`) changed in a

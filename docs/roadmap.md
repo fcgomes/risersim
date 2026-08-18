@@ -1476,9 +1476,88 @@ Chrome headless contra `project.html?project=<id>&view=edit` (o caminho real de 
 `editor.html` direto) -- um único cabeçalho, um único botão de tema, título do projeto aparece uma
 vez só acima das abas do editor.
 
+**Atualização 6** (aba "Linhas" virou duas tabelas, pedido do usuário): o formulário de campos
+soltos + um único seletor `<select>` foi substituído por **duas tabelas** no mesmo padrão das
+outras abas (`createSpreadsheetTable()`) -- "Linhas" (nome, topo X/Y/Z, ângulo de catenária,
+azimute, uma linha por linha) e "Segmentos" (mostrando os segmentos da linha clicada na tabela de
+cima). Sem seletor separado nem botão "apagar esta linha": apagar é o mesmo 🗑 por linha que todo
+catálogo já tem, sem confirmação (consistente com Solos/Materiais/etc., que também não confirmam).
+- **Seleção de linha**: `SpreadsheetTable.js` ganhou suporte a `selectable`/`onRowSelected`
+  (Tabulator `selectable: 1` -- no máximo uma linha destacada por vez, estilo rádio) -- clicar
+  numa linha troca qual `segments[]` a tabela de baixo mostra.
+- **Posição do topo (`top_position_m: [x, y, z]`)**: como é um array, não um objeto plano, a
+  resolução por dot-notation do Tabulator não serve -- `SpreadsheetTable.js` ganhou um tipo de
+  coluna novo, `type: 'custom'` (`getValue`/`setValue` contra a linha inteira via
+  `cell.getData()`), reaproveitável pra qualquer campo futuro que não seja uma propriedade de
+  objeto simples.
+- **Bug real achado e corrigido, não trivial**: o `background` da linha selecionada usando uma cor
+  translúcida (`var(--accent-soft)`, um `rgba()`) deixava o TEXTO da linha invisível -- mas só na
+  linha que passou por `table.selectRow()`, nunca em hover nem numa linha comum; reproduzível e
+  consistente entre os dois temas, causa raiz não totalmente entendida (possível bug de composição
+  do Tabulator/Chrome headless com fundo translúcido numa linha re-renderizada por seleção). Isolado
+  por eliminação (testando com CSS desabilitado, com cor sólida hardcoded, sem `box-shadow`) até
+  achar que o problema era especificamente a translucidez -- corrigido trocando por
+  `color-mix(in srgb, var(--accent) 18%, var(--surface))`, que é opaco. Comentário deixado no CSS
+  pra não cair na mesma pegadinha de novo.
+Verificado via Chrome headless: seleção inicial (primeira linha automaticamente destacada com
+segmentos certos), clique numa linha diferente (simulado via `table.selectRow(id)` programático
+através de um iframe de teste) trocando a tabela de segmentos corretamente, `+ Nova linha`
+adicionando e selecionando a nova linha, apagar a linha ativa via seu próprio 🗑 escolhendo
+corretamente a próxima linha ativa -- tudo confirmado nos dois temas e contra o projeto real do
+usuário no Docker.
+
+**Atualização 7** (bounding box "sliver" num riser quase plano, achado pelo usuário testando de
+verdade): num riser com pouco/nenhum deslocamento lateral (azimute alinhado, típico de um projeto
+recém-criado), o eixo perpendicular da caixa delimitadora ficava um fatia finíssima ao lado dos
+outros dois eixos, cheios (~100m+), difícil de orbitar/enquadrar. A causa era estrutural, não um
+bug -- `Riser3DRenderer.js::computeSceneBounds()` já tinha uma margem proporcional ao próprio span
+desse eixo (`marginPerpendicular`), mas o PISO dela era uma distância fixa (5m), não proporcional
+aos OUTROS eixos, então continuava minúscula perto de uma caixa de 100m+. Corrigido com a ideia do
+próprio usuário: depois de calcular a caixa, nenhum eixo pode ficar abaixo de 25% do maior eixo --
+quem ficar é re-centralizado e alargado até esse piso. Função é **compartilhada** entre editor,
+pré- e pós-processador (`Riser3DRenderer.js` não é específico do Eixo 3a), então o fix vale pros
+três visualizadores, não só o editor. Verificado via Chrome headless: vista ISO mostra uma caixa
+proporcionalmente 3D (não mais uma folha fina) e a vista de topo (XY) continua correta (não
+reabriu o problema antigo, já documentado no código, de "caixa enorme e vazia" que a margem
+proporcional original tinha resolvido).
+
+**Atualização 8** (segunda linha "desenhada errado", achado pelo usuário testando de verdade --
+bug real, não visual): ao adicionar uma segunda linha, o visualizador 3D às vezes desenhava um
+segmento diagonal esquisito ligando as duas linhas, e a própria segunda linha aparecia cortada
+(faltando o trecho final). Causa raiz: `Riser3DRenderer.js::renderStep()` desenhava cada elemento
+ligando `nodes[i]` a `nodes[i+1]` -- ou seja, por POSIÇÃO no array, não pelo `node1_id`/`node2_id`
+real do elemento. Isso só coincide com a conectividade real para uma única linha contínua; um
+modelo com 2+ linhas concatena as listas de nós/elementos de cada linha (`risersim_runner.py`'s
+`node_id_offset`/`elem_id_offset`), e cada linha extra soma mais um nó "inicial" sem elemento
+correspondente antes dele -- a partir daí todo elemento fica desalinhado por essa diferença: um
+cilindro espúrio conectando a âncora da linha 1 ao topo da linha 2 (o "segmento esquisito"), e o
+último elemento real de cada linha nunca chega a ser desenhado (dropado no fim do loop). Com uma
+segunda linha bem mais longa (comprimento default de `+ Nova linha`, 500m vs. os ~150m do projeto
+do usuário), o efeito fica muito mais visível -- reproduzido isolado com um projeto de teste (linha
+1 original + `addLine()` padrão): o trecho apoiado no leito, que deveria se estender por ~350m,
+simplesmente não aparecia, restando só aquele cilindro espúrio parecendo (por coincidência de
+posição) uma versão reta da linha 1.
+
+Corrigido em duas partes: `Riser3DRenderer.js::renderStep()` agora monta um `Map` id→nó e resolve
+`elem.node1_id`/`node2_id` de verdade quando presentes, caindo de volta pra indexação posicional
+só quando ausentes (mantém o comportamento de sempre para os resultados JÁ SOLUCIONADOS do
+pós-processador -- `DataLoaderService.js`, lendo HDF5 -- que nunca carregam conectividade real, só
+valores por elemento ordinal; exportar isso exigiria mudar `SimulationExporter` em C++, fora de
+escopo aqui). `editor_app.js::updatePreviewNow()` e `preprocessor_app.js::getSyntheticStep()`
+(as duas outras origens de dados não-solucionados, que JÁ têm os ids reais disponíveis) passaram a
+repassar `node1_id`/`node2_id` no lugar de descartá-los no `.map()`. Como `Riser3DRenderer.js` é
+compartilhado (editor/pré/pós-processador), o pré-processador também se beneficia -- um projeto
+AML com múltiplas `%LINE` importado hoje já cairia no mesmo bug, só que ninguém tinha reparado
+ainda. Verificado via Chrome headless: reprodução isolada (linha 1 original + `addLine()` padrão)
+mostrando a linha 2 completa e corretamente formada; regressão do projeto real do usuário (2 linhas
+com azimutes diferentes) idêntica a antes; regressão de um projeto de exemplo real de 1 linha só
+(`Exemplo_01a` no pré-processador) sem mudança nenhuma. Docker reconstruído e saudável.
+
 **Fora de escopo do v1** (explícito): movimento de topo real/RAO, upload de `.RAO`, corpo
 flutuante compartilhado entre linhas (fase 2 futura); editar/reabrir um projeto importado de AML/
-XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura.
+XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura; exportar
+conectividade real (`node1_id`/`node2_id`) no HDF5 para o pós-processador também usar resolução por
+id (mudança em C++, ver Atualização 8).
 
 ### 3b. Interface de controle de simulação (projetos, disparo, acompanhamento)
 

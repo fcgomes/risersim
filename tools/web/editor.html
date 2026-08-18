@@ -96,16 +96,12 @@
             </div>
 
             <div class="bottom-tab-panel editor-tab-panel" id="panel-lines">
-                <div class="editor-tab-hint">Cada linha tem o topo fixo no espaço (sem corpo flutuante, v1) -- posição, ângulo de catenária e azimute definem a geometria; a âncora é resolvida automaticamente. O modelo inteiro (todas as linhas) aparece sempre no visualizador 3D ao lado.</div>
-                <div class="line-picker-row">
-                    <label for="line-select" style="margin:0;">Linha:</label>
-                    <select id="line-select"></select>
-                    <button class="btn small" id="add-line-btn" type="button">+ Nova linha</button>
-                    <button class="btn small danger" id="delete-line-btn" type="button">🗑 Apagar esta linha</button>
-                </div>
-                <div class="line-fields-grid" id="line-fields"></div>
+                <div class="editor-tab-hint">Cada linha tem o topo fixo no espaço (sem corpo flutuante, v1) -- posição, ângulo de catenária e azimute definem a geometria; a âncora é resolvida automaticamente. O modelo inteiro (todas as linhas) aparece sempre no visualizador 3D ao lado. Clique numa linha pra ver/editar os segmentos dela abaixo.</div>
+                <div class="control-title">LINHAS</div>
+                <div id="lines-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-line-btn" type="button">+ Nova linha</button>
 
-                <div class="control-title" style="margin-top:6px;">SEGMENTOS</div>
+                <div class="control-title" style="margin-top:16px;">SEGMENTOS</div>
                 <div id="segments-table"></div>
                 <button class="btn small editor-add-row-btn" id="add-segment-btn" type="button">+ Adicionar segmento</button>
             </div>

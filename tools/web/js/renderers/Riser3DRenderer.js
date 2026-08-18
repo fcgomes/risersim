@@ -136,10 +136,25 @@ export class Riser3DRenderer {
         const rangeMax = (scalarRange && scalarRange.max !== undefined) ? scalarRange.max : 1.0;
         const rangeSpan = (rangeMax > rangeMin) ? (rangeMax - rangeMin) : 1.0;
 
+        // Elements connect nodes by REAL id (`elem.node1_id`/`node2_id`), not by array position --
+        // a multi-line model's `nodes`/`elements` arrays are several lines' node chains
+        // concatenated back to back (see risersim_runner.py::build_config_from_interface()'s
+        // `node_id_offset`/`elem_id_offset`), so `nodes[i]`/`nodes[i+1]` only happens to line up
+        // with `elements[i]` for a SINGLE line -- past the first line's node count, every element
+        // is off by however many extra "line start" nodes came before it, drawing bogus cylinders
+        // between unrelated lines and dropping each line's last real segment (found via a real
+        // 2-line project: the second line rendered as a single stray diagonal, not its actual
+        // shape). Falls back to positional indexing when `node1_id`/`node2_id` aren't present --
+        // solved-results steps (postprocessor's `DataLoaderService.js`, reading HDF5) never carry
+        // real connectivity (the exporter only writes per-element scalars, ordinal-indexed), so
+        // positional indexing is the best available there; harmless for a single-line result
+        // either way, since it's what this always did.
+        const nodesById = new Map(nodes.map(n => [n.id, n]));
+
         for (let i = 0; i < elements.length; ++i) {
             const elem = elements[i];
-            const n1 = nodes[i];
-            const n2 = nodes[i + 1];
+            const n1 = (elem && elem.node1_id != null) ? nodesById.get(elem.node1_id) : nodes[i];
+            const n2 = (elem && elem.node2_id != null) ? nodesById.get(elem.node2_id) : nodes[i + 1];
             if (!n1 || !n2 || !elem) continue;
 
             const p1 = new THREE.Vector3(n1.x, n1.z, n1.y);
@@ -283,6 +298,24 @@ export class Riser3DRenderer {
         minX -= boxMargin; maxX += boxMargin;
         minY -= boxMargin; maxY += boxMargin;
         minZ -= marginPerpendicular; maxZ += marginPerpendicular;
+
+        // Floors each axis's final span to a fraction of the largest one -- a near-planar riser
+        // (little/no lateral offset) leaves the perpendicular axis (Z) just a few meters wide next
+        // to a 100+m tall/wide box; the margins above already help but their own floor is a small
+        // FIXED distance, not proportional to the other axes, so the box still comes out as a thin
+        // sliver that's disorienting to orbit/zoom around (reported directly by the user against
+        // the editor's live preview). Re-centers and widens any axis still under 25% of the
+        // largest one -- purely a camera-framing aid, doesn't change any real geometry.
+        const widenToMinSpan = (lo, hi, minSpan) => {
+            const span = hi - lo;
+            if (span >= minSpan) return [lo, hi];
+            const center = (lo + hi) / 2;
+            return [center - minSpan / 2, center + minSpan / 2];
+        };
+        const minAxisSpan = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.25;
+        [minX, maxX] = widenToMinSpan(minX, maxX, minAxisSpan);
+        [minY, maxY] = widenToMinSpan(minY, maxY, minAxisSpan);
+        [minZ, maxZ] = widenToMinSpan(minZ, maxZ, minAxisSpan);
 
         return { minX, maxX, minY, maxY, minZ, maxZ };
     }
