@@ -95,6 +95,18 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
             }
         }
     }
+
+    // Buoy dry weight (real cBuoyElement::calc_load's `load[2] -= weight`, unconditional -- no
+    // submersion dependence, that's the hydrostatic RESTORING term already handled as an internal
+    // force by BuoyElement::assemble() itself, see its own doc comment). No Morison/current here
+    // yet -- documented gap, same as TrussElement/WinchElement's.
+    for (const auto& elem_base : model->elements()) {
+        auto* buoy = dynamic_cast<BuoyElement*>(elem_base.get());
+        if (!buoy) continue;
+        int eq_z = buoy->node1()->eq_numbers[2];
+        if (eq_z >= 0) F_ext[eq_z] -= buoy->props().weight;
+    }
+
     return F_ext;
 }
 

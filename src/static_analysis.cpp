@@ -341,6 +341,12 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
         if (eq1_z >= 0) F_total_ref[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
         if (eq2_z >= 0) F_total_ref[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
     }
+    for (const auto& elem_base : model->elements()) {
+        auto* buoy = dynamic_cast<BuoyElement*>(elem_base.get());
+        if (!buoy) continue; // see static_integrator.cpp::assemble_load_vector's buoy weight loop
+        int eq_z = buoy->node1()->eq_numbers[2];
+        if (eq_z >= 0) F_total_ref[eq_z] -= buoy->props().weight;
+    }
     double norm_F_ref = F_total_ref.norm() + 1.0;
 
     StaticIntegrator integrator(this);
@@ -598,6 +604,12 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
 
             if (eq1_z >= 0) F_ext[eq1_z] += hydro.end_force(0) * g - 0.5 * w_dry * L;
             if (eq2_z >= 0) F_ext[eq2_z] += hydro.end_force(1) * g - 0.5 * w_dry * L;
+        }
+        for (const auto& elem_base : model->elements()) {
+            auto* buoy = dynamic_cast<BuoyElement*>(elem_base.get());
+            if (!buoy) continue; // see static_integrator.cpp::assemble_load_vector's buoy weight loop
+            int eq_z = buoy->node1()->eq_numbers[2];
+            if (eq_z >= 0) F_ext[eq_z] -= buoy->props().weight;
         }
 
         Eigen::SparseMatrix<double> K_buoyancy = assemble_buoyancy_stiffness();

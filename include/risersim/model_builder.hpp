@@ -13,6 +13,7 @@
 #include "risersim/element_scalar.hpp"
 #include "risersim/element_truss.hpp"
 #include "risersim/element_winch.hpp"
+#include "risersim/element_buoy.hpp"
 #include <nlohmann/json.hpp>
 #include <map>
 #include <string>
@@ -71,6 +72,13 @@ TrussProps parse_truss_properties(const nlohmann::json& tp);
  * length mismatch).
  */
 PiecewiseLinearCurve parse_winch_payout_curve(const nlohmann::json& wp);
+
+/**
+ * @brief Converts a `buoy_properties` JSON object into BuoyProps (`weight`, `volume`, `z_area`,
+ * `Ca` as `[Ca_x, Ca_y, Ca_z]`, `moment_inertia` as `[Ix, Iy, Iz]` -- all optional, defaulting to
+ * BuoyProps's own zero defaults).
+ */
+BuoyProps parse_buoy_properties(const nlohmann::json& bp);
 
 /**
  * @brief Builds a RiserModel from a structured input JSON, mirroring ANFLEX's cModelBuilderDAT.

@@ -11,6 +11,7 @@
 #include "risersim/element_scalar.hpp"
 #include "risersim/element_truss.hpp"
 #include "risersim/element_winch.hpp"
+#include "risersim/element_buoy.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/vessel_offset.hpp"
 #include "risersim/vessel_motion.hpp"
@@ -303,6 +304,19 @@ public:
     WinchElement* add_winch_element(Args&&... args) {
         auto elem = std::make_unique<WinchElement>(std::forward<Args>(args)...);
         WinchElement* ptr = elem.get();
+        elements_.push_back(std::move(elem));
+        return ptr;
+    }
+
+    /**
+     * @brief Constructs a BuoyElement (single-node hydrostatic-restoring element, see
+     * element_buoy.hpp) owned by this model and returns a non-owning pointer to it.
+     * @param args Forwarded to BuoyElement's constructor.
+     */
+    template <typename... Args>
+    BuoyElement* add_buoy_element(Args&&... args) {
+        auto elem = std::make_unique<BuoyElement>(std::forward<Args>(args)...);
+        BuoyElement* ptr = elem.get();
         elements_.push_back(std::move(elem));
         return ptr;
     }

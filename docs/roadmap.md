@@ -1427,7 +1427,7 @@ disparar a auto-detecção (EI=21,7 kN·m² > limiar), comportamento idêntico a
 
 **Fora de escopo desta rodada** (confirmado com o usuário antes de começar): frontend (`Riser3DRenderer.js`/`DataLoaderService.js`/tabela de resultados -- hoje assumem uma corrente única contígua, precisam de conectividade real exportada no H5 primeiro); seleção de linha no gerenciador de rodadas web (`risersim_projects.py`/`run_server.py`, sem conceito de "linha" hoje); caminho XML+H5 (`xml_h5_reader.py`, sem export real multi-linha existente).
 
-### 2d. Suporte a múltiplos tipos de elemento — 🚧 EM ANDAMENTO (Fases 0-3 implementadas)
+### 2d. Suporte a múltiplos tipos de elemento — ✅ CONCLUÍDO (Fases 0-4, todas implementadas)
 
 Usuário perguntou como o `risersim` está em relação aos tipos de elemento reais do ANFLEX
 (2026-08-18). Levantamento (3 agentes Explore) achou ~9 famílias reais (`cBeam` + 5 variantes,
@@ -1530,11 +1530,49 @@ tocado). `ModelBuilder::load_from_json()` ganhou `element_type: "truss"`/`"winch
 `truss_properties`/`winch_properties` (`E`/`A`/`rho`/`initial_tension`, e pro winch um
 `payout_curve: {"time":[...], "fraction":[...]}` opcional).
 
-**Fora de escopo desta rodada**: Fase 4 (`cBuoyElement`, elemento de 1 nó só, mais distante do
-padrão atual -- carga hidrostática/Morison como carga EXTERNA, não força interna, precisa de ajuste
-nos hooks da Fase 0/2). Nenhuma integração de JSON-round-trip end-to-end pro `ScalarElement`/
-`TrussElement`/`WinchElement` ainda (só testes unitários da fórmula) -- lacuna conhecida, não
-bloqueante. Peso/empuxo/corrente pra `TrussElement`/`WinchElement` (ver Fase 2 acima).
+**Fase 4 (`BuoyElement`, elemento de 1 nó) -- implementada (2026-08-18)**: novo
+`include/risersim/element_buoy.hpp`. Achado central que resolveu a preocupação original do plano
+("precisa de ajuste nos hooks da Fase 0/2"): o `cBuoyElement` real classifica sua rigidez/força
+hidrostática restauradora (submersão da linha d'água) como **INTERNA**
+(`calc_stiff_mt`/`calc_internal_forces`, mesmo grupo de métodos puros virtuais que o `cTruss` usa
+pra sua própria força elástica) -- não como carga externa. Isso significa que essa parte encaixa
+direto em `Element::assemble()`/`mass_matrix()` sem nenhum hook novo, desde que `water_surface_z`
+seja capturado uma vez na construção (o nível d'água não muda ao longo de uma rodada do risersim
+hoje -- elevação de onda ainda não alimenta hidrostática por elemento em lugar nenhum, mesma lacuna
+já documentada pra viga). Fórmulas portadas sinal-a-sinal do real (`buoy_element.cpp:143-245`), com
+uma verificação de sinal via equilíbrio físico direto que INICIALMENTE sugeriu um sinal diferente do
+que o real usa -- descartada em favor do porte literal depois que o mesmo tipo de checagem, aplicada
+ao `TrussElement` (já validado, testes passando), se mostrou não-confiável isoladamente. `Kzz`/`Krot`
+usam `rho_water*g*área` explícito (convenção de densidade de massa do risersim, mesmo padrão de
+`Hydrostatics`/`assemble_buoyancy_stiffness()`) em vez do `área*m_water_density` cru do real (que,
+sem dividir por g, só faz sentido fisicamente se o `m_water_density` real ali já for densidade de
+PESO, não de massa -- mesma formula final, só a convenção de unidade traduzida).
+
+**Simplificações deliberadas**: referencial local FIXO (=identidade, sem rastrear orientação da
+boia -- real atualiza `m_transf_matrix` a cada iteração quando `num_dofs>3`); SEM peso próprio nem
+Morison/arrasto/onda (`calc_load`'s termo dominante além do peso) -- peso é adicionado como carga
+EXTERNA (não cabe em `assemble()`, que só vê o próprio nó), via o mesmo padrão
+`dynamic_cast<BuoyElement*>` já usado pro peso de viga, em 4 pontos (`static_integrator.cpp`,
+`static_analysis.cpp` x2, `dynamic_analysis.cpp`); Morison/onda/corrente fica de fora, mesma lacuna
+documentada do Truss/Winch (genuinamente complexo, precisa de cinemática de onda que o risersim
+ainda não consome plenamente nem pra viga). Massa: `mass_matrix()` = massa estrutural
+(`weight/g`) + massa adicionada (`rho_water*volume*Ca` por eixo) + inércia rotacional estrutural
+configurável -- direto de `calc_mass_vector`, sem a rotação pelo referencial (que aqui é identidade).
+`ModelBuilder` ganhou `element_type: "buoy"` (schema de nó único, `node_id` em vez de
+`node1_id`/`node2_id`) + `buoy_properties` (`weight`/`volume`/`z_area`/`Ca`/`moment_inertia`) --
+construído DEPOIS da seção de parâmetros ambientais (não junto com viga/scalar/truss/winch), já que
+precisa de `water_surface_z` resolvido. 8 testes novos em `test_element.cpp`.
+
+**Verificação (Fase 4)**: 734/734 assertions (707 antigos + 27 novos), ALL_BUILD limpo (inclusive
+módulo pybind e `risersim_diag_isolated_segment`) -- o teste de convergência estática completo
+(1339 iterações) reproduziu resultado idêntico de novo, zero regressão.
+
+**Plano de 4 fases concluído.** Únicas lacunas conhecidas remanescentes: peso/empuxo/corrente pra
+`TrussElement`/`WinchElement` (Fase 2), Morison/onda/corrente pra `BuoyElement` (Fase 4), e nenhuma
+integração JSON-round-trip end-to-end pra `ScalarElement`/`TrussElement`/`WinchElement`/`BuoyElement`
+ainda (só testes unitários da fórmula) -- nenhuma bloqueante, todas documentadas por tipo acima.
+`cRigidBodyElement`/`cContactElement`/variantes alternativas de viga seguem fora de escopo (zero uso
+real neste repo).
 
 ## Eixo 3 — Interfaces (podem começar em paralelo aos eixos 1-2, escopadas ao que o motor já suporta)
 

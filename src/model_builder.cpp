@@ -234,6 +234,18 @@ PiecewiseLinearCurve parse_winch_payout_curve(const json& wp) {
     return PiecewiseLinearCurve(time, fraction);
 }
 
+BuoyProps parse_buoy_properties(const json& bp) {
+    BuoyProps props;
+    props.weight = bp.value("weight", props.weight);
+    props.volume = bp.value("volume", props.volume);
+    props.z_area = bp.value("z_area", props.z_area);
+    auto ca = bp.value("Ca", std::vector<double>{0.0, 0.0, 0.0});
+    if (ca.size() == 3) props.Ca = Eigen::Vector3d(ca[0], ca[1], ca[2]);
+    auto mi = bp.value("moment_inertia", std::vector<double>{0.0, 0.0, 0.0});
+    if (mi.size() == 3) props.moment_inertia = Eigen::Vector3d(mi[0], mi[1], mi[2]);
+    return props;
+}
+
 bool ModelBuilder::load_from_json(const std::string& input_json_path) {
     std::ifstream ifs(input_json_path);
     if (!ifs.is_open()) return false;
@@ -672,6 +684,49 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             // RiserModel::resolve_line_attachments().
             if (env.contains("vessel_motion") && env["vessel_motion"].value("enabled", false)) {
                 ec.vessel_motion = parse_vessel_motion_config(env["vessel_motion"]);
+            }
+        }
+
+        // 4.5. Buoy elements (single-node hydrostatic-restoring element, element_buoy.hpp) --
+        // constructed HERE, after environmental parsing (unlike beam/scalar/truss/winch in step 2
+        // above), because BuoyElement captures water_surface_z once at construction (see its own
+        // doc comment for why) and that value isn't resolved until model.environmental() is
+        // populated by step 4 just above. Single "node_id" (not "node1_id"/"node2_id" like every
+        // other element type) -- a buoy is genuinely 1-node.
+        if (j.contains("model") && j["model"].contains("elements")) {
+            int buoy_missing_nodes = 0;
+            int buoy_missing_properties = 0;
+            double water_surface_z = model.environmental().water_surface_z;
+            double water_density = model.environmental().water_density;
+            for (auto& e_j : j["model"]["elements"]) {
+                std::string element_type = e_j.value("element_type", std::string("beam"));
+                if (element_type != "buoy") continue;
+
+                int id = e_j["id"];
+                auto n_it = node_by_id.find(e_j["node_id"].get<int>());
+                if (n_it == node_by_id.end()) {
+                    buoy_missing_nodes++;
+                    continue;
+                }
+
+                BuoyProps buoy_props;
+                if (e_j.contains("buoy_properties")) {
+                    buoy_props = parse_buoy_properties(e_j["buoy_properties"]);
+                } else {
+                    buoy_missing_properties++;
+                }
+
+                model.add_buoy_element(id, n_it->second, buoy_props, water_surface_z, water_density);
+            }
+            if (buoy_missing_nodes > 0) {
+                std::ostringstream oss;
+                oss << buoy_missing_nodes << " elemento(s) 'buoy' referenciando node_id inexistente -- ignorado(s).";
+                warnings.push_back({"error", oss.str()});
+            }
+            if (buoy_missing_properties > 0) {
+                std::ostringstream oss;
+                oss << buoy_missing_properties << " elemento(s) 'buoy' sem 'buoy_properties' no JSON -- assumindo boia sem área de linha d'água (sem efeito hidrostático nem massa adicionada).";
+                warnings.push_back({"warning", oss.str()});
             }
         }
 

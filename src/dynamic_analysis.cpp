@@ -423,6 +423,12 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                     if (eq2_zm >= 0) st.F_ext[eq2_zm] += f_morison.z() * L * 0.5;
                 }
             }
+            for (const auto& elem_base : model->elements()) {
+                auto* buoy = dynamic_cast<BuoyElement*>(elem_base.get());
+                if (!buoy) continue; // see static_integrator.cpp::assemble_load_vector's buoy weight loop
+                int eq_z = buoy->node1()->eq_numbers[2];
+                if (eq_z >= 0) st.F_ext[eq_z] -= buoy->props().weight;
+            }
 
             // 2. Assemble Global Stiffness (K) and Internal Force (F_int)
             st.K_global.resize(num_dofs, num_dofs);

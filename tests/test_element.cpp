@@ -14,6 +14,7 @@
 #include "risersim/element_scalar.hpp"
 #include "risersim/element_truss.hpp"
 #include "risersim/element_winch.hpp"
+#include "risersim/element_buoy.hpp"
 #include "risersim/element.hpp"
 
 using namespace risersim;
@@ -306,4 +307,126 @@ TEST_CASE("WinchElement: payout curve shortens the reference length and changes 
     // nodes themselves never moved.
     const double expected = 1.0 * (props.E * props.A);
     REQUIRE(winch.axial_force() == Catch::Approx(expected).margin(1.0e-6));
+}
+
+namespace {
+// z_area=4, volume=8 -> height=2 (a cylinder-equivalent 2m tall, 4m^2 cross-section).
+BuoyProps make_buoy_props() {
+    BuoyProps p;
+    p.z_area = 4.0;
+    p.volume = 8.0;
+    return p;
+}
+} // namespace
+
+TEST_CASE("BuoyElement: single-node, node()/num_nodes() match", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 0.0);
+    BuoyElement elem(1, &n, make_buoy_props(), /*water_surface_z=*/0.0);
+
+    REQUIRE(elem.num_nodes() == 1);
+    REQUIRE(elem.node(0) == elem.node1());
+    REQUIRE(elem.node(0) == &n);
+}
+
+TEST_CASE("BuoyElement: height()/submersion_depth() derive from volume/z_area", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 0.0);
+    BuoyElement elem(1, &n, make_buoy_props(), /*water_surface_z=*/0.0);
+
+    REQUIRE(elem.height() == Catch::Approx(2.0).margin(1.0e-9)); // 8/4
+    REQUIRE(elem.submersion_depth() == Catch::Approx(1.0).margin(1.0e-9)); // height/2 - (0-0)
+}
+
+TEST_CASE("BuoyElement: fully emerged (above the notional waterline) contributes zero K/F", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 5.0); // well above height/2 above the surface
+    BuoyElement elem(1, &n, make_buoy_props(), /*water_surface_z=*/0.0);
+    REQUIRE(elem.submersion_depth() < 0.0);
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+    REQUIRE(K.isZero());
+    REQUIRE(F.isZero());
+}
+
+TEST_CASE("BuoyElement: partially submerged gives rho*g*z_area*d vertical restoring force/stiffness", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 0.0);
+    BuoyProps props = make_buoy_props();
+    const double rho = 1000.0;
+    BuoyElement elem(1, &n, props, /*water_surface_z=*/0.0, rho);
+    REQUIRE(elem.submersion_depth() == Catch::Approx(1.0).margin(1.0e-9)); // 0 < d=1 < height=2
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+
+    const double g = 9.81;
+    const double Kzz = props.z_area * rho * g;
+    REQUIRE(K(2, 2) == Catch::Approx(Kzz).margin(1.0e-6));
+    REQUIRE(F(2) == Catch::Approx(Kzz * 1.0).margin(1.0e-6)); // Kzz * d
+    // No tilt -> zero restoring moment, even though Krot itself is nonzero.
+    REQUIRE(F(3) == Catch::Approx(0.0).margin(1.0e-9));
+    REQUIRE(F(4) == Catch::Approx(0.0).margin(1.0e-9));
+    REQUIRE(F(0) == Catch::Approx(0.0).margin(1.0e-9)); // no horizontal hydrostatic term
+}
+
+TEST_CASE("BuoyElement: tilted node produces a restoring moment opposing the tilt", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 0.0);
+    n.rot = Eigen::Vector3d(0.1, 0.0, 0.0); // small roll
+    BuoyProps props = make_buoy_props();
+    BuoyElement elem(1, &n, props, /*water_surface_z=*/0.0, 1000.0);
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+
+    // F(3) = -Krot * rot.x(), and K(3,3) = +Krot (direct port of real cBuoyElement's own sign
+    // pattern -- see class doc comment) -- so F(3) and K(3,3) always have OPPOSITE sign here.
+    REQUIRE(F(3) == Catch::Approx(-K(3, 3) * 0.1).margin(1.0e-6));
+    REQUIRE(F(3) != Catch::Approx(0.0).margin(1.0e-9));
+}
+
+TEST_CASE("BuoyElement: fully submerged gives a constant buoyant force, no stiffness", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, -10.0); // far below the surface, fully submerged
+    BuoyProps props = make_buoy_props();
+    const double rho = 1000.0;
+    BuoyElement elem(1, &n, props, /*water_surface_z=*/0.0, rho);
+    REQUIRE(elem.submersion_depth() >= elem.height());
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+
+    const double expected = rho * 9.81 * props.volume;
+    REQUIRE(F(2) == Catch::Approx(expected).margin(1.0e-6));
+    REQUIRE(K.isZero()); // no waterplane engaged once fully submerged -- no restoring stiffness
+}
+
+TEST_CASE("BuoyElement: mass_matrix() combines structural, added, and rotational mass", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 0.0);
+    BuoyProps props;
+    props.weight = 98.1; // -> structural mass 10 kg
+    props.volume = 2.0;
+    props.Ca = Eigen::Vector3d(0.5, 0.5, 1.0);
+    props.moment_inertia = Eigen::Vector3d(3.0, 4.0, 5.0);
+    BuoyElement elem(1, &n, props, /*water_surface_z=*/0.0);
+
+    Eigen::MatrixXd M = static_cast<Element*>(&elem)->mass_matrix(1025.0);
+    REQUIRE(M(0, 0) == Catch::Approx(10.0 + 1025.0 * 2.0 * 0.5).margin(1.0e-6));
+    REQUIRE(M(1, 1) == Catch::Approx(10.0 + 1025.0 * 2.0 * 0.5).margin(1.0e-6));
+    REQUIRE(M(2, 2) == Catch::Approx(10.0 + 1025.0 * 2.0 * 1.0).margin(1.0e-6));
+    REQUIRE(M(3, 3) == Catch::Approx(3.0).margin(1.0e-9));
+    REQUIRE(M(4, 4) == Catch::Approx(4.0).margin(1.0e-9));
+    REQUIRE(M(5, 5) == Catch::Approx(5.0).margin(1.0e-9));
+}
+
+TEST_CASE("BuoyElement: zero z_area (no waterplane) contributes no hydrostatic K/F regardless of position", "[element][buoy]") {
+    Node3D n(1, 0.0, 0.0, 0.0); // would otherwise be "partially submerged"
+    BuoyProps props; // z_area = 0.0 default
+    BuoyElement elem(1, &n, props, /*water_surface_z=*/0.0);
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+    REQUIRE(K.isZero());
+    REQUIRE(F.isZero());
 }
