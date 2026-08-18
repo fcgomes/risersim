@@ -1949,9 +1949,61 @@ qualquer conceito de `element_type`, sempre produziam elementos beam implicitame
 
 **Fora de escopo do v1** (explícito): movimento de topo real/RAO, upload de `.RAO`, corpo
 flutuante compartilhado entre linhas (fase 2 futura); editar/reabrir um projeto importado de AML/
-XML no editor (só projetos "em branco" são editáveis); UI do editor pra criar/editar scalar/truss/
-winch/buoy (Atualização 10 só cobriu o backend -- schema+compilador+importador AML); turret/
-ruptura; boia via importação de `.aml` real (ver "gap real encontrado" na Atualização 10).
+XML no editor (só projetos "em branco" são editáveis); turret/ruptura; boia via importação de
+`.aml` real (ver "gap real encontrado" na Atualização 10 -- ainda sem caso de teste real
+disponível).
+
+**Atualização 11** (UI do editor pros 4 tipos de elemento -- fecha o item que a Atualização 10
+deixou explicitamente de fora): schema/compilador/importador AML já existiam (Atualização 10); só
+faltava o `editor.html`/`editor_app.js` em si saber criar/editar Truss/Winch/Scalar/Buoy, em vez de
+só produzir materiais beam-only. Nenhuma mudança de schema/compilador foi necessária -- confirmado
+por leitura direta que os nomes de campo que o compilador já lê (`finite_element_type`,
+`initial_tension_kN`, `winch_payout_curve_id`, `scalar_stiffness_translational_kNm`/
+`_torsional_kNm_per_rad`/`_bending_kNm_per_rad`, `buoys[].weight_kN`/`volume_m3`/`z_area_m2`/`Ca`/
+`moment_inertia`, `segments[].buoy_id`) já eram exatamente os que a UI precisava produzir.
+
+- **2 catálogos novos**, mesmo padrão de Solos/Correntes/Ondas: aba "📈 Curvas" (`curves[]`, tempo×
+  fração, referenciada pelo `winch_payout_curve_id` de um material winch) logo depois de
+  "Materiais"; aba "🎈 Boias" (`buoys[]`, peso/volume/área-Z/Ca/momento de inércia) logo antes de
+  "Linhas" (é o catálogo que a tabela de Segmentos referencia).
+- **Materiais ganhou 5 colunas** (sempre visíveis, só lidas pelo compilador quando o tipo do
+  material as usa -- mesmo padrão que as colunas de Rayleigh já tinham antes desta rodada): "Tipo"
+  (`finite_element_type`, select fixo beam/truss/scalar/winch), "Tração inicial" (truss/winch, com
+  seletor de unidade como EA já tem), 3 colunas de rigidez scalar, e "Curva de recolhimento"
+  (winch, select **anulável** apontando pro catálogo Curvas).
+- **`SpreadsheetTable.js::selectColumn()` ganhou `nullable`** -- único componente genuinamente novo
+  de código (os `select` existentes, `material_id`/`soil_id`/`current_id`/`wave_id`, são todos
+  obrigatórios; `winch_payout_curve_id` e o novo `segments[].buoy_id` são os primeiros
+  campos-referência realmente opcionais do editor). Opção "(nenhuma)" prependida quando `nullable`,
+  grava `null` (não string vazia) quando selecionada.
+- **Segmentos ganhou a coluna "Boia"** (`buoy_id`, select anulável apontando pro catálogo Boias).
+- **Preview 3D**: `updatePreviewNow()` generalizado pra ler `D_outer` da chave de propriedades
+  certa por `element_type` (antes: sempre `section_properties`, assumindo beam) e excluir
+  scalar/buoy do cálculo de min/max da legenda de diâmetro (sem isso, o `0` sintético de um
+  elemento sem diâmetro real puxaria a barra de cores pra baixo artificialmente).
+  `Riser3DRenderer.js::renderStep()` ganhou um ramo pro elemento `buoy` -- só tem `node_id` (1 nó,
+  compartilhado com o elemento estrutural adjacente), não `node1_id`/`node2_id`; sem tratamento
+  especial cairia no fallback posicional e desenharia um cilindro espúrio (mesma classe de bug já
+  corrigida pra multi-linha, Atualização 8) -- desenhado como esfera marcadora fixa (amarelo,
+  `0xffcc33`) em vez de cilindro.
+- **Backfill defensivo** em `load()` (mesmo padrão do backfill de `id` em segmentos AML-derivados)
+  pra projetos criados antes desta mudança não mostrarem colunas em branco; `dashboard.js`'s modelo
+  default de projeto "em branco" ganhou `curves: []`/`buoys: []`/`buoy_id: null` explícitos.
+- `WEB_VERSION`: `1.6.0` → `1.7.0`.
+
+**Verificação real** (servidor local + Chrome headless via CDP, sem Docker -- rodada não toca C++
+nem `run_worker.py`/`run_server.py`, só frontend): projeto "em branco" real criado via
+`/api/projects/blank`; sequência completa testada via protocolo CDP direto (não só screenshot --
+`Runtime.consoleAPICalled`/`Runtime.exceptionThrown` capturados programaticamente, zero exceções e
+zero erros de console do início ao fim): criar curva na aba Curvas, trocar o tipo do material pra
+`winch` e apontar pra ela, criar boia na aba Boias, setar `buoy_id` no segmento -- o preview
+recompilou com sucesso (`preview-error` vazio) produzindo 51 elementos com `element_type` `winch`/
+`buoy` corretos. Screenshot confirma visualmente a esfera amarela marcando a boia exatamente no nó
+esperado (âncora do segmento único desta linha de teste), sem cilindro espúrio. Regressão: projeto
+"em branco" recém-criado, sem nenhuma mutação, carregado do zero -- material default mostra "Viga
+(beam)" na coluna Tipo, segmento mostra "(nenhuma)" na coluna Boia, preview 3D idêntico ao
+comportamento anterior a esta rodada (mesma catenária, mesma cor por diâmetro), zero
+exceções/erros de console.
 
 ### 3b. Interface de controle de simulação (projetos, disparo, acompanhamento)
 
@@ -2452,11 +2504,17 @@ Python (bindings pybind) confirmou getters/setters, `props()` mutável, e `Buoya
 ## Backlog de recursos faltantes do motor (não bloqueante — puxar sob demanda)
 
 Achados documentados em `mapa_aml_exemplos_e_web_interface.md`. Flexjoint (`cScalar`, real uso em 6
-`.aml`s) — implementado, ver Eixo 2d. Ainda faltam: boias/tendões como entidade própria (`cTruss`/
-`cWinch`/`cBuoyElement`, real uso em 3-7 `.aml`s cada — Fases 2-4 do plano do Eixo 2d, não
-implementadas ainda), drilljoint, turret com movimento prescrito 6-GDL por caso de carga
-(`Turret.aml`), ruptura de elemento em tempo de execução dinâmico (`Ruptura.aml`), verificação de
-código DNV como pós-processamento (`DNV_Check.aml`), corpo rígido/contato tubo-em-tubo (`cRigidBodyElement`/
+`.aml`s) e boias/tendões como entidade própria (`cTruss`/`cWinch`/`cBuoyElement`, real uso em 3-7
+`.aml`s cada, incluindo peso/empuxo/corrente pro Truss/Winch) — **implementados de ponta a ponta**:
+motor (Fases 0-4 do Eixo 2d), backend do pipeline web (Atualização 10 do Eixo 3a) e UI do editor
+(Atualização 11 do Eixo 3a), todos 2026-08-18. Resta só boia via importação de `.aml` real
+(`%LINE.SEGMENT.BUOY_ID` está sempre em -1 nos exemplos reais deste repo — o mecanismo real do
+ANFLEX usa outra seção, não segmentos de linha; sem caso de teste real pra verificar contra) -- o
+caminho de JSON de interface escrita à mão ou pelo editor já funciona normalmente. Ainda faltam de
+verdade:
+drilljoint, turret com movimento prescrito 6-GDL por caso de carga (`Turret.aml`), ruptura de
+elemento em tempo de execução dinâmico (`Ruptura.aml`), verificação de código DNV como
+pós-processamento (`DNV_Check.aml`), corpo rígido/contato tubo-em-tubo (`cRigidBodyElement`/
 `cContactElement` — zero ocorrências em qualquer `.aml` deste repo). Cada um só vale a pena quando
 um caso de teste real concreto precisar dele — não faz sentido implementar especulativamente.
 (Múltiplas linhas com corpo flutuante compartilhado — implementado e com convergência estática
@@ -2464,29 +2522,38 @@ resolvida pra águas muito profundas/linhas muito longas, ver Eixo 2c.)
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 
-> Atualizado 2026-08-18 -- versão anterior (2026-08-17) já estava desatualizada de novo: descrevia
-> 3c como "falta só integrar com 3b", mas as 7 fases de 3c foram implementadas e verificadas nesse
-> meio-tempo, junto com as 3 fases de 3b. Praticamente todo o escopo original dos Eixos 1-3 está
-> concluído -- o que resta é só investigação pausada (sem lead) e backlog explicitamente sob
-> demanda. Ver os eixos acima para o histórico completo.
+> Atualizado 2026-08-18 (2ª vez no dia) -- versão anterior já estava desatualizada de novo: o
+> backlog listava boias/tendões como "não implementadas", mas o Eixo 2d (motor, 4 tipos de
+> elemento) e a Atualização 10 do Eixo 3a (backend do pipeline web pros mesmos 4 tipos) fecharam
+> isso no mesmo dia. Praticamente todo o escopo original dos Eixos 1-3 está concluído -- o que
+> resta é só investigação pausada (sem lead), backlog explicitamente sob demanda, e a UI do editor
+> web pros 4 tipos de elemento novos (deliberadamente adiada, ver Eixo 3a). Ver os eixos acima para
+> o histórico completo.
 
 1. ~~**1a** (bug estático)~~ — ✅ resolvido.
 2. ~~**1b** (dinâmica)~~ — ✅ resolvido (Exemplo_01a converge os 20 passos completos).
 3. ~~**2a** (religar `aml_reader.py`)~~ — ✅ resolvido, refinamento residual **pausado** (gap de
    ~5-7% em heave/roll do Far, sem parâmetro corrigível encontrado).
 4. ~~**2c** (múltiplas linhas)~~ — ✅ implementado, convergência real verificada.
-5. ~~**3a** (entrada de dados)~~ — ✅ v1 implementada. Fora de escopo do v1: RAO/movimento de topo
-   real, editar projeto importado de AML pelo editor.
+5. ~~**3a** (entrada de dados)~~ — ✅ v1 implementada, incluindo a UI do editor pros 4 tipos de
+   elemento novos (Truss/Winch/Scalar/Buoy, Atualização 11). Fora de escopo do v1: RAO/movimento de
+   topo real, editar projeto importado de AML pelo editor.
 6. ~~**3b** (controle de simulação)~~ — ✅ Fases 1-3 implementadas (projetos/rodadas, proveniência
    de versões, caso de carregamento por rodada).
 7. ~~**3c** (pós-processamento)~~ — ✅ Fases 1-7 implementadas (envoltórias, histórico no tempo,
    nomenclatura de arquivo por caso, integração completa com projeto/rodada).
-8. **2b** (múltiplas zonas de solo por segmento) e **Backlog de recursos faltantes** (boias/
-   tendões, flexjoint/drilljoint, turret, ruptura, DNV check) — ambos explicitamente sob demanda,
-   sem gatilho concreto no momento; não vale implementar especulativamente.
-9. **Gap da catenária estática sob corrente** (5-8m, Eixo 2a) — **pausado**, 4 sub-hipóteses da
-   mecânica corrotacional descartadas com evidência direta (Atualizações 19-20); precisa de uma
-   pista genuinamente nova (ex. instrumentação comparativa iteração-por-iteração) pra retomar.
+8. ~~**2d** (múltiplos tipos de elemento)~~ — ✅ motor + backend do pipeline web + UI do editor,
+   todos concluídos (2026-08-18). Resta só boia via `.aml` real (sem caso de teste real
+   disponível).
+9. **2b** (múltiplas zonas de solo por segmento) e o resto do **Backlog de recursos faltantes**
+   (drilljoint, turret, ruptura, DNV check, corpo rígido/contato) — sob demanda, sem gatilho
+   concreto no momento; não vale implementar especulativamente.
+10. **Gap da catenária estática sob corrente** (5-8m, Eixo 2a) — **pausado**, 4 sub-hipóteses da
+    mecânica corrotacional descartadas com evidência direta (Atualizações 19-20); precisa de uma
+    pista genuinamente nova (ex. instrumentação comparativa iteração-por-iteração) pra retomar.
+11. **Morison/massa molhada na dinâmica** (fases 4-5 do plano original do Eixo 1b, nunca decidido
+    se ainda compensa perseguir agora que a divergência que motivou o plano já foi resolvida por
+    outro caminho) — sem decisão tomada, sob demanda.
 
 ## Ver também
 

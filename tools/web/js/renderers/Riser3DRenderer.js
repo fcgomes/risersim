@@ -153,6 +153,26 @@ export class Riser3DRenderer {
 
         for (let i = 0; i < elements.length; ++i) {
             const elem = elements[i];
+
+            // A `buoy` element (editor_app.js's updatePreviewNow(), risersim_runner.py's
+            // buoy_elements_this_line) has only `node_id` -- 1 node, shared with whichever
+            // structural element it's attached to -- not `node1_id`/`node2_id`. Without this
+            // branch it would fall into the generic 2-node resolution below and, lacking real
+            // ids there, hit the positional fallback -- the same bogus-cylinder bug already fixed
+            // for multi-line models (see the big comment on `nodesById` below). Drawn as a
+            // standalone marker sphere instead, in `riserGroup` (already cleared at the top of
+            // this function, same as every other element drawn here).
+            if (elem && elem.element_type === 'buoy') {
+                const n = elem.node_id != null ? nodesById.get(elem.node_id) : null;
+                if (!n) continue;
+                const buoyGeo = new THREE.SphereGeometry(outerRadius * 3.0, 16, 16);
+                const buoyMat = new THREE.MeshStandardMaterial({ color: 0xffcc33, metalness: 0.2, roughness: 0.5 });
+                const buoyMesh = new THREE.Mesh(buoyGeo, buoyMat);
+                buoyMesh.position.set(n.x, n.z, n.y);
+                this.riserGroup.add(buoyMesh);
+                continue;
+            }
+
             const n1 = (elem && elem.node1_id != null) ? nodesById.get(elem.node1_id) : nodes[i];
             const n2 = (elem && elem.node2_id != null) ? nodesById.get(elem.node2_id) : nodes[i + 1];
             if (!n1 || !n2 || !elem) continue;

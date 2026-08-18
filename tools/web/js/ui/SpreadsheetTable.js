@@ -105,16 +105,26 @@ function numberColumn(col) {
     };
 }
 
-/** `{key, label, type: 'select', options: () => [{value, label}]}` -- `options()` is called fresh
- * on every render/edit, so a referenced catalog (e.g. materials for a segment's `material_id`)
- * can change between renders without this column needing to know about that structurally. */
+/** `{key, label, type: 'select', options: () => [{value, label}], nullable?: boolean}` --
+ * `options()` is called fresh on every render/edit, so a referenced catalog (e.g. materials for a
+ * segment's `material_id`) can change between renders without this column needing to know about
+ * that structurally. `nullable: true` (e.g. an optional reference like `segments[].buoy_id` or
+ * `materials[].winch_payout_curve_id`, where "no reference" is a valid value, unlike the required
+ * `material_id`/`soil_id`/`current_id`/`wave_id` columns) prepends a "(nenhuma)" option and stores
+ * `null` (not the empty string) when it's picked. */
 function selectColumn(col) {
-    const { key: field, label, options } = col;
+    const { key: field, label, options, nullable } = col;
+    const optionsWithNull = () => nullable ? [{ value: '', label: '(nenhuma)' }, ...options()] : options();
     return {
         field, title: label, widthGrow: 1,
         formatter(cell) {
             const value = cell.getValue();
-            const match = options().find(o => String(o.value) === String(value));
+            if (nullable && (value === null || value === undefined)) {
+                const span = document.createElement('span');
+                span.textContent = '(nenhuma)';
+                return span;
+            }
+            const match = optionsWithNull().find(o => String(o.value) === String(value));
             const span = document.createElement('span');
             span.textContent = match ? match.label : (value ?? '');
             return span;
@@ -122,16 +132,18 @@ function selectColumn(col) {
         editor(cell, onRendered, success, cancel) {
             const select = document.createElement('select');
             select.style.width = '100%';
-            options().forEach(o => {
+            const current = cell.getValue();
+            optionsWithNull().forEach(o => {
                 const opt = document.createElement('option');
                 opt.value = o.value;
                 opt.textContent = o.label;
-                if (String(o.value) === String(cell.getValue())) opt.selected = true;
+                if (String(o.value) === String(current ?? '')) opt.selected = true;
                 select.appendChild(opt);
             });
             onRendered(() => select.focus());
             select.addEventListener('change', () => {
                 const raw = select.value;
+                if (nullable && raw === '') { success(null); return; }
                 success(/^-?\d+$/.test(raw) ? parseInt(raw, 10) : raw);
             });
             select.addEventListener('blur', () => cancel());

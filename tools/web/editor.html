@@ -59,8 +59,10 @@
                 <button class="btn-tab active" id="tab-site-btn" data-tab="site" type="button">🌍 Site</button>
                 <button class="btn-tab" id="tab-soils-btn" data-tab="soils" type="button">🪨 Solos</button>
                 <button class="btn-tab" id="tab-materials-btn" data-tab="materials" type="button">🧵 Materiais</button>
+                <button class="btn-tab" id="tab-curves-btn" data-tab="curves" type="button">📈 Curvas</button>
                 <button class="btn-tab" id="tab-currents-btn" data-tab="currents" type="button">🌊 Correntes</button>
                 <button class="btn-tab" id="tab-waves-btn" data-tab="waves" type="button">🌀 Ondas</button>
+                <button class="btn-tab" id="tab-buoys-btn" data-tab="buoys" type="button">🎈 Boias</button>
                 <button class="btn-tab" id="tab-lines-btn" data-tab="lines" type="button">📏 Linhas</button>
                 <button class="btn-tab" id="tab-loadcases-btn" data-tab="loadcases" type="button">🎯 Casos de Carga</button>
                 <button class="btn-tab" id="tab-analyses-btn" data-tab="analyses" type="button">⚙️ Análises</button>
@@ -83,6 +85,12 @@
                 <button class="btn small editor-add-row-btn" id="add-material-btn" type="button">+ Adicionar material</button>
             </div>
 
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-curves">
+                <div class="editor-tab-hint">Curva de recolhimento (tempo×fração) de um material winch -- referenciada pela coluna "Curva de recolhimento" da aba "Materiais". Sem curva = comportamento constante (igual a um cabo simples).</div>
+                <div id="curves-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-curve-btn" type="button">+ Adicionar curva</button>
+            </div>
+
             <div class="bottom-tab-panel editor-tab-panel" id="panel-currents">
                 <div class="editor-tab-hint">Perfis de velocidade×profundidade×ângulo (listas separadas por vírgula, mesma quantidade de valores nas três colunas, profundidade crescente a partir de 0=superfície).</div>
                 <div id="currents-table"></div>
@@ -93,6 +101,12 @@
                 <div class="editor-tab-hint">Onda regular ou espectro JONSWAP -- metadados de análise dinâmica (v1 não inclui movimento de topo/RAO real).</div>
                 <div id="waves-table"></div>
                 <button class="btn small editor-add-row-btn" id="add-wave-btn" type="button">+ Adicionar onda</button>
+            </div>
+
+            <div class="bottom-tab-panel editor-tab-panel" id="panel-buoys">
+                <div class="editor-tab-hint">Boias anexadas ao final de um segmento -- referenciadas pela coluna "Boia" da tabela de Segmentos (aba "Linhas"). Ca e Momento de inércia: 3 valores separados por vírgula (X, Y, Z).</div>
+                <div id="buoys-table"></div>
+                <button class="btn small editor-add-row-btn" id="add-buoy-btn" type="button">+ Adicionar boia</button>
             </div>
 
             <div class="bottom-tab-panel editor-tab-panel" id="panel-lines">

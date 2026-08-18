@@ -42,7 +42,8 @@ import { createSpreadsheetTable } from './ui/SpreadsheetTable.js';
 
 const TABS = {
     site: 'panel-site', soils: 'panel-soils', materials: 'panel-materials',
-    currents: 'panel-currents', waves: 'panel-waves', lines: 'panel-lines',
+    curves: 'panel-curves', currents: 'panel-currents', waves: 'panel-waves',
+    buoys: 'panel-buoys', lines: 'panel-lines',
     loadcases: 'panel-loadcases', analyses: 'panel-analyses',
 };
 
@@ -113,11 +114,11 @@ class EditorApp {
         // place from then on, except `segments`, rebuilt each time the active line changes (see
         // renderSegments()). `materialUnits` is the display unit currently picked per unit-bearing
         // Materiais column, independent of the model itself (which always stays in SI).
-        this.tables = { soils: null, materials: null, currents: null, waves: null, loadcases: null, analyses: null, segments: null };
+        this.tables = { soils: null, materials: null, curves: null, currents: null, waves: null, buoys: null, loadcases: null, analyses: null, segments: null };
         this.materialUnits = {
             diameter_external_m: 'm', diameter_internal_m: 'm',
             weight_dry_kNm: 'kN/m', weight_wet_kNm: 'kN/m',
-            stiffness_axial_kN: 'kN',
+            stiffness_axial_kN: 'kN', initial_tension_kN: 'kN',
         };
 
         this.initViewport();
@@ -164,8 +165,10 @@ class EditorApp {
 
         document.getElementById('add-soil-btn').addEventListener('click', () => this.addSoil());
         document.getElementById('add-material-btn').addEventListener('click', () => this.addMaterial());
+        document.getElementById('add-curve-btn').addEventListener('click', () => this.addCurve());
         document.getElementById('add-current-btn').addEventListener('click', () => this.addCurrent());
         document.getElementById('add-wave-btn').addEventListener('click', () => this.addWave());
+        document.getElementById('add-buoy-btn').addEventListener('click', () => this.addBuoy());
         document.getElementById('add-loadcase-btn').addEventListener('click', () => this.addLoadCase());
         document.getElementById('add-analysis-btn').addEventListener('click', () => this.addAnalysis());
 
@@ -194,6 +197,22 @@ class EditorApp {
             document.getElementById('editor-error').innerText = `Falha ao carregar JSON de interface: ${err.message}`;
             return;
         }
+        // Backfill for projects/interface JSONs created before the element-type fields existed
+        // (curves/buoys catalogs, per-material type/type-specific fields) -- same defensive
+        // pattern as the segment `id` backfill in renderSegments(), so an older project shows the
+        // real defaults the compiler already assumes instead of blank/undefined cells.
+        this.model.curves = this.model.curves || [];
+        this.model.buoys = this.model.buoys || [];
+        this.model.materials.forEach(m => {
+            m.finite_element_type = m.finite_element_type ?? 'beam';
+            m.initial_tension_kN = m.initial_tension_kN ?? 0.0;
+            m.winch_payout_curve_id = m.winch_payout_curve_id ?? null;
+            m.scalar_stiffness_translational_kNm = m.scalar_stiffness_translational_kNm ?? 0.0;
+            m.scalar_stiffness_torsional_kNm_per_rad = m.scalar_stiffness_torsional_kNm_per_rad ?? 0.0;
+            m.scalar_stiffness_bending_kNm_per_rad = m.scalar_stiffness_bending_kNm_per_rad ?? 0.0;
+        });
+        this.model.lines.forEach(l => l.segments.forEach(s => { s.buoy_id = s.buoy_id ?? null; }));
+
         this.activeLineId = (this.model.lines[0] || {}).id ?? null;
         this.renderAll();
 
@@ -213,8 +232,10 @@ class EditorApp {
         this.renderSite();
         this.renderSoils();
         this.renderMaterials();
+        this.renderCurves();
         this.renderCurrents();
         this.renderWaves();
+        this.renderBuoys();
         this.renderLines();
         this.renderLoadCases();
         this.renderAnalyses();
@@ -298,11 +319,21 @@ class EditorApp {
             '#materials-table', this.model.materials,
             [
                 { key: 'name', label: 'Nome', type: 'text' },
+                {
+                    key: 'finite_element_type', label: 'Tipo', type: 'select',
+                    options: () => [
+                        { value: 'beam', label: 'Viga (beam)' },
+                        { value: 'truss', label: 'Cabo (truss)' },
+                        { value: 'scalar', label: 'Junta flexível (scalar)' },
+                        { value: 'winch', label: 'Guincho (winch)' },
+                    ],
+                },
                 unitCol('diameter_external_m', 'D. externo', 'length', 4),
                 unitCol('diameter_internal_m', 'D. interno', 'length', 4),
                 unitCol('weight_dry_kNm', 'Peso seco', 'forcePerLength', 4),
                 unitCol('weight_wet_kNm', 'Peso molhado', 'forcePerLength', 4),
                 unitCol('stiffness_axial_kN', 'EA', 'force', 1),
+                unitCol('initial_tension_kN', 'Tração inicial (truss/winch)', 'force', 1),
                 { key: 'morison_inertia_Cm', label: 'Cm', type: 'number', decimals: 2 },
                 { key: 'morison_drag_Cd', label: 'Cd', type: 'number', decimals: 2 },
                 { key: 'stiffness_bending_kNm2', label: 'EI (kN·m²)', type: 'number', decimals: 1 },
@@ -311,6 +342,13 @@ class EditorApp {
                 { key: 'rayleigh_period_second_s', label: 'Rayleigh T2 (s)', type: 'number', decimals: 2 },
                 { key: 'rayleigh_damping_first', label: 'Rayleigh ξ1', type: 'number', decimals: 4 },
                 { key: 'rayleigh_damping_second', label: 'Rayleigh ξ2', type: 'number', decimals: 4 },
+                { key: 'scalar_stiffness_translational_kNm', label: 'Rigidez transl. (scalar)', type: 'number', decimals: 1 },
+                { key: 'scalar_stiffness_torsional_kNm_per_rad', label: 'Rigidez torc. (scalar)', type: 'number', decimals: 1 },
+                { key: 'scalar_stiffness_bending_kNm_per_rad', label: 'Rigidez flexão (scalar)', type: 'number', decimals: 1 },
+                {
+                    key: 'winch_payout_curve_id', label: 'Curva de recolhimento (winch)', type: 'select', nullable: true,
+                    options: () => this.model.curves.map(c => ({ value: c.id, label: `${c.name} (${c.id})` })),
+                },
             ],
             { onDelete: () => this.onMaterialsChanged(), onChange: () => this.onMaterialsChanged() },
         );
@@ -324,13 +362,43 @@ class EditorApp {
     addMaterial() {
         this.tables.materials.addRow({
             id: nextId(this.model.materials), name: `Material_${this.model.materials.length + 1}`,
+            finite_element_type: 'beam',
             diameter_external_m: 0.25, diameter_internal_m: 0.20, weight_dry_kNm: 1.0, weight_wet_kNm: 0.4,
             morison_inertia_Cm: 2.0, morison_drag_Cd: 1.0, stiffness_axial_kN: 360000.0,
+            initial_tension_kN: 0.0,
             stiffness_bending_kNm2: 21.7, stiffness_torsional_kNm2: 3200.0,
             rayleigh_period_first_s: 0.0, rayleigh_period_second_s: 0.0,
             rayleigh_damping_first: 0.0, rayleigh_damping_second: 0.0,
+            scalar_stiffness_translational_kNm: 0.0, scalar_stiffness_torsional_kNm_per_rad: 0.0,
+            scalar_stiffness_bending_kNm_per_rad: 0.0, winch_payout_curve_id: null,
         });
         this.onMaterialsChanged();
+    }
+
+    // ---- Curves (winch payout, referenced by a material's winch_payout_curve_id) ----
+    renderCurves() {
+        if (this.tables.curves) return;
+        this.tables.curves = createSpreadsheetTable(
+            '#curves-table', this.model.curves,
+            [
+                { key: 'name', label: 'Nome', type: 'text' },
+                { key: 'time_s', label: 'Tempo (s)', type: 'list' },
+                { key: 'fraction', label: 'Fração (0-1)', type: 'list' },
+            ],
+            { onDelete: () => this.onCurvesChanged(), onChange: () => this.onCurvesChanged() },
+        );
+    }
+    /** A curve's name/id is shown in the Materiais table's `winch_payout_curve_id` dropdown. */
+    onCurvesChanged() {
+        if (this.tables.materials) this.tables.materials.refresh();
+        this.schedulePreviewUpdate();
+    }
+    addCurve() {
+        this.tables.curves.addRow({
+            id: nextId(this.model.curves), name: `Curva_${this.model.curves.length + 1}`,
+            time_s: [0.0, 3600.0], fraction: [1.0, 1.0],
+        });
+        this.onCurvesChanged();
     }
 
     // ---- Currents ----
@@ -388,6 +456,36 @@ class EditorApp {
             alpha: 0.0, wini_rad_s: 0.2, wfin_rad_s: 3.0, nwave: 100,
         });
         this.onWavesChanged();
+    }
+
+    // ---- Buoys (referenced by a segment's buoy_id) ----
+    renderBuoys() {
+        if (this.tables.buoys) return;
+        this.tables.buoys = createSpreadsheetTable(
+            '#buoys-table', this.model.buoys,
+            [
+                { key: 'name', label: 'Nome', type: 'text' },
+                { key: 'weight_kN', label: 'Peso (kN)', type: 'number', decimals: 2 },
+                { key: 'volume_m3', label: 'Volume (m³)', type: 'number', decimals: 3 },
+                { key: 'z_area_m2', label: 'Área-Z (m²)', type: 'number', decimals: 3 },
+                { key: 'Ca', label: 'Ca (X, Y, Z)', type: 'list' },
+                { key: 'moment_inertia', label: 'Momento de inércia (X, Y, Z)', type: 'list' },
+            ],
+            { onDelete: () => this.onBuoysChanged(), onChange: () => this.onBuoysChanged() },
+        );
+    }
+    /** A buoy's name/id is shown in the Segmentos table's `buoy_id` dropdown. */
+    onBuoysChanged() {
+        if (this.tables.segments) this.tables.segments.refresh();
+        this.schedulePreviewUpdate();
+    }
+    addBuoy() {
+        this.tables.buoys.addRow({
+            id: nextId(this.model.buoys), name: `Boia_${this.model.buoys.length + 1}`,
+            weight_kN: 5.0, volume_m3: 2.0, z_area_m2: 1.5,
+            Ca: [0.0, 0.0, 0.5], moment_inertia: [0.0, 0.0, 0.0],
+        });
+        this.onBuoysChanged();
     }
 
     // ---- Lines (+ segments) ----
@@ -543,14 +641,26 @@ class EditorApp {
             // `node1_id`/`node2_id` carried through from the backend's own element objects --
             // Riser3DRenderer.js needs them to draw each element between its REAL nodes, not
             // whichever nodes happen to sit at the same array position (breaks for 2+ lines, see
-            // its own comment).
-            const elements = (res.elements || []).map(e => ({
-                id: e.id,
-                node1_id: e.node1_id, node2_id: e.node2_id,
-                tensionEffectiveKn: (e.section_properties && e.section_properties.D_outer) ?? 0,
-                bendingMomentKnm: 0, curvature: 0, vonMisesMpa: 0, mbrSafetyFactor: 1.0,
-            }));
-            const diameters = elements.map(e => e.tensionEffectiveKn).filter(v => v !== undefined && v !== null);
+            // its own comment). `node_id`/`element_type` are new here -- a `buoy` element only has
+            // `node_id` (1 node, no `node1_id`/`node2_id`), and Riser3DRenderer.js needs
+            // `element_type` to draw it as a marker instead of a cylinder between two nodes.
+            const PROPS_KEY_BY_TYPE = { truss: 'truss_properties', winch: 'winch_properties', scalar: 'scalar_properties', beam: 'section_properties' };
+            const elements = (res.elements || []).map(e => {
+                const propsKey = PROPS_KEY_BY_TYPE[e.element_type] || 'section_properties';
+                const props = e[propsKey];
+                return {
+                    id: e.id, element_type: e.element_type,
+                    node1_id: e.node1_id, node2_id: e.node2_id, node_id: e.node_id,
+                    // scalar/buoy have no real D_outer -- kept as 0 so the tube still renders
+                    // (scalar) or is simply unused (buoy, drawn as a marker instead), but excluded
+                    // below from the diameter legend's min/max so a fake 0 doesn't drag it down.
+                    tensionEffectiveKn: (props && props.D_outer) ?? 0,
+                    bendingMomentKnm: 0, curvature: 0, vonMisesMpa: 0, mbrSafetyFactor: 1.0,
+                };
+            });
+            const diameters = elements
+                .filter(e => e.element_type !== 'scalar' && e.element_type !== 'buoy')
+                .map(e => e.tensionEffectiveKn).filter(v => v !== undefined && v !== null);
             let minD = diameters.length ? Math.min(...diameters) : 0;
             let maxD = diameters.length ? Math.max(...diameters) : 1;
             if (maxD <= minD) maxD = minD + 1.0;
@@ -611,6 +721,10 @@ class EditorApp {
                 { key: 'material_id', label: 'Material', type: 'select', options: () => this.model.materials.map(m => ({ value: m.id, label: `${m.name} (${m.id})` })) },
                 { key: 'soil_id', label: 'Solo', type: 'select', options: () => this.model.soils.map(s => ({ value: s.id, label: `${s.name} (${s.id})` })) },
                 { key: 'element_length_m', label: 'Malha (m/elemento)', type: 'number' },
+                {
+                    key: 'buoy_id', label: 'Boia', type: 'select', nullable: true,
+                    options: () => this.model.buoys.map(b => ({ value: b.id, label: `${b.name} (${b.id})` })),
+                },
             ],
             { onDelete: () => this.schedulePreviewUpdate(), onChange: () => this.schedulePreviewUpdate() },
         );
@@ -624,7 +738,7 @@ class EditorApp {
                 id: 1, length_m: 500.0,
                 material_id: (this.model.materials[0] || {}).id ?? null,
                 soil_id: (this.model.soils[0] || {}).id ?? null,
-                element_length_m: 5.0,
+                element_length_m: 5.0, buoy_id: null,
             }],
         };
         this.tables.lines.addRow(line);
@@ -648,7 +762,7 @@ class EditorApp {
             id: nextSegId, length_m: 100.0,
             material_id: (this.model.materials[0] || {}).id ?? null,
             soil_id: (this.model.soils[0] || {}).id ?? null,
-            element_length_m: 5.0,
+            element_length_m: 5.0, buoy_id: null,
         });
         this.schedulePreviewUpdate();
     }
