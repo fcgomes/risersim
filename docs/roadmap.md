@@ -1427,6 +1427,72 @@ disparar a auto-detecção (EI=21,7 kN·m² > limiar), comportamento idêntico a
 
 **Fora de escopo desta rodada** (confirmado com o usuário antes de começar): frontend (`Riser3DRenderer.js`/`DataLoaderService.js`/tabela de resultados -- hoje assumem uma corrente única contígua, precisam de conectividade real exportada no H5 primeiro); seleção de linha no gerenciador de rodadas web (`risersim_projects.py`/`run_server.py`, sem conceito de "linha" hoje); caminho XML+H5 (`xml_h5_reader.py`, sem export real multi-linha existente).
 
+### 2d. Suporte a múltiplos tipos de elemento — 🚧 EM ANDAMENTO (Fase 0 + Fase 1 implementadas)
+
+Usuário perguntou como o `risersim` está em relação aos tipos de elemento reais do ANFLEX
+(2026-08-18). Levantamento (3 agentes Explore) achou ~9 famílias reais (`cBeam` + 5 variantes,
+`cTruss`/`cWinch`, `cScalar` [genérico, também usado como flexjoint], `cContactElement`,
+`cBuoyElement`, `cRigidBodyElement`), todas realmente parseadas por `cModelBuilderDAT`. O risersim
+implementava só UM tipo (`CorotationalBeam3D`), hardcoded incondicionalmente em
+`RiserModel::add_element()`. Cruzando contra os 31 `.aml` reais deste repo (mesmo critério "sob
+demanda" já usado no resto do backlog): `cScalar` (6 arquivos, inclusive como o ANFLEX real
+implementa flexjoint) e `cTruss` (7 arquivos) são os únicos com uso real repetido; `cWinch` (4) e
+`cBuoyElement` (3) secundários; `cRigidBodyElement`/`cContactElement`/variantes de viga têm **zero**
+ocorrências em qualquer `.aml` deste repo -- fora de escopo, não implementar especulativamente.
+Plano completo (4 fases) em `C:\Users\fcgom\.claude\plans\cozy-cooking-kazoo.md`.
+
+**Fase 0 (arquitetura, pré-requisito) -- implementada**: `Element` (`element.hpp`) já era uma
+interface polimórfica de verdade (`num_nodes()`/`node()`/`assemble()`/`mass_matrix()`, os dois
+loops de montagem genéricos já passavam por ela) -- o bloqueio real era `RiserModel` armazenar
+`vector<unique_ptr<CorotationalBeam3D>>` e `add_element()` hardcodear esse tipo. Virou
+`vector<unique_ptr<Element>>` + `add_beam_element()`/`add_scalar_element()` por tipo. `Element`
+ganhou 2 hooks novos com default neutro (`update_effective_tension()` retorna 0.0,
+`characteristic_stiffness()` retorna 0.0) -- únicos genuinamente reutilizáveis por qualquer tipo
+futuro. Os ~8 pontos de código que ainda chamavam membros específicos de `CorotationalBeam3D` fora
+da interface genérica (peso/empuxo/corrente em `static_integrator.cpp`/`static_analysis.cpp`/
+`dynamic_analysis.cpp`, rigidez de empuxo/`characteristic_stiffness` em `analysis.cpp`, resultados
+por elemento em `capture_snapshot()`/snapshot dinâmico) agora fazem `dynamic_cast<CorotationalBeam3D*>`
+e pulam elementos que não sejam viga -- fisicamente correto (um conector/mola não tem peso próprio
+nem empuxo nem tração no sentido axial de uma viga, igual ao `cScalar` real, que não tem
+`calc_load`). Resultados por elemento (tração/momento/curvatura/von Mises/MBR) de um elemento
+não-viga viram placeholder zero (mantém os arrays alinhados por índice com a conectividade do H5) --
+renderização de resultado pra tipos não-viga fica como trabalho futuro documentado, não quebrado
+silenciosamente. `rcm_reorder.hpp` (também usava `node1()`/`node2()` direto) generalizado para
+`num_nodes()`/`node(i)`, conectando todos os pares de nós de um elemento (idêntico ao caso de 2 nós
+de hoje, funciona pra qualquer contagem futura). Bindings Python (`bindings.cpp`): `.elements`
+continua expondo só vigas (filtro `dynamic_cast`), decisão de expor outros tipos adiada até um
+consumidor real precisar. **Verificação**: 405/405 (Catch2) idêntico, T_eff do caso Near
+(Exemplo_01c) idêntico ao valor pré-refactor (217,1 kN) -- confirma refactor puro, zero mudança de
+comportamento pro caminho beam-only.
+
+**Fase 1 (`ScalarElement`, mola/flexjoint genérico 6-GDL) -- implementada**: novo
+`include/risersim/curve_function.hpp` (`PiecewiseLinearCurve`, curva linear-por-partes com valor +
+derivada, cobre tanto mola linear simples quanto uma curva realmente não-linear como a válvula
+ESDV real) e `include/risersim/element_scalar.hpp` (`ScalarElement`). Simplificação deliberada em
+relação ao `cScalar` real: em vez do referencial local por 3 pontos auxiliares do `.DAT` real
+(schema JSON do risersim não tem esse conceito ainda), usa
+`CorotationalBeam3D::build_frame_from_chord()` na corda inicial do próprio elemento, fixo na
+construção -- reaproveita a mesma convenção de eixo já verificada contra dado real do ANFLEX nesta
+sessão, em vez de inventar uma segunda. Deslocamento relativo translacional via projeção direta;
+rotação relativa via composição própria de rotações (`rodrigues`/`AngleAxisd`, não subtração ingênua
+de vetores) -- ver docstring da classe pra derivação completa do padrão "mola entre dois pontos"
+(mesmo `K_global = T^T*K_local*T` que a viga já usa). Sem massa (`mass_matrix()` sempre zero,
+igual ao `cScalar` real) e sem carga hidrodinâmica (excluído pelo filtro `dynamic_cast` da Fase 0,
+fisicamente correto). `ModelBuilder::load_from_json()` ganhou dispatch por `element_type` (default
+`"beam"`, retrocompatível) e um `scalar_properties` JSON (`stiffness_x/y/z/rx/ry/rz`, mola linear
+por GDL -- curva genuinamente não-linear via JSON fica pra quando um caso real precisar). Testes
+novos em `test_element.cpp` (4 casos: `node()`/`num_nodes()`, repouso força-zero, alongamento axial
+reproduzindo o par de força clássico de mola de 2 pontos com sinal conferido, massa sempre zero).
+**Verificação**: 585/585 (Catch2, 405 antigos + 180 novos), ALL_BUILD limpo (`risersim_test_main`,
+`risersim_tests`, módulo pybind), T_eff do Near reconfirmado idêntico após a Fase 1 também.
+
+**Fora de escopo desta rodada** (decisão do usuário -- só Fase 0+1 nesta sessão): Fase 2 (`cTruss`,
+cabo/amarração -- real ANFLEX NÃO tem clamp de compressão, decisão confirmada: replicar exatamente,
+não "melhorar"), Fase 3 (`cWinch`, extensão pequena da Fase 2), Fase 4 (`cBuoyElement`, elemento de
+1 nó só, mais distante do padrão atual -- carga hidrostática/Morison como carga EXTERNA, não força
+interna, precisa de ajuste nos hooks da Fase 0). Nenhuma integração de JSON-round-trip end-to-end
+pro `ScalarElement` ainda (só testes unitários da fórmula) -- lacuna conhecida, não bloqueante.
+
 ## Eixo 3 — Interfaces (podem começar em paralelo aos eixos 1-2, escopadas ao que o motor já suporta)
 
 ### 3a. Interface de entrada de dados — ✅ v1 IMPLEMENTADA (2026-08-17)
@@ -2202,15 +2268,16 @@ Python (bindings pybind) confirmou getters/setters, `props()` mutável, e `Buoya
 
 ## Backlog de recursos faltantes do motor (não bloqueante — puxar sob demanda)
 
-Achados documentados em `mapa_aml_exemplos_e_web_interface.md`, nenhum implementado: boias/tendões
-como entidade própria (hoje só existe `BuoyancyModule`/`BendRestrictor`, modificadores locais não
-lidos por `ModelBuilder::load_from_json`), conexões articuladas tipo flexjoint/drilljoint, turret
-com movimento prescrito 6-GDL por caso de carga (`Turret.aml`), ruptura de elemento em tempo de
-execução dinâmico (`Ruptura.aml`), verificação de código DNV como pós-processamento
-(`DNV_Check.aml`). Cada um só vale a pena quando um caso de teste real concreto precisar dele — não
-faz sentido implementar especulativamente. (Múltiplas linhas com corpo flutuante compartilhado —
-implementado e com convergência estática resolvida pra águas muito profundas/linhas muito longas,
-ver Eixo 2c.)
+Achados documentados em `mapa_aml_exemplos_e_web_interface.md`. Flexjoint (`cScalar`, real uso em 6
+`.aml`s) — implementado, ver Eixo 2d. Ainda faltam: boias/tendões como entidade própria (`cTruss`/
+`cWinch`/`cBuoyElement`, real uso em 3-7 `.aml`s cada — Fases 2-4 do plano do Eixo 2d, não
+implementadas ainda), drilljoint, turret com movimento prescrito 6-GDL por caso de carga
+(`Turret.aml`), ruptura de elemento em tempo de execução dinâmico (`Ruptura.aml`), verificação de
+código DNV como pós-processamento (`DNV_Check.aml`), corpo rígido/contato tubo-em-tubo (`cRigidBodyElement`/
+`cContactElement` — zero ocorrências em qualquer `.aml` deste repo). Cada um só vale a pena quando
+um caso de teste real concreto precisar dele — não faz sentido implementar especulativamente.
+(Múltiplas linhas com corpo flutuante compartilhado — implementado e com convergência estática
+resolvida pra águas muito profundas/linhas muito longas, ver Eixo 2c.)
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 

@@ -11,6 +11,7 @@
 
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
+#include "risersim/element_scalar.hpp"
 #include "risersim/element.hpp"
 
 using namespace risersim;
@@ -98,4 +99,80 @@ TEST_CASE("Element::mass_matrix() matches global_mass() bit-for-bit", "[element]
     delete elem;
     delete n1;
     delete n2;
+}
+
+TEST_CASE("ScalarElement: node()/num_nodes() match node1()/node2()", "[element][scalar]") {
+    Node3D n1(1, 0.0, 0.0, 0.0), n2(2, 2.0, 0.0, 0.0);
+    ScalarProps props;
+    ScalarElement elem(1, &n1, &n2, props);
+
+    REQUIRE(elem.num_nodes() == 2);
+    REQUIRE(elem.node(0) == elem.node1());
+    REQUIRE(elem.node(1) == elem.node2());
+    REQUIRE(elem.node(0) == &n1);
+    REQUIRE(elem.node(1) == &n2);
+}
+
+TEST_CASE("ScalarElement: at rest (zero relative displacement), force is zero", "[element][scalar]") {
+    Node3D n1(1, 0.0, 0.0, 0.0), n2(2, 2.0, 0.0, 0.0);
+    ScalarProps props;
+    props.curve_x = PiecewiseLinearCurve::linear(1000.0);
+    props.curve_ry = PiecewiseLinearCurve::linear(500.0);
+    ScalarElement elem(1, &n1, &n2, props);
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+
+    REQUIRE(K.rows() == 12);
+    REQUIRE(F.size() == 12);
+    for (int i = 0; i < 12; ++i) REQUIRE(F(i) == Catch::Approx(0.0).margin(1.0e-9));
+}
+
+// Chord along global +X: CorotationalBeam3D::build_frame_from_chord((1,0,0)) is exactly
+// row0=(1,0,0), i.e. local X coincides with global X (verified against the same real-ANFLEX-
+// matching formula this element reuses) -- lets this test predict the axial component directly
+// without depending on the local frame's Y/Z sign convention.
+TEST_CASE("ScalarElement: axial elongation along the chord produces the classic spring internal-force pair", "[element][scalar]") {
+    Node3D n1(1, 0.0, 0.0, 0.0), n2(2, 2.0, 0.0, 0.0);
+    const double k = 1000.0; // N/m
+    const double du = 0.01;  // m, node2 pulled away from node1 along the chord
+    n2.disp = Eigen::Vector3d(du, 0.0, 0.0);
+
+    ScalarProps props;
+    props.curve_x = PiecewiseLinearCurve::linear(k);
+    ScalarElement elem(1, &n1, &n2, props);
+
+    Eigen::MatrixXd K;
+    Eigen::VectorXd F;
+    static_cast<Element*>(&elem)->assemble(K, F);
+
+    // Classic 2-point spring internal-force pair (same pattern a truss/bar element's
+    // K=[[k,-k],[-k,k]] produces): F1 = -k*(u2-u1), F2 = +k*(u2-u1), along the chord's own +X.
+    const double expected = k * du; // 10 N
+    REQUIRE(F(0) == Catch::Approx(-expected).margin(1.0e-6));
+    REQUIRE(F(1) == Catch::Approx(0.0).margin(1.0e-9));
+    REQUIRE(F(2) == Catch::Approx(0.0).margin(1.0e-9));
+    REQUIRE(F(6) == Catch::Approx(expected).margin(1.0e-6));
+    REQUIRE(F(7) == Catch::Approx(0.0).margin(1.0e-9));
+    REQUIRE(F(8) == Catch::Approx(0.0).margin(1.0e-9));
+    // No rotation curves set -> zero moment at both nodes.
+    for (int i : {3, 4, 5, 9, 10, 11}) REQUIRE(F(i) == Catch::Approx(0.0).margin(1.0e-9));
+
+    REQUIRE(K.rows() == 12);
+    REQUIRE(K.cols() == 12);
+    for (int i = 0; i < 12; ++i)
+        for (int j = 0; j < 12; ++j)
+            REQUIRE(K(i, j) == Catch::Approx(K(j, i)).margin(1.0e-9)); // symmetric for a locally-linear curve
+}
+
+TEST_CASE("ScalarElement: mass_matrix() is always zero (massless connector)", "[element][scalar]") {
+    Node3D n1(1, 0.0, 0.0, 0.0), n2(2, 2.0, 0.0, 0.0);
+    ScalarProps props;
+    ScalarElement elem(1, &n1, &n2, props);
+
+    Eigen::MatrixXd M = static_cast<Element*>(&elem)->mass_matrix(1025.0);
+    REQUIRE(M.rows() == 12);
+    REQUIRE(M.cols() == 12);
+    REQUIRE(M.isZero());
 }

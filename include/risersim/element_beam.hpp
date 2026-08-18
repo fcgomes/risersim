@@ -206,13 +206,16 @@ public:
      * times `E*A`. Updates tension_true()/tension_effective() as a side effect -- the only place
      * either is mutated after construction.
      */
-    double update_effective_tension() {
+    double update_effective_tension() override {
         double delta_L = current_length() - initial_length_;
         double strain = delta_L / initial_length_;
         tension_true_ = props_.E * props_.A * strain;
         tension_effective_ = tension_true_ + p_e_ * outer_area() - p_i_ * inner_area();
         return tension_effective_;
     }
+
+    /** @brief `Element::characteristic_stiffness()` override: the beam's elastic modulus. */
+    double characteristic_stiffness() const override { return props_.E; }
 
     /** @brief Local (element-frame) material (elastic) stiffness matrix (12x12), standard 3D Euler-Bernoulli beam. */
     Eigen::Matrix<double, 12, 12> local_material_stiffness() const;

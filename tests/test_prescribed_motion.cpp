@@ -59,7 +59,7 @@ RiserModel build_small_synthetic_catenary_model() {
     BeamMaterialProps props;
     const double L_unstretched = total_length / static_cast<double>(num_elements);
     for (int i = 0; i < num_elements; ++i) {
-        model.add_element(i + 1, model.nodes()[i].get(), model.nodes()[i + 1].get(), props, L_unstretched);
+        model.add_beam_element(i + 1, model.nodes()[i].get(), model.nodes()[i + 1].get(), props, L_unstretched);
     }
 
     return model;

@@ -306,11 +306,18 @@ Minimal usage example:
             return v;
         }, "Read-only list of the model's nodes (owned by the model -- see add_node()).")
         .def_property_readonly("elements", [](const RiserModel& model) {
+            // Filtered to beam elements only, for now -- Python-side code today only ever expects
+            // CorotationalBeam3D's own members (props, tension_effective, ...); exposing other
+            // Element subtypes here (as their model.elements() gains more than one type) needs its
+            // own pybind class + a decision on what a mixed-type list looks like from Python,
+            // deferred until a real caller needs it.
             std::vector<CorotationalBeam3D*> v;
             v.reserve(model.elements().size());
-            for (const auto& e : model.elements()) v.push_back(e.get());
+            for (const auto& e : model.elements()) {
+                if (auto* beam = dynamic_cast<CorotationalBeam3D*>(e.get())) v.push_back(beam);
+            }
             return v;
-        }, "Read-only list of the model's elements (owned by the model -- see add_element()).")
+        }, "Read-only list of the model's beam elements (owned by the model -- see add_element()).")
         .def("add_node", [](RiserModel& model, int id, double x, double y, double z) {
                 return model.add_node(id, x, y, z);
             },
@@ -319,7 +326,7 @@ Minimal usage example:
             "Constructs a node owned by this model and returns it.")
         .def("add_element", [](RiserModel& model, int id, Node3D* node1, Node3D* node2,
                                 const BeamMaterialProps& props, double L_unstretched) {
-                return model.add_element(id, node1, node2, props, L_unstretched);
+                return model.add_beam_element(id, node1, node2, props, L_unstretched);
             },
             py::arg("id"), py::arg("node1"), py::arg("node2"), py::arg("props"),
             py::arg("L_unstretched") = 0.0,

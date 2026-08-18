@@ -198,14 +198,34 @@ StepSnapshot capture_snapshot(RiserModel* model, int step_index, double load_fac
     snap.load_factor = load_factor;
     for (const auto& node : model->nodes()) snap.node_coords.push_back(node->current_coords());
     for (size_t i = 0; i < model->elements().size(); ++i) {
-        auto* elem = model->elements()[i].get();
+        model->elements()[i]->update_effective_tension(); // generic Element hook -- no-op for non-beam types
+
+        // Beam-specific results (tension/moment/curvature/von Mises/MBR) -- a non-beam element
+        // (e.g. a future scalar/spring connector) has none of these in the same sense; push a
+        // neutral placeholder so every per-element result array stays index-aligned with
+        // model->elements() (the HDF5 connectivity export and postprocessor both assume that).
+        // Real result rendering for non-beam element types is future work, not silently broken --
+        // see docs/roadmap.md.
+        auto* elem = dynamic_cast<CorotationalBeam3D*>(model->elements()[i].get());
+        if (!elem) {
+            snap.element_tensions_kN.push_back(0.0);
+            snap.element_bending_moments_kNm.push_back(0.0);
+            snap.element_curvatures.push_back(0.0);
+            snap.element_von_mises_MPa.push_back(0.0);
+            snap.element_mbr_safety_factors.push_back(0.0);
+            continue;
+        }
+
         // Vizinho REAL (compartilha o nó), não só adjacente no array -- com múltiplas linhas,
         // elementos de linhas diferentes ficam lado a lado no array plano sem se tocar; usar
         // i-1/i+1 cegamente misturaria curvatura/momento entre linhas desconexas na fronteira.
-        const auto* prev = (i > 0 && model->elements()[i - 1]->node2() == elem->node1()) ? model->elements()[i - 1].get() : nullptr;
-        const auto* next = (i + 1 < model->elements().size() && model->elements()[i + 1]->node1() == elem->node2()) ? model->elements()[i + 1].get() : nullptr;
+        // Um vizinho que não seja viga (ex. um scalar entre dois trechos) também conta como
+        // "sem vizinho" pro cálculo de curvatura -- equivalente a uma ponta de linha.
+        const auto* prev = (i > 0) ? dynamic_cast<const CorotationalBeam3D*>(model->elements()[i - 1].get()) : nullptr;
+        if (prev && prev->node2() != elem->node1()) prev = nullptr;
+        const auto* next = (i + 1 < model->elements().size()) ? dynamic_cast<const CorotationalBeam3D*>(model->elements()[i + 1].get()) : nullptr;
+        if (next && next->node1() != elem->node2()) next = nullptr;
 
-        elem->update_effective_tension();
         auto sc = elem->compute_stress_and_curvature(prev, next);
         snap.element_tensions_kN.push_back(elem->tension_effective() / 1000.0);
         snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);
@@ -302,7 +322,10 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
     // Total reference force at 100% load, used for a strict normalization
     Eigen::VectorXd F_total_ref = Eigen::VectorXd::Zero(num_dofs);
     double water_surface_z_ref = model->environmental().water_surface_z;
-    for (const auto& elem : model->elements()) {
+    for (const auto& elem_base : model->elements()) {
+        auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
+        if (!elem) continue; // weight/buoyancy is beam-specific -- see static_integrator.cpp
+
         double L = elem->initial_length();
         double g = 9.81;
         double w_dry = (elem->props().rho * elem->props().A + elem->props().rho_fluid * elem->inner_area()) * g;
@@ -551,7 +574,10 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
         Eigen::VectorXd F_ext = Eigen::VectorXd::Zero(num_dofs);
         double water_surface_z_offset = model->environmental().water_surface_z;
 
-        for (const auto& elem : model->elements()) {
+        for (const auto& elem_base : model->elements()) {
+            auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
+            if (!elem) continue; // weight/buoyancy is beam-specific -- see static_integrator.cpp
+
             double L = elem->initial_length();
             double g = 9.81;
             double w_dry = (elem->props().rho * elem->props().A + elem->props().rho_fluid * elem->inner_area()) * g;
@@ -605,13 +631,23 @@ bool StaticAnalysis::solve_vessel_offset(const VesselOffset& vessel_offset, int 
                 snap.load_factor = 1.0 + offset_factor;
                 for (const auto& node : model->nodes()) snap.node_coords.push_back(node->current_coords());
                 for (size_t i = 0; i < model->elements().size(); ++i) {
-                    auto* elem = model->elements()[i].get();
-                    // Vizinho REAL (compartilha o nó), não só adjacente no array -- ver mesmo
-                    // comentário em capture_snapshot() acima.
-                    const auto* prev = (i > 0 && model->elements()[i - 1]->node2() == elem->node1()) ? model->elements()[i - 1].get() : nullptr;
-                    const auto* next = (i + 1 < model->elements().size() && model->elements()[i + 1]->node1() == elem->node2()) ? model->elements()[i + 1].get() : nullptr;
+                    model->elements()[i]->update_effective_tension();
 
-                    elem->update_effective_tension();
+                    // Beam-specific results -- see the same treatment/comment in capture_snapshot() above.
+                    auto* elem = dynamic_cast<CorotationalBeam3D*>(model->elements()[i].get());
+                    if (!elem) {
+                        snap.element_tensions_kN.push_back(0.0);
+                        snap.element_bending_moments_kNm.push_back(0.0);
+                        snap.element_curvatures.push_back(0.0);
+                        snap.element_von_mises_MPa.push_back(0.0);
+                        snap.element_mbr_safety_factors.push_back(0.0);
+                        continue;
+                    }
+                    const auto* prev = (i > 0) ? dynamic_cast<const CorotationalBeam3D*>(model->elements()[i - 1].get()) : nullptr;
+                    if (prev && prev->node2() != elem->node1()) prev = nullptr;
+                    const auto* next = (i + 1 < model->elements().size()) ? dynamic_cast<const CorotationalBeam3D*>(model->elements()[i + 1].get()) : nullptr;
+                    if (next && next->node1() != elem->node2()) next = nullptr;
+
                     auto sc = elem->compute_stress_and_curvature(prev, next);
                     snap.element_tensions_kN.push_back(elem->tension_effective() / 1000.0);
                     snap.element_bending_moments_kNm.push_back(sc.bending_moment_kNm);

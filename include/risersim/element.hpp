@@ -51,6 +51,25 @@ public:
      * @param rho_water Seawater density, for elements with hydrodynamic added mass.
      */
     virtual Eigen::MatrixXd mass_matrix(double rho_water) const = 0;
+
+    /**
+     * @brief Refreshes whatever internal state this element's own assemble()/results depend on
+     * that isn't already implied by the nodes' current positions -- for `CorotationalBeam3D`,
+     * the axial tension (`tension_true`/`tension_effective`, mirrors ANFLEX's `update_axial_
+     * strain_and_force`). Default no-op: a pure connector element (e.g. a spring) with no such
+     * derived state needs to override nothing. Called once per element per Newton iteration,
+     * before `assemble()`/results extraction -- see `Analysis::assemble_system`.
+     */
+    virtual double update_effective_tension() { return 0.0; }
+
+    /**
+     * @brief A representative stiffness scale for this element (e.g. a beam's `E`), used only by
+     * `Analysis::assemble_system`'s prescribed-motion penalty ("big number" technique) to pick a
+     * spring stiffness large relative to the model's own. Default 0.0 -- an element that never
+     * anchors a prescribed motion doesn't need to override this; the penalty scale only needs the
+     * model-wide MAXIMUM across whichever elements do have a physically meaningful value.
+     */
+    virtual double characteristic_stiffness() const { return 0.0; }
 };
 
 } // namespace risersim

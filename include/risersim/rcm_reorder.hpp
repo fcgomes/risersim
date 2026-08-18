@@ -44,12 +44,20 @@ inline std::vector<int> compute_rcm_order(const RiserModel& model) {
 
     std::vector<std::vector<int>> adj(n);
     for (const auto& elem : model.elements()) {
-        auto it1 = index_of.find(elem->node1());
-        auto it2 = index_of.find(elem->node2());
-        if (it1 == index_of.end() || it2 == index_of.end()) continue;
-        int a = it1->second, b = it2->second;
-        adj[a].push_back(b);
-        adj[b].push_back(a);
+        // Connects every pair of nodes this element touches -- for today's only element type
+        // (a 2-node beam) that's exactly the one edge node1()-node2() used to encode directly;
+        // written via the generic Element interface so it keeps working unchanged for any future
+        // element type's own node count (see element.hpp).
+        for (int i = 0; i < elem->num_nodes(); ++i) {
+            auto it_i = index_of.find(elem->node(i));
+            if (it_i == index_of.end()) continue;
+            for (int j = i + 1; j < elem->num_nodes(); ++j) {
+                auto it_j = index_of.find(elem->node(j));
+                if (it_j == index_of.end()) continue;
+                adj[it_i->second].push_back(it_j->second);
+                adj[it_j->second].push_back(it_i->second);
+            }
+        }
     }
     for (auto& neighbors : adj) {
         std::sort(neighbors.begin(), neighbors.end());

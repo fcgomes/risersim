@@ -74,7 +74,7 @@ int add_catenary_chain(risersim::RiserModel& model, int id_offset, double y_orig
     risersim::BeamMaterialProps props;
     const double L_unstretched = kTotalLength / static_cast<double>(kNumElements);
     for (int i = 0; i < kNumElements; ++i) {
-        model.add_element(id_offset + i + 1, model.nodes()[base + i].get(), model.nodes()[base + i + 1].get(), props, L_unstretched);
+        model.add_beam_element(id_offset + i + 1, model.nodes()[base + i].get(), model.nodes()[base + i + 1].get(), props, L_unstretched);
     }
 
     return model.nodes()[base]->id;
@@ -152,7 +152,7 @@ SolveResult solve_static_offset(risersim::RiserModel& model) {
     SolveResult r;
     r.converged = sa.solve();
     r.top_disp = model.nodes().front()->disp; // válido pra qualquer chain isolada (id_offset=0) OU multi-linha (ver abaixo)
-    r.top_tension_N = model.elements().front()->tension_effective();
+    r.top_tension_N = dynamic_cast<risersim::CorotationalBeam3D*>(model.elements().front().get())->tension_effective();
     return r;
 }
 
@@ -192,9 +192,9 @@ TEST_CASE("Two disconnected lines converge independently, matching each solved a
     };
     auto find_top_element = [&](risersim::Node3D* top_node) {
         auto it = std::find_if(combined.elements().begin(), combined.elements().end(),
-            [&](const auto& e) { return e->node1() == top_node || e->node2() == top_node; });
+            [&](const auto& e) { return e->node(0) == top_node || e->node(1) == top_node; });
         REQUIRE(it != combined.elements().end());
-        return it->get();
+        return dynamic_cast<risersim::CorotationalBeam3D*>(it->get());
     };
 
     risersim::Node3D* topA = find_node(topA_id);

@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
         Eigen::Vector3d c2(coords_by_id[n2_id][0], coords_by_id[n2_id][1], coords_by_id[n2_id][2]);
         double L_unstretched = (c2 - c1).norm();
 
-        model->add_element(eid, node_by_id[n1_id], node_by_id[n2_id], props, L_unstretched);
+        model->add_beam_element(eid, node_by_id[n1_id], node_by_id[n2_id], props, L_unstretched);
     }
 
     if (model->nodes().size() < 2) {
@@ -155,7 +155,9 @@ int main(int argc, char** argv) {
     std::cout << "End node 2 (id " << last_node->id << "): "
               << last_node->coords.x() << ", " << last_node->coords.y() << ", " << last_node->coords.z() << std::endl;
     double L_total = 0.0;
-    for (const auto& e : model->elements()) L_total += e->initial_length();
+    for (const auto& e : model->elements()) {
+        if (auto* beam = dynamic_cast<risersim::CorotationalBeam3D*>(e.get())) L_total += beam->initial_length();
+    }
     std::cout << "Total segment length: " << L_total << " m" << std::endl;
 
     risersim::StaticAnalysis sa;

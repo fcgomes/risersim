@@ -205,6 +205,17 @@ BeamMaterialProps parse_beam_section_properties(const json& sp, std::map<std::st
     return elem_props;
 }
 
+ScalarProps parse_scalar_properties(const json& sp) {
+    ScalarProps props;
+    props.curve_x = PiecewiseLinearCurve::linear(sp.value("stiffness_x", 0.0));
+    props.curve_y = PiecewiseLinearCurve::linear(sp.value("stiffness_y", 0.0));
+    props.curve_z = PiecewiseLinearCurve::linear(sp.value("stiffness_z", 0.0));
+    props.curve_rx = PiecewiseLinearCurve::linear(sp.value("stiffness_rx", 0.0));
+    props.curve_ry = PiecewiseLinearCurve::linear(sp.value("stiffness_ry", 0.0));
+    props.curve_rz = PiecewiseLinearCurve::linear(sp.value("stiffness_rz", 0.0));
+    return props;
+}
+
 bool ModelBuilder::load_from_json(const std::string& input_json_path) {
     std::ifstream ifs(input_json_path);
     if (!ifs.is_open()) return false;
@@ -237,6 +248,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         // 2. Load elements
         std::map<std::string, int> missing_field_counts;
         int elements_missing_section_properties = 0;
+        int elements_missing_scalar_properties = 0;
         int elements_missing_nodes = 0;
         if (j.contains("model") && j["model"].contains("elements") && !model.nodes().empty()) {
             auto elems_json = j["model"]["elements"];
@@ -244,7 +256,7 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             // First pass: resolve node1/node2 (skipping anything unresolvable, same as before) --
             // curvature1/curvature2 (below) need to look at NEIGHBORING elements' nodes, which
             // aren't necessarily known yet mid-loop in a single pass, so element construction
-            // itself (add_element(), which needs curvature1/curvature2 as constructor args -- see
+            // itself (add_beam_element(), which needs curvature1/curvature2 as constructor args -- see
             // element_beam.hpp) is deferred to a second pass.
             struct PendingElement {
                 int id;
@@ -255,6 +267,13 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
             std::vector<PendingElement> pending;
             pending.reserve(elems_json.size());
             for (auto& e_j : elems_json) {
+                // "beam" (or absent, for backward compat with every JSON written before this
+                // field existed) is the only type this pass handles -- other types (e.g.
+                // "scalar") get their own pass below, since they don't participate in the
+                // curvature/neighbor-chain logic this pass exists for.
+                std::string element_type = e_j.value("element_type", std::string("beam"));
+                if (element_type != "beam") continue;
+
                 int id = e_j["id"];
                 auto n1_it = node_by_id.find(e_j["node1_id"].get<int>());
                 auto n2_it = node_by_id.find(e_j["node2_id"].get<int>());
@@ -304,7 +323,32 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                 double curvature1 = discrete_signed_curvature(prev_ptr, pe.n1->coords, &pe.n2->coords, rotgf);
                 double curvature2 = discrete_signed_curvature(&pe.n1->coords, pe.n2->coords, next_ptr, rotgf);
 
-                model.add_element(pe.id, pe.n1, pe.n2, pe.props, pe.L_unstretched, curvature1, curvature2);
+                model.add_beam_element(pe.id, pe.n1, pe.n2, pe.props, pe.L_unstretched, curvature1, curvature2);
+            }
+
+            // Scalar elements (generic 6-DOF spring/flexjoint, element_scalar.hpp) -- a separate,
+            // simpler pass: no curvature/neighbor-chain concept applies to a connector, so no
+            // two-pass adjacency resolution is needed.
+            for (auto& e_j : elems_json) {
+                std::string element_type = e_j.value("element_type", std::string("beam"));
+                if (element_type != "scalar") continue;
+
+                int id = e_j["id"];
+                auto n1_it = node_by_id.find(e_j["node1_id"].get<int>());
+                auto n2_it = node_by_id.find(e_j["node2_id"].get<int>());
+                if (n1_it == node_by_id.end() || n2_it == node_by_id.end()) {
+                    elements_missing_nodes++;
+                    continue;
+                }
+
+                ScalarProps scalar_props;
+                if (e_j.contains("scalar_properties")) {
+                    scalar_props = parse_scalar_properties(e_j["scalar_properties"]);
+                } else {
+                    elements_missing_scalar_properties++;
+                }
+
+                model.add_scalar_element(id, n1_it->second, n2_it->second, scalar_props);
             }
         }
         if (elements_missing_nodes > 0) {
@@ -315,6 +359,11 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         if (elements_missing_section_properties > 0) {
             std::ostringstream oss;
             oss << elements_missing_section_properties << " elemento(s) sem 'section_properties' no JSON -- usando material genérico padrão (aço, D_outer=0.25m).";
+            warnings.push_back({"warning", oss.str()});
+        }
+        if (elements_missing_scalar_properties > 0) {
+            std::ostringstream oss;
+            oss << elements_missing_scalar_properties << " elemento(s) 'scalar' sem 'scalar_properties' no JSON -- assumindo rigidez zero em todos os GDL (conector sem resistência).";
             warnings.push_back({"warning", oss.str()});
         }
         for (const auto& [field, count] : missing_field_counts) {

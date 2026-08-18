@@ -6,7 +6,9 @@
 #define RISERSIM_MODEL_HPP
 
 #include "risersim/node.hpp"
+#include "risersim/element.hpp"
 #include "risersim/element_beam.hpp"
+#include "risersim/element_scalar.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/vessel_offset.hpp"
 #include "risersim/vessel_motion.hpp"
@@ -185,7 +187,7 @@ struct LineInfo {
 /**
  * @brief Owning container of a riser/mooring model's nodes and elements, equivalent to ANFLEX's `cDomain`.
  *
- * Owns its Node3D/CorotationalBeam3D instances via `std::unique_ptr` (roadmap step 6, see
+ * Owns its Node3D/Element instances via `std::unique_ptr` (roadmap step 6, see
  * `docs/mapa_classes_anflex_estatica.md`). Other code holds non-owning raw pointers into this
  * storage (e.g. `CorotationalBeam3D::node1`/`node2`, or a `Node3D*` returned by add_node()) --
  * safe as long as those pointers don't outlive the owning RiserModel, exactly like ANFLEX's own
@@ -212,8 +214,14 @@ public:
      */
     const std::vector<std::unique_ptr<Node3D>>& nodes() const { return nodes_; }
 
-    /** @brief The model's owned elements. Read-only -- see nodes()'s doc comment, same reasoning. */
-    const std::vector<std::unique_ptr<CorotationalBeam3D>>& elements() const { return elements_; }
+    /**
+     * @brief The model's owned elements (any `Element` subtype -- beam, and, as they're added,
+     * other structural types). Read-only -- see nodes()'s doc comment, same reasoning. Code that
+     * specifically needs a `CorotationalBeam3D`'s own members (props(), tension_effective(), ...)
+     * must `dynamic_cast` and skip non-beam elements -- see e.g. `static_integrator.cpp`'s weight/
+     * buoyancy/current loop.
+     */
+    const std::vector<std::unique_ptr<Element>>& elements() const { return elements_; }
 
     /** @brief Environmental configuration (seabed/current/wave/water) -- see EnvironmentalConfig. */
     const EnvironmentalConfig& environmental() const { return environmental_; }
@@ -251,9 +259,24 @@ public:
      * @param args Forwarded to CorotationalBeam3D's constructor.
      */
     template <typename... Args>
-    CorotationalBeam3D* add_element(Args&&... args) {
-        elements_.push_back(std::make_unique<CorotationalBeam3D>(std::forward<Args>(args)...));
-        return elements_.back().get();
+    CorotationalBeam3D* add_beam_element(Args&&... args) {
+        auto elem = std::make_unique<CorotationalBeam3D>(std::forward<Args>(args)...);
+        CorotationalBeam3D* ptr = elem.get();
+        elements_.push_back(std::move(elem));
+        return ptr;
+    }
+
+    /**
+     * @brief Constructs a ScalarElement (generic 6-DOF spring/flexjoint, see element_scalar.hpp)
+     * owned by this model and returns a non-owning pointer to it.
+     * @param args Forwarded to ScalarElement's constructor.
+     */
+    template <typename... Args>
+    ScalarElement* add_scalar_element(Args&&... args) {
+        auto elem = std::make_unique<ScalarElement>(std::forward<Args>(args)...);
+        ScalarElement* ptr = elem.get();
+        elements_.push_back(std::move(elem));
+        return ptr;
     }
 
     /** @brief Destroys all owned nodes and elements and empties both containers. */
@@ -323,7 +346,7 @@ public:
 
 private:
     std::vector<std::unique_ptr<Node3D>> nodes_;
-    std::vector<std::unique_ptr<CorotationalBeam3D>> elements_;
+    std::vector<std::unique_ptr<Element>> elements_;
     EnvironmentalConfig environmental_;
     AnalysisOptionsConfig analysis_options_;
     std::vector<ReferenceInfo> references_;

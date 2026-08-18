@@ -10,6 +10,7 @@
 
 #include "risersim/model.hpp"
 #include "risersim/element_beam.hpp"
+#include "risersim/element_scalar.hpp"
 #include <nlohmann/json.hpp>
 #include <map>
 #include <string>
@@ -39,6 +40,18 @@ struct ModelWarning {
  * its own console output) passes nullptr to skip counting.
  */
 BeamMaterialProps parse_beam_section_properties(const nlohmann::json& sp, std::map<std::string, int>* missing_field_counts = nullptr);
+
+/**
+ * @brief Converts a `scalar_properties` JSON object into ScalarProps: one `stiffness_<dof>`
+ * (a plain number, N/m or N.m/rad -- builds a `PiecewiseLinearCurve::linear()`) per local DOF
+ * (`x`/`y`/`z`/`rx`/`ry`/`rz`), defaulting to 0.0 (no resistance) for any DOF not given. Covers
+ * the common linear-spring/flexjoint case (`Curso/Exemplo_01/Exemplo_01b.aml`'s flexjoint, a
+ * generic mooring/connector spring); a genuinely nonlinear curve (e.g. `ESDV/ESDV.aml`'s valve
+ * force curve, `%SCALAR.FUNCTION_ID`) needs `PiecewiseLinearCurve`'s general (x[],y[]) constructor
+ * directly -- not yet wired to a JSON shape here, deferred until a real case needs it (see
+ * docs/roadmap.md).
+ */
+ScalarProps parse_scalar_properties(const nlohmann::json& sp);
 
 /**
  * @brief Builds a RiserModel from a structured input JSON, mirroring ANFLEX's cModelBuilderDAT.

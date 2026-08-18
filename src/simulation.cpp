@@ -57,7 +57,8 @@ void Simulation::run() {
         double heading = angles.empty() ? 90.0 : angles.front();
         // Cd real do elemento (antes reaproveitava Ca de forma incorreta) -- todos os elementos
         // tipicamente compartilham a mesma seção num riser, então o do primeiro serve de default.
-        double cd = model->elements().empty() ? 1.0 : model->elements().front()->props().Cd;
+        auto* first_beam = model->elements().empty() ? nullptr : dynamic_cast<CorotationalBeam3D*>(model->elements().front().get());
+        double cd = first_beam ? first_beam->props().Cd : 1.0;
         static_analysis.current = CurrentProfile(v_surface, model->environmental().seabed_depth_z, heading, 0.1428, cd);
         // Superfície real, não necessariamente Z=0: ModelBuilder alinha seabed_depth_z ao Z real
         // dos nós (model_builder.cpp), que no frame nativo do AML fica perto de 0 no leito e
@@ -82,9 +83,11 @@ void Simulation::run() {
             std::cout << "  [TOP] X=" << att.top_node->current_coords().x()
                       << " m, Z=" << att.top_node->current_coords().z() << " m" << std::endl;
             auto top_elem = std::find_if(model->elements().begin(), model->elements().end(),
-                [&](const auto& e) { return e->node1() == att.top_node || e->node2() == att.top_node; });
+                [&](const auto& e) { return e->node(0) == att.top_node || e->node(1) == att.top_node; });
             if (top_elem != model->elements().end()) {
-                std::cout << "  [T_eff TOP] " << ((*top_elem)->tension_effective() / 1000.0) << " kN" << std::endl;
+                if (auto* beam = dynamic_cast<CorotationalBeam3D*>(top_elem->get())) {
+                    std::cout << "  [T_eff TOP] " << (beam->tension_effective() / 1000.0) << " kN" << std::endl;
+                }
             }
         }
     }

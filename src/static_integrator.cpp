@@ -17,7 +17,13 @@ Eigen::VectorXd StaticIntegrator::assemble_load_vector(double current_factor) co
 
     double water_surface_z = model->environmental().water_surface_z;
 
-    for (const auto& elem : model->elements()) {
+    for (const auto& elem_base : model->elements()) {
+        // Weight/buoyancy/current loading is beam-specific (needs D_outer, material density,
+        // internal-fluid bore) -- an element type with none of that (e.g. a connector/spring)
+        // simply contributes no external load here, same as real ANFLEX's cScalar (no calc_load).
+        auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
+        if (!elem) continue;
+
         double L = elem->initial_length();
         double g = 9.81;
 
@@ -116,11 +122,15 @@ void add_artificial_stiffness(const RiserModel* model, int num_dofs, int iter, E
     // Artificial stiffness (Tikhonov regularization), the same technique used by
     // real ANFLEX (beam.cpp:calc_artificial_stiffness / static_integrator.cpp).
     double avg_EA_L = 0.0;
-    for (const auto& elem : model->elements()) {
+    int n_beams = 0;
+    for (const auto& elem_base : model->elements()) {
+        auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
+        if (!elem) continue;
         double L = elem->current_length();
         if (L > 1.0e-9) avg_EA_L += (elem->props().E * elem->props().A) / L;
+        ++n_beams;
     }
-    avg_EA_L /= static_cast<double>(model->elements().size());
+    if (n_beams > 0) avg_EA_L /= static_cast<double>(n_beams);
 
     // NOTE: tested with constant 5.0 (instead of 1.25) as a way to keep artificial
     // stiffness relevant for more iterations -- this does prevent residual blow-up

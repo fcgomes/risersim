@@ -35,11 +35,14 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     // lixo lido aqui e por consequência a convergência).
     std::unordered_map<Node3D*, Eigen::Vector3d> node_tangent_sum;
     for (const auto& elem : model->elements()) {
-        Eigen::Vector3d ex = (elem->node2()->current_coords() - elem->node1()->current_coords()).normalized();
-        node_tangent_sum.try_emplace(elem->node1(), Eigen::Vector3d::Zero());
-        node_tangent_sum.try_emplace(elem->node2(), Eigen::Vector3d::Zero());
-        node_tangent_sum[elem->node1()] += ex;
-        node_tangent_sum[elem->node2()] += ex;
+        if (elem->num_nodes() < 2) continue; // e.g. a future single-node element (buoy) has no "along the line" direction
+        Node3D* n1 = elem->node(0);
+        Node3D* n2 = elem->node(1);
+        Eigen::Vector3d ex = (n2->current_coords() - n1->current_coords()).normalized();
+        node_tangent_sum.try_emplace(n1, Eigen::Vector3d::Zero());
+        node_tangent_sum.try_emplace(n2, Eigen::Vector3d::Zero());
+        node_tangent_sum[n1] += ex;
+        node_tangent_sum[n2] += ex;
     }
 
     for (const auto& elem : model->elements()) {
@@ -168,7 +171,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     // default, so this is a no-op unless a caller (e.g. solve_vessel_offset()) populates it.
     if (!prescribed_motions.empty()) {
         double big_number = 0.0;
-        for (const auto& elem : model->elements()) big_number = std::max(big_number, elem->props().E);
+        for (const auto& elem : model->elements()) big_number = std::max(big_number, elem->characteristic_stiffness());
         for (const auto& pm : prescribed_motions) pm.apply(big_number, triplets, F_int);
     }
 
@@ -183,7 +186,12 @@ Eigen::SparseMatrix<double> Analysis::assemble_buoyancy_stiffness() const {
     double g = 9.81;
     std::vector<Eigen::Triplet<double>> triplets;
 
-    for (const auto& elem : model->elements()) {
+    for (const auto& elem_base : model->elements()) {
+        // Hydrostatic buoyancy is beam-specific (outer diameter, submerged length) -- an element
+        // type with no such physical envelope (e.g. a connector/spring) simply contributes none.
+        auto* elem = dynamic_cast<CorotationalBeam3D*>(elem_base.get());
+        if (!elem) continue;
+
         double zc[2] = {elem->node1()->current_coords().z(), elem->node2()->current_coords().z()};
         Hydrostatics hydro(elem->props().D_outer, elem->initial_length(), water_density);
         hydro.compute(zc, water_surface_z);
