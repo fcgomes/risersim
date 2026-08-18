@@ -1869,9 +1869,89 @@ resultado real. Assinatura do `SimulationExporter::export_hdf5()` não mudou (us
 `Analysis::model`, já público) -- o binding Python exposto em `bindings.cpp` (não usado por nenhum
 `.py` do repo) continua compilando sem alteração.
 
+**Atualização 10** (backend do pipeline ganha os 4 tipos de elemento novos do Eixo 2d -- só
+backend, UI do editor fica pra rodada seguinte, escopo confirmado com o usuário): usuário perguntou
+como a interface web acompanha o motor C++ ter ganhado `ScalarElement`/`TrussElement`/
+`WinchElement`/`BuoyElement` (Eixo 2d) -- achado: nem o editor nem o compilador Python tinham
+qualquer conceito de `element_type`, sempre produziam elementos beam implicitamente, e
+`aml_reader.py` já vinha colapsando silenciosamente materiais reais truss/scalar/winch pra um
+único beam (confirmado com dados reais, ver abaixo).
+
+- **Schema**: `materials[]` ganhou `finite_element_type` (`beam`/`truss`/`scalar`/`winch`, default
+  `beam` -- espelha o próprio `%MATERIAL.FINITE_ELEMENT` real, campo NO material, não uma entidade
+  separada). `truss`/`winch` reaproveitam os campos JÁ EXISTENTES de material (diâmetro/peso/
+  rigidez axial -- confirmado que `risersim_runner.py::_material_props()` já deriva E/A/rho de
+  forma genérica, nada específico de viga) + `initial_tension_kN` novo (só truss). `scalar` ganhou
+  3 campos novos -- `scalar_stiffness_translational_kNm`/`_torsional_kNm_per_rad`/
+  `_bending_kNm_per_rad` -- **corrigido contra dado real** (`exemplos/Boiao/P52_Boiao.aml`,
+  materiais 123-124, bloco `%MATERIAL.FLEXIBLE_JOINT`): um flexjoint real do ANFLEX tem só 3
+  valores (translacional isotrópico, torcional no eixo do próprio flexjoint, flexão isotrópica no
+  plano transversal), não 6 valores por eixo como uma primeira tentativa (não confirmada contra
+  dado real) tinha assumido -- mapeado pro schema de 6 campos do `ScalarProps` C++ como
+  translacional→x=y=z, torcional→rx, flexão→ry=rz. Novo catálogo `curves[]` (`{id, name, time_s,
+  fraction}`, mesmo padrão id-referenciado de materiais/solos) alimenta `winch_payout_curve_id`
+  **no material** (não no segmento -- também corrigido contra dado real,
+  `exemplos/Curso/Exemplo_03/Estática/Exemplo_03_E.aml` materiais 713-714,
+  `%MATERIAL.TIME_FUNCTION_ID` referenciando um bloco `%TIME_FUNCTION` separado). Novo catálogo
+  `buoys[]` (`{id, name, weight_kN, volume_m3, z_area_m2, Ca[3], moment_inertia[3]}`) +
+  `segments[].buoy_id` -- suposição de design não verificável contra dado real (ver abaixo): a boia
+  se conecta ao ÚLTIMO nó da subcadeia de elementos do segmento.
+- **Compilador** (`catenary_geometry.py`/`risersim_runner.py::build_config_from_interface()`):
+  4 funções novas espelhando `build_section_properties()` (`build_truss_properties`/
+  `build_winch_properties`/`build_scalar_properties`/`build_buoy_properties`); o laço por
+  segmento agora despacha por `finite_element_type` do material referenciado em vez de sempre
+  montar `section_properties`; um `buoy_id` de segmento vira um elemento `buoy` extra anexado ao
+  último nó da subcadeia. `solve_catenary_geometry()`/`correct_line_mesh_via_moorpy()` continuam
+  usando só o primeiro segmento (mesma simplificação de sempre) -- ganharam um erro claro se esse
+  primeiro segmento for `scalar` (sem rigidez axial/peso pra resolver a forma da catenária).
+- **`aml_reader.py`** -- a correção mais trabalhosa: cada categoria de material real usa uma tag de
+  ABERTURA diferente (`%MATERIAL.FLEXIBLE_LINE` pra beam/truss/winch, `%MATERIAL.FLEXIBLE_JOINT`
+  pra scalar, `%MATERIAL.RIGID_TUBE`/`%MATERIAL.STIFFENER`/`%MATERIAL.STRESS_JOINT` também viram
+  beam -- confirmado varrendo `exemplos/` real), então o padrão de "ocorrência múltipla por tag
+  fixa" que solos/correntes/ondas já usam não serve -- novo `_scan_material_blocks()` varre o
+  arquivo bruto por marcadores `%MATERIAL.END` (mesma classe de solução que
+  `_scan_wave_spectrum_types()` já usa pra `%WAVE.JONSWAP`/`%WAVE.REGULAR`, generalizada pra um
+  conjunto de tags de abertura não-enumerável de antemão). `to_interface_json()` agora preserva
+  CADA material real (antes: só o primeiro `%MATERIAL.FLEXIBLE_LINE` encontrado, resto
+  descartado); `%LINE.SEGMENT.BUOY_ID` (já lido, nunca propagado) passa a chegar no segmento de
+  saída.
+- **Gap real encontrado, não fechado**: `%LINE.SEGMENT.BUOY_ID` está em `-1` (não usado) em TODO
+  `.aml` real já pesquisado neste repo (Boiao, Manifold, ESDV, Ruptura) -- o mecanismo real de
+  anexar uma boia aparenta ser outro (o lado XML/H5 do ANFLEX real lê boias de uma seção
+  "BuoyElement" separada, sem relação com segmentos de linha -- `model_builder_dat.cpp:4455`
+  `load_buoys()`). Suporte a boia via `.aml` real fica sem verificação end-to-end possível por
+  ora; o caminho de JSON de interface escrita à mão (ou gerada pelo futuro editor) funciona
+  normalmente. Registrado como suposição de design explícita, não como bug corrigido.
+- **Verificação**: (1) script ad hoc construindo uma JSON de interface à mão com 1 linha
+  (beam→truss→scalar→winch, mais um `buoy_id`) via `build_config_from_interface()`, conferindo
+  `element_type`/`*_properties` corretos por elemento e ausência de ids duplicados -- passou de
+  primeira depois de 2 bugs reais encontrados e corrigidos (ver "achados extras" abaixo). (2) O
+  `P52_Boiao.aml` REAL inteiro (16 materiais, 9 beam + 5 truss + 2 scalar) importado via
+  `to_interface_json()` e compilado via `build_config_from_interface()` até o fim, produzindo
+  14652 elementos reais (7737 beam + 6906 truss + 9 scalar) sem nenhum erro -- primeira vez que
+  esse arquivo passa pelo pipeline inteiro (AML→interface→compilador) preservando seus tipos de
+  elemento reais; resolver o equilíbrio não-linear completo (convergência real) NÃO foi rodado
+  (arquivo grande, fora do escopo desta verificação de schema/compilador). (3) Regressão dos 4
+  casos de carga do `Exemplo_01a.aml` (Near/Far/Transverse/Cross) reconfirmada -- todos continuam
+  compilando pra uma lista de elementos 100% `beam` (500 elementos cada, zero warnings novos),
+  confirmando que o novo schema é aditivo/opcional e não muda nada pra um modelo beam-only.
+
+  **Achados extras durante a verificação** (bugs reais, pré-existentes, encontrados e corrigidos
+  neste processo, não hipotéticos): `spikes/mooring_validation/build_from_risersim_json.py`
+  (usado por `correct_line_mesh_via_moorpy()` pra melhorar o palpite inicial da malha) lia
+  `e["section_properties"]` incondicionalmente pra TODO elemento -- quebrava com `KeyError` assim
+  que uma linha tinha um elemento truss/scalar/winch/buoy; corrigido pra ler a chave certa por
+  `element_type` e pular scalar/buoy (sem E/A/peso axial equivalente) do cálculo da média
+  representativa da linha. `catenary_geometry.py`'s aviso de fallback (`correct_line_mesh_via_
+  moorpy`, catch-all) imprimia um emoji que quebra com `UnicodeEncodeError` num console Windows
+  padrão (cp1252) -- transformava uma exceção capturada de propósito (contrato documentado de
+  "melhor esforço, nunca propaga") numa queda real; trocado por um marcador ASCII simples.
+
 **Fora de escopo do v1** (explícito): movimento de topo real/RAO, upload de `.RAO`, corpo
 flutuante compartilhado entre linhas (fase 2 futura); editar/reabrir um projeto importado de AML/
-XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura.
+XML no editor (só projetos "em branco" são editáveis); UI do editor pra criar/editar scalar/truss/
+winch/buoy (Atualização 10 só cobriu o backend -- schema+compilador+importador AML); turret/
+ruptura; boia via importação de `.aml` real (ver "gap real encontrado" na Atualização 10).
 
 ### 3b. Interface de controle de simulação (projetos, disparo, acompanhamento)
 

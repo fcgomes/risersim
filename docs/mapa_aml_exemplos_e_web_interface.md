@@ -222,7 +222,7 @@ nós/conexões  →  linha/malha  →  condições de contorno
 análise  →  caso de carga (referencia análise)
 ```
 
-### Nota de escopo
+### Nota de escopo — **DESATUALIZADA, mantida como histórico** (ver atualização 2026-08-18 abaixo)
 
 Mesmo com essa arquitetura resolvida, o motor C++ do `risersim` hoje só cobre uma fração pequena do
 ANFLEX real: **uma linha só** (`RiserModel::nodes`/`elements` são listas planas únicas, sem conceito
@@ -236,6 +236,25 @@ elemento**. O "JSON de interface" (e o formulário que o preencheria) precisaria
 igualmente restrito — uma linha, sem boias/tendões/turret/ruptura — e crescer só se/quando o motor
 crescer. Isso não muda a decisão de arquitetura (dois JSONs continua certo mesmo num escopo
 pequeno), só limita o que um primeiro formulário poderia cobrir.
+
+**Atualização 2026-08-18**: boa parte dessas restrições já não vale mais. O motor ganhou
+multi-linha real (`references[]`/`connections[]`/`lines[]`, Eixo 2c) e 4 tipos de elemento novos
+além da viga — `ScalarElement`/flexjoint, `TrussElement`/cabo-amarração, `WinchElement`/guincho,
+`BuoyElement`/boia de 1 nó (ver `docs/roadmap.md`, "2d. Suporte a múltiplos tipos de elemento").
+O backend do pipeline de interface (`risersim_runner.py`/`catenary_geometry.py`/`aml_reader.py`)
+foi atualizado no mesmo dia pra acompanhar: `materials[]` ganhou `finite_element_type`
+(`beam`/`truss`/`scalar`/`winch`, espelhando o próprio `%MATERIAL.FINITE_ELEMENT` real), um novo
+catálogo `buoys[]` + `segments[].buoy_id`, e `aml_reader.py` para de colapsar materiais reais
+truss/scalar/winch pra um único beam (confirmado com dados reais, `exemplos/Boiao/P52_Boiao.aml`,
+`exemplos/Curso/Exemplo_03/Estática/Exemplo_03_E.aml`). Só o EDITOR WEB (formulário/3D preview)
+ainda não tem UI pra criar esses 4 tipos — fica pra uma rodada seguinte, escopo confirmado com o
+usuário. `%MATERIAL.CONTACT`/rigid body/variantes alternativas de viga seguem de fato fora de
+escopo (zero uso real neste repo, mesmo levantamento já documentado no roadmap do lado C++).
+Boias especificamente: `%LINE.SEGMENT.BUOY_ID` está sempre `-1` (não usado) em todo `.aml` real
+já pesquisado neste repo -- o mecanismo real de anexar uma boia a um modelo aparenta ser outro
+(o lado XML/H5 do ANFLEX real lê boias de uma seção "BuoyElement" separada, não ligada a nenhuma
+linha -- `model_builder_dat.cpp:4455`), então o suporte a boia end-to-end via importação de `.aml`
+real continua um gap aberto (o caminho de JSON de interface escrita à mão funciona normalmente).
 
 ## Auditoria de conversões de valor e proposta de unificação de nomenclatura
 

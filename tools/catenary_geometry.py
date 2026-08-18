@@ -178,7 +178,10 @@ def correct_line_mesh_via_moorpy(nodes, elements, top_id, anchor_id, total_lengt
             if n["id"] in coords_by_id:
                 n["coords"] = coords_by_id[n["id"]]
     except Exception as exc:
-        print(f"⚠️ Não foi possível corrigir a malha desta linha via MoorPy ({exc}) -- "
+        # Plain ASCII warning marker, not an emoji -- a Windows console using its default cp1252
+        # encoding (not UTF-8) can't encode "⚠️" and raises UnicodeEncodeError right here, turning
+        # this function's own documented best-effort/never-raises contract into a real crash.
+        print(f"[AVISO] Não foi possível corrigir a malha desta linha via MoorPy ({exc}) -- "
               "mantém a malha reta original (comprimento pode ficar incorreto).")
 
 
@@ -340,4 +343,81 @@ def build_section_properties(mat, glb):
         "rho_fluid": glb['water_density_kgm3'],
         "Ca": mat['Cm'] - 1.0,
         "Cd": mat['Cd'],
+    }
+
+
+def build_truss_properties(mat):
+    """Builds the `truss_properties` dict `model_builder.cpp::parse_truss_properties()` expects,
+    from a material resolved by `risersim_runner.py::_material_props()` with
+    `finite_element_type: "truss"` (or `"winch"`, which reuses this unchanged -- see
+    `build_winch_properties()`). Reuses the SAME E/A/rho/outer-diameter fields a beam material
+    already derives (`_material_props()` doesn't assume anything beam-specific to get there --
+    bending/torsion, which a truss has none of, live in separate fields it simply never reads) --
+    real ANFLEX mirrors this too: `%MATERIAL.FINITE_ELEMENT` is a field ON the material, not a
+    separate entity. `initial_tension_kNm` is the one field this element type actually adds
+    (see risersim/docs/roadmap.md, element-types entry) -- 0.0 (no pre-tension) if absent.
+    """
+    return {
+        "E": mat['E_Pa'], "A": mat['A_m2'], "rho": mat['rho_kgm3'],
+        "D_outer": mat['outer_diameter_m'],
+        "initial_tension": mat.get('initial_tension_kN', 0.0) * 1000.0,
+    }
+
+
+def build_winch_properties(mat):
+    """Builds the `winch_properties` dict `model_builder.cpp::parse_winch_payout_curve()` expects
+    -- same E/A/rho/D_outer as `build_truss_properties()` (real `cWinch` inherits `cTruss`'s
+    material handling unchanged), plus an optional `payout_curve`. Real ANFLEX ties a winch's
+    payout program to the MATERIAL itself (`%MATERIAL.TIME_FUNCTION_ID`, confirmed
+    exemplos/Curso/Exemplo_03/Estática/Exemplo_03_E.aml materials 713-714), not the segment --
+    `mat['payout_curve']` is expected already resolved by the caller (`risersim_runner.py`'s
+    `_material_props()`, from `mat['winch_payout_curve_id']` against the interface JSON's
+    `curves[]` catalog) into `{"time_s": [...], "fraction": [...]}`. Absent/`None` means "no
+    curve" -- `WinchElement` already defaults to a constant fraction of 1.0 (behaves exactly like
+    a plain truss) when none is given, so this simply omits the key rather than inventing one.
+    """
+    props = build_truss_properties(mat)
+    payout_curve = mat.get('payout_curve')
+    if payout_curve and payout_curve.get('time_s') and payout_curve.get('fraction'):
+        props['payout_curve'] = {
+            "time": list(payout_curve['time_s']),
+            "fraction": list(payout_curve['fraction']),
+        }
+    return props
+
+
+def build_scalar_properties(mat):
+    """Builds the `scalar_properties` dict `model_builder.cpp::parse_scalar_properties()` expects
+    -- `ScalarProps`'s C++ schema is 6 independent per-DOF stiffnesses (translation N/m, rotation
+    N.m/rad), but real ANFLEX's own flexjoint material (`%MATERIAL.FLEXIBLE_JOINT` +
+    `%MATERIAL.FINITE_ELEMENT 'scalar'`) only ever carries 3 real values -- ONE translational
+    stiffness (isotropic across all 3 translation axes), ONE torsional (about the joint's own
+    local X/chord axis) and ONE bending (isotropic in the transverse plane) -- confirmed real
+    data, exemplos/Boiao/P52_Boiao.aml materials 123-124
+    (`%MATERIAL.STIFFNESS.TRANSLATIONAL/TORSIONAL/BENDING`). Mapped onto the 6-field C++ schema
+    as translational->x=y=z, torsional->rx, bending->ry=rz -- a real physical simplification (a
+    flexjoint resists bending the same way regardless of direction), not an invented one.
+    """
+    translational = mat.get('scalar_stiffness_translational_kNm', 0.0) * 1000.0
+    torsional = mat.get('scalar_stiffness_torsional_kNm_per_rad', 0.0) * 1000.0
+    bending = mat.get('scalar_stiffness_bending_kNm_per_rad', 0.0) * 1000.0
+    return {
+        "stiffness_x": translational, "stiffness_y": translational, "stiffness_z": translational,
+        "stiffness_rx": torsional, "stiffness_ry": bending, "stiffness_rz": bending,
+    }
+
+
+def build_buoy_properties(buoy):
+    """Builds the `buoy_properties` dict `model_builder.cpp::parse_buoy_properties()` expects,
+    from a `buoys[]` catalog entry (interface JSON's own new top-level catalog, same id-referenced
+    pattern as `materials[]`/`soils[]` -- see risersim/docs roadmap for the plan behind this).
+    """
+    ca = buoy.get('Ca') or [0.0, 0.0, 0.0]
+    mi = buoy.get('moment_inertia') or [0.0, 0.0, 0.0]
+    return {
+        "weight": buoy.get('weight_kN', 0.0) * 1000.0,
+        "volume": buoy.get('volume_m3', 0.0),
+        "z_area": buoy.get('z_area_m2', 0.0),
+        "Ca": list(ca),
+        "moment_inertia": list(mi),
     }

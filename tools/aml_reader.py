@@ -109,6 +109,27 @@ class ANFLEXAMLReader:
                 pass
         return default
 
+    @staticmethod
+    def _float_in_block(block, tag, default=0.0, line_idx=0, col_idx=0):
+        """Like `_get_float_at`, but reads from one block dict returned by
+        `_scan_material_blocks()` instead of `self.raw_sections_multi` -- a block's own field
+        presence varies by material type (a scalar material has no `%MATERIAL.DIAMETER.EXTERNAL`
+        at all), so this must tolerate a genuinely absent tag, not just a missing occurrence."""
+        data = block.get(tag)
+        if data and len(data) > line_idx:
+            try:
+                return float(data[line_idx].split()[col_idx])
+            except (ValueError, IndexError):
+                pass
+        return default
+
+    @staticmethod
+    def _str_in_block(block, tag, default='', line_idx=0):
+        data = block.get(tag)
+        if data and len(data) > line_idx:
+            return data[line_idx].strip().strip("'\"")
+        return default
+
     def _get_profile(self, tag):
         """
         Reads a profile of N values where:
@@ -172,6 +193,64 @@ class ANFLEXAMLReader:
         except OSError:
             pass
         return types
+
+    def _scan_material_blocks(self):
+        """Returns one dict per `%MATERIAL.*` block in the file, in real file order -- needed
+        because, unlike `%SOIL`/`%CURRENT`/`%WAVE`, a material block's OPENING tag varies by
+        category (`%MATERIAL.FLEXIBLE_LINE` for beam/truss/winch, `%MATERIAL.FLEXIBLE_JOINT` for
+        a scalar/flexjoint, `%MATERIAL.RIGID_TUBE` for a rigid beam -- confirmed real data,
+        exemplos/Boiao/P52_Boiao.aml materials 119-125), so a fixed-tag `raw_sections_multi[tag]`
+        lookup (the pattern every other multi-occurrence catalog in this file uses) can't
+        enumerate them -- same class of problem `_scan_wave_spectrum_types()` already solves for
+        `%WAVE.JONSWAP`/`%WAVE.REGULAR`, generalized here to a block whose set of possible opening
+        tags isn't fixed/enumerable in advance.
+
+        Splits the raw file on `%MATERIAL.END` markers instead: each chunk between two markers is
+        one material's full tag set (`{tag: [data_lines]}`, same per-tag shape as
+        `self.raw_sections`, just scoped to one block), plus `_open_tag`/`_open_value` recording
+        whichever tag+name actually opened it. A block with no `%MATERIAL.ID` inside is dropped
+        (defensive -- every real material has one; guards against a stray/malformed chunk).
+        Any unrelated block that happens to sit between two materials in the file (e.g. a
+        `%TIME_FUNCTION` block) gets swept into whichever material chunk it physically falls
+        inside, but under its own distinct tag names -- harmless, since callers only ever look up
+        specific `%MATERIAL.*` tags by exact name.
+        """
+        blocks = []
+        try:
+            with open(self.filepath, 'r', encoding='latin-1', errors='ignore') as f:
+                lines = [line.rstrip('\r\n') for line in f]
+        except OSError:
+            return blocks
+
+        current = {}
+        open_tag, open_value = None, None
+        current_tag, tag_lines = None, []
+        for raw in lines:
+            stripped = raw.strip()
+            if stripped == '%MATERIAL.END':
+                if current_tag is not None:
+                    current[current_tag] = tag_lines
+                if '%MATERIAL.ID' in current:
+                    current['_open_tag'], current['_open_value'] = open_tag, open_value
+                    blocks.append(current)
+                current, open_tag, open_value, current_tag, tag_lines = {}, None, None, None, []
+                continue
+            if stripped.startswith('%'):
+                if current_tag is not None:
+                    current[current_tag] = tag_lines
+                # The block's own category/name tag is the first `%MATERIAL.*` tag seen since the
+                # last reset that ISN'T a known field tag -- guards against whatever unrelated
+                # content (%TITLE, %SOIL, an intervening %TIME_FUNCTION block, ...) precedes the
+                # FIRST real material in the file from being mistaken for its opening tag.
+                if open_tag is None and stripped.startswith('%MATERIAL.') and stripped not in (
+                        '%MATERIAL.ID', '%MATERIAL.FINITE_ELEMENT'):
+                    open_tag = stripped
+                current_tag, tag_lines = stripped, []
+            else:
+                if open_tag == current_tag and open_value is None and stripped:
+                    open_value = stripped.strip("'\"")
+                tag_lines.append(stripped)
+        return blocks
 
     # -------------------------------------------------------------------------
     # MODEL DATA EXTRACTION
@@ -302,6 +381,100 @@ class ANFLEXAMLReader:
 
         # Dry linear mass (kg/m)
         dry_mass_kgm = w_dry_N_per_m / g if g > 0 else 0.0
+
+        # 4b. Every %MATERIAL.* block, keyed by its real %MATERIAL.ID -- unlike `mat` above (the
+        # legacy single-material path `to_risersim_json()` still uses unchanged), this is a real
+        # per-material catalog, feeding `to_interface_json()`'s `finite_element_type`-aware output
+        # (docs/roadmap.md, element-types entry) -- see `_scan_material_blocks()`'s own docstring
+        # for why this needs a dedicated block scan instead of the usual per-tag occurrence lookup.
+        materials_multi = []
+        for i, block in enumerate(self._scan_material_blocks()):
+            try:
+                m_id = int(float(self._str_in_block(block, '%MATERIAL.ID', str(i + 1))))
+            except ValueError:
+                m_id = i + 1
+            fe_type = self._str_in_block(block, '%MATERIAL.FINITE_ELEMENT', 'beam')
+            entry = {
+                'id': m_id,
+                'name': block.get('_open_value') or f'Material{m_id}',
+                'finite_element_type': fe_type,
+            }
+            if fe_type == 'scalar':
+                # Real ANFLEX's flexjoint material (%MATERIAL.FLEXIBLE_JOINT block) has a
+                # completely different, much simpler field set than beam/truss/winch -- ONE
+                # translational stiffness (isotropic, all 3 translation axes), ONE torsional
+                # (about the joint's own local X/chord axis) and ONE bending (isotropic in the
+                # transverse plane) -- confirmed real data, exemplos/Boiao/P52_Boiao.aml materials
+                # 123-124 (`%MATERIAL.STIFFNESS.TRANSLATIONAL/TORSIONAL/BENDING`), NOT 6
+                # independent per-axis numbers. Maps onto `ScalarProps`'s 6-field C++ schema at
+                # `build_scalar_properties()` (catenary_geometry.py): translational -> x=y=z,
+                # torsional -> rx, bending -> ry=rz.
+                entry['scalar_stiffness_translational_kNm'] = self._float_in_block(
+                    block, '%MATERIAL.STIFFNESS.TRANSLATIONAL', 0.0)
+                entry['scalar_stiffness_torsional_kNm_per_rad'] = self._float_in_block(
+                    block, '%MATERIAL.STIFFNESS.TORSIONAL', 0.0)
+                entry['scalar_stiffness_bending_kNm_per_rad'] = self._float_in_block(
+                    block, '%MATERIAL.STIFFNESS.BENDING', 0.0)
+            else:
+                # beam/truss/winch all share this field set (confirmed real data,
+                # exemplos/Boiao/P52_Boiao.aml materials 119-122 and
+                # exemplos/Curso/Exemplo_03/Estática/Exemplo_03_E.aml materials 712-714) -- a
+                # truss/winch material's bending/torsional stiffness is simply unused downstream
+                # (TrussProps/WinchProps have no such field), not a reason to skip reading it here.
+                entry['diameter_external_m'] = self._float_in_block(block, '%MATERIAL.DIAMETER.EXTERNAL', 0.2779)
+                entry['diameter_internal_m'] = self._float_in_block(block, '%MATERIAL.DIAMETER.INTERNAL', 0.2032)
+                entry['weight_dry_kNm'] = self._float_in_block(block, '%MATERIAL.WEIGHT.DRY', 1.0494)
+                entry['weight_wet_kNm'] = self._float_in_block(block, '%MATERIAL.WEIGHT.WET', 0.4395)
+                entry['morison_inertia_Cm'] = self._float_in_block(block, '%MATERIAL.MORISON.INERTIA', 2.0)
+                entry['morison_drag_Cd'] = self._float_in_block(block, '%MATERIAL.MORISON.DRAG', 1.0)
+                entry['stiffness_axial_kN'] = self._float_in_block(block, '%MATERIAL.STIFFNESS.AXIAL', 360000.0)
+                entry['stiffness_bending_kNm2'] = self._float_in_block(block, '%MATERIAL.STIFFNESS.BENDING', 21.7)
+                entry['stiffness_torsional_kNm2'] = self._float_in_block(block, '%MATERIAL.STIFFNESS.TORSIONAL', 3200.0)
+                if fe_type == 'truss':
+                    # Real tag confirmed exemplos/Boiao/P52_Boiao.aml material 122.
+                    entry['initial_tension_kN'] = self._float_in_block(block, '%MATERIAL.INITIAL_TENSION', 0.0)
+                if fe_type == 'winch':
+                    # Real tag confirmed exemplos/Curso/Exemplo_03/Estática/Exemplo_03_E.aml
+                    # materials 713-714 -- references a %TIME_FUNCTION block by ID (see `curves`
+                    # below), the payout program. -1 (absent) = no curve, WinchElement's own
+                    # default (constant, behaves like a plain truss).
+                    tf_id = self._float_in_block(block, '%MATERIAL.TIME_FUNCTION_ID', -1.0)
+                    entry['winch_payout_curve_id'] = int(tf_id) if tf_id >= 0 else None
+            materials_multi.append(entry)
+
+        # 4c. Every %TIME_FUNCTION block, keyed by its real %TIME_FUNCTION.ID -- feeds a winch
+        # material's `winch_payout_curve_id` above. Same simple per-occurrence pattern as soils/
+        # currents/waves (every %TIME_FUNCTION block has the SAME fixed field set regardless of
+        # what it's used for, unlike %MATERIAL -- no block-scan needed here).
+        #
+        # UNVERIFIED ASSUMPTION: the real semantic scaling of a %TIME_FUNCTION's own values, when
+        # used as a winch's payout program, isn't independently confirmed against a real solved
+        # case -- some real winch time-functions in this repo have values well outside a plain
+        # [0,1] length-fraction range (e.g. exemplos/Curso/Exemplo_03/Estática/Exemplo_03_E.aml's
+        # function 710 rises to 25.0), so the raw (time, value) pairs are passed through faithfully
+        # as-is (see `curves` below feeding `WinchProps::payout_curve` unchanged) rather than
+        # rescaled/reinterpreted -- revisit if a real winch case's T_eff comparison ever surfaces a
+        # mismatch.
+        curves = []
+        tf_name_occ = self.raw_sections_multi.get('%TIME_FUNCTION', [])
+        tf_points_occ = self.raw_sections_multi.get('%TIME_FUNCTION.POINTS', [])
+        for i in range(len(tf_name_occ)):
+            try:
+                tf_id = int(float(self._get_float_at('%TIME_FUNCTION.ID', i, i + 1)))
+            except ValueError:
+                tf_id = i + 1
+            name = tf_name_occ[i][0].strip("'\"") if tf_name_occ[i] else f'Funcao{tf_id}'
+            time_s, values = [], []
+            if i < len(tf_points_occ) and tf_points_occ[i]:
+                try:
+                    n_pts = int(tf_points_occ[i][0].split()[0])
+                    for p in range(1, min(n_pts + 1, len(tf_points_occ[i]))):
+                        parts = tf_points_occ[i][p].split()
+                        time_s.append(float(parts[0]))
+                        values.append(float(parts[1]))
+                except (ValueError, IndexError):
+                    pass
+            curves.append({'id': tf_id, 'name': name, 'time_s': time_s, 'fraction': values})
 
         # 5. Lines (multiple possible)
         lines_data = []
@@ -503,6 +676,11 @@ class ANFLEXAMLReader:
             # built. `soil_model` is the global %OPTION.SOIL.COUPLED/.UNCOUPLED flag (or None).
             'soils': soils,
             'soil_model': soil_model,
+            # Every %MATERIAL.* block (any finite_element_type) -- see the "4b"/"4c" comments
+            # above. `material` (singular, below) is the legacy single-material path
+            # `to_risersim_json()` still uses unchanged; `to_interface_json()` uses these instead.
+            'materials': materials_multi,
+            'curves': curves,
             'material': {
                 'name': mat_name,
                 'inner_diameter_m': di,
@@ -1642,14 +1820,22 @@ class ANFLEXAMLReader:
         falling back to `(0, 0, seabed_depth)` with a warning when no real %CONNECTION/%FLOATING
         data exists for a line.
 
-        Only ONE material is ever produced: `model_data['material']` is itself a single global
-        dict, not a per-ID catalog -- the .aml parser has never resolved
-        %LINE.SEGMENT.MATERIAL_ID against multiple %MATERIAL blocks, since every example file
-        read so far only defines one. Every segment's `material_id` in the output points at that
-        one entry, regardless of what the raw .aml's SEGMENT.MATERIAL_ID said -- a warning is
-        emitted when a segment's real material_id doesn't match, since faithfully supporting
-        multiple materials is new parser work, out of scope here (this method's job is a
-        behavior-preserving reroute, not a scope expansion).
+        Every real `%MATERIAL.*` block is preserved (`model_data['materials']`, see
+        `_scan_material_blocks()`/the "4b" comment in `_extract_all()`) -- including its real
+        `finite_element_type` (`beam`/`truss`/`scalar`/`winch`, real ANFLEX's own
+        `%MATERIAL.FINITE_ELEMENT`) and type-specific fields. A segment's real `material_id` is
+        used as-is when it resolves against this catalog; a warning (not an error) is emitted and
+        the FIRST material substituted only when it genuinely doesn't resolve (a real parsing
+        gap, not the deliberate simplification this method used to make). Falls back to the
+        legacy single-material path (`model_data['material']`) only if `materials_multi` came out
+        completely empty (defensive -- every real file this reader has seen has at least one, but
+        an unexpected format shouldn't leave a project with zero materials).
+
+        Also carries `%LINE.SEGMENT.BUOY_ID` through into each segment's `buoy_id` (previously
+        parsed into `model_data['lines'][...]['segments'][...]['buoy_id']` but dropped before this
+        method's own output -- see docs/roadmap.md, element-types entry) and a winch material's
+        `winch_payout_curve_id` (resolved from `model_data['curves']`, itself built from
+        `%TIME_FUNCTION` blocks) into the output `materials[]` entry.
 
         Returns `(interface_json, warnings)` -- same return-value convention as
         `build_config_from_interface()` (planned), never raises for a resolvable business-logic
@@ -1659,24 +1845,55 @@ class ANFLEXAMLReader:
         glb = self.model_data['global']
         mat = self.model_data['material']
 
-        material_id = int(self._get_float('%MATERIAL.ID', 1))
-        materials = [{
-            "id": material_id,
-            "name": mat['name'],
-            "diameter_external_m": mat['outer_diameter_m'],
-            "diameter_internal_m": mat['inner_diameter_m'],
-            "weight_dry_kNm": mat['weight_dry_kNm'],
-            "weight_wet_kNm": mat['weight_wet_kNm'],
-            "morison_inertia_Cm": mat['Cm'],
-            "morison_drag_Cd": mat['Cd'],
-            "stiffness_axial_kN": mat['EA_N'] / 1000.0,
-            "stiffness_bending_kNm2": mat['EI_Nm2'] / 1000.0,
-            "stiffness_torsional_kNm2": mat['GJ_Nm2'] / 1000.0,
-            "rayleigh_period_first_s": mat['rayleigh']['period_1_s'],
-            "rayleigh_period_second_s": mat['rayleigh']['period_2_s'],
-            "rayleigh_damping_first": mat['rayleigh']['damping_ratio_1'],
-            "rayleigh_damping_second": mat['rayleigh']['damping_ratio_2'],
-        }]
+        materials_multi = self.model_data.get('materials') or []
+        if materials_multi:
+            materials = []
+            for m in materials_multi:
+                entry = {"id": m['id'], "name": m['name'], "finite_element_type": m['finite_element_type']}
+                if m['finite_element_type'] == 'scalar':
+                    entry['scalar_stiffness_translational_kNm'] = m['scalar_stiffness_translational_kNm']
+                    entry['scalar_stiffness_torsional_kNm_per_rad'] = m['scalar_stiffness_torsional_kNm_per_rad']
+                    entry['scalar_stiffness_bending_kNm_per_rad'] = m['scalar_stiffness_bending_kNm_per_rad']
+                else:
+                    entry['diameter_external_m'] = m['diameter_external_m']
+                    entry['diameter_internal_m'] = m['diameter_internal_m']
+                    entry['weight_dry_kNm'] = m['weight_dry_kNm']
+                    entry['weight_wet_kNm'] = m['weight_wet_kNm']
+                    entry['morison_inertia_Cm'] = m['morison_inertia_Cm']
+                    entry['morison_drag_Cd'] = m['morison_drag_Cd']
+                    entry['stiffness_axial_kN'] = m['stiffness_axial_kN']
+                    entry['stiffness_bending_kNm2'] = m['stiffness_bending_kNm2']
+                    entry['stiffness_torsional_kNm2'] = m['stiffness_torsional_kNm2']
+                    if m['finite_element_type'] == 'truss':
+                        entry['initial_tension_kN'] = m.get('initial_tension_kN', 0.0)
+                    if m['finite_element_type'] == 'winch':
+                        entry['winch_payout_curve_id'] = m.get('winch_payout_curve_id')
+                materials.append(entry)
+            material_id = materials_multi[0]['id']
+        else:
+            material_id = int(self._get_float('%MATERIAL.ID', 1))
+            materials = [{
+                "id": material_id,
+                "name": mat['name'],
+                "finite_element_type": "beam",
+                "diameter_external_m": mat['outer_diameter_m'],
+                "diameter_internal_m": mat['inner_diameter_m'],
+                "weight_dry_kNm": mat['weight_dry_kNm'],
+                "weight_wet_kNm": mat['weight_wet_kNm'],
+                "morison_inertia_Cm": mat['Cm'],
+                "morison_drag_Cd": mat['Cd'],
+                "stiffness_axial_kN": mat['EA_N'] / 1000.0,
+                "stiffness_bending_kNm2": mat['EI_Nm2'] / 1000.0,
+                "stiffness_torsional_kNm2": mat['GJ_Nm2'] / 1000.0,
+                "rayleigh_period_first_s": mat['rayleigh']['period_1_s'],
+                "rayleigh_period_second_s": mat['rayleigh']['period_2_s'],
+                "rayleigh_damping_first": mat['rayleigh']['damping_ratio_1'],
+                "rayleigh_damping_second": mat['rayleigh']['damping_ratio_2'],
+            }]
+        materials_by_id = {m['id']: m for m in materials}
+
+        curves = [{"id": c['id'], "name": c['name'], "time_s": c['time_s'], "fraction": c['fraction']}
+                  for c in self.model_data.get('curves') or []]
 
         soils = []
         for s in self.model_data['soils']:
@@ -1733,12 +1950,14 @@ class ANFLEXAMLReader:
             segments = []
             for seg in line.get('segments', []):
                 seg_material_id = material_id
-                if seg.get('material_id') is not None and seg['material_id'] > 0 and seg['material_id'] != material_id:
-                    warnings.append(
-                        f"Linha '{line.get('name')}': segmento referencia material_id="
-                        f"{seg['material_id']}, mas só o material '{mat['name']}' (id={material_id}) "
-                        "foi entendido do .aml -- múltiplos materiais por linha ainda não são "
-                        "suportados pelo importador AML; segmento usará o único material disponível.")
+                if seg.get('material_id') is not None and seg['material_id'] > 0:
+                    if seg['material_id'] in materials_by_id:
+                        seg_material_id = seg['material_id']
+                    else:
+                        warnings.append(
+                            f"Linha '{line.get('name')}': segmento referencia material_id="
+                            f"{seg['material_id']}, não encontrado entre os materiais entendidos -- "
+                            f"usando o material '{materials_by_id[material_id]['name']}' (id={material_id}).")
                 seg_soil_id = default_soil_id
                 if seg.get('soil_id') is not None and seg['soil_id'] > 0:
                     if any(s['id'] == seg['soil_id'] for s in soils):
@@ -1751,10 +1970,16 @@ class ANFLEXAMLReader:
                 elem_len = 5.0
                 if seg.get('num_elements') and seg.get('length_m'):
                     elem_len = seg['length_m'] / seg['num_elements']
-                segments.append({
+                seg_entry = {
                     "length_m": seg['length_m'], "material_id": seg_material_id,
                     "soil_id": seg_soil_id, "element_length_m": elem_len,
-                })
+                }
+                # %LINE.SEGMENT.BUOY_ID -- already parsed into seg['buoy_id'] (-1 = none) by
+                # _extract_all() above, but never propagated past this point until now (see
+                # docs/roadmap.md, element-types entry).
+                if seg.get('buoy_id') is not None and seg['buoy_id'] > 0:
+                    seg_entry['buoy_id'] = seg['buoy_id']
+                segments.append(seg_entry)
             if not segments:
                 segments = [{"length_m": line.get('total_length_m', 500.0), "material_id": material_id,
                              "soil_id": default_soil_id, "element_length_m": 5.0}]
@@ -1833,6 +2058,17 @@ class ANFLEXAMLReader:
                 "steel_specific_weight_kNm3": glb['steel_specific_weight_kNm3'],
             },
             "soils": soils, "materials": materials, "currents": currents, "waves": waves,
+            "curves": curves,
+            # `%LINE.SEGMENT.BUOY_ID` is propagated per-segment above when set (see the segment
+            # loop), but every real .aml surveyed in this repo (Boiao/Manifold/ESDV/Ruptura) has
+            # it at -1 (unset) on every single segment -- real ANFLEX evidently defines/attaches
+            # buoys some OTHER way this importer doesn't parse yet (the C++ side's own XML/H5
+            # reader loads them from a completely separate "BuoyElement" branch, unrelated to line
+            # segments -- model_builder_dat.cpp:4455 `load_buoys()`). No `buoys[]` catalog is
+            # populated from AML: a BUOY_ID that DID resolve to something would still produce a
+            # dangling reference the compiler can't satisfy. Deferred -- tracked in
+            # docs/roadmap.md's element-types entry as an open gap, not silently unhandled.
+            "buoys": [],
             "lines": lines, "load_cases": load_cases, "analyses": analyses,
         }
         return interface_json, warnings

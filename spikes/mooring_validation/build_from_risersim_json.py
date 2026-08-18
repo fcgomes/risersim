@@ -61,15 +61,41 @@ def build_system_from_json(json_path, rho_water_override=None, g=9.81, top_xyz_o
 
     # 2. Propriedades de secao/material -- assume uma unica linha homogenea
     #    (Exemplo_01a so tem "L1"); usa a media entre elementos por robustez.
+    #
+    #    A linha pode misturar tipos de elemento agora (risersim/docs/roadmap.md, Eixo 2d) --
+    #    beam/truss/winch todos tem um E/A/peso axial equivalente (so a chave do dict difere:
+    #    "section_properties" pro beam, "truss_properties"/"winch_properties" pros outros dois,
+    #    ambos com os mesmos campos E/A/rho/D_outer que TrussProps usa -- ver
+    #    catenary_geometry.py::build_truss_properties()), entao entram na mesma media. "scalar"
+    #    (mola sem secao transversal) e "buoy" (sem conceito de EA/peso axial nenhum) nao tem
+    #    nada equivalente pra contribuir -- pulados, nao forcados num valor arbitrario. Se a
+    #    linha inteira for scalar/buoy (nenhum elemento com dado usavel), a excecao levantada
+    #    abaixo e capturada por correct_line_mesh_via_moorpy()'s proprio contrato de "melhor
+    #    esforco" (mantem a malha reta original, so avisa) -- nao precisa de tratamento especial
+    #    aqui.
     E_list, A_list, w_wet_list, d_out_list = [], [], [], []
     rho_fluid_list = []
     for e in elements_json:
-        sp = e["section_properties"]
+        etype = e.get("element_type", "beam")
+        if etype == "beam":
+            sp = e["section_properties"]
+            w_wet_list.append(sp["weight_wet_kNm"] * 1000.0)  # kN/m -> N/m
+            rho_fluid_list.append(sp.get("rho_fluid", 1025.0))
+        elif etype in ("truss", "winch"):
+            sp = e[f"{etype}_properties"]
+            w_wet_list.append(sp["rho"] * sp["A"] * g)  # peso seco/m -- truss/winch nao tem empuxo/peso molhado próprios aqui
+            rho_fluid_list.append(1025.0)
+        else:
+            continue  # scalar/buoy -- sem E/A/peso axial equivalente, nao contribui pra media
         E_list.append(sp["E"])
         A_list.append(sp["A"])
-        w_wet_list.append(sp["weight_wet_kNm"] * 1000.0)  # kN/m -> N/m
         d_out_list.append(sp["D_outer"])
-        rho_fluid_list.append(sp.get("rho_fluid", 1025.0))
+
+    if not E_list:
+        raise ValueError(
+            "Nenhum elemento beam/truss/winch nesta linha -- sem dado de E/A/peso axial pra "
+            "montar um moorpy.System representativo (linha só scalar/buoy)."
+        )
 
     def avg(lst):
         return sum(lst) / len(lst)

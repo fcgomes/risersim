@@ -303,7 +303,9 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
     """
     from catenary_geometry import (
         solve_catenary_geometry, correct_line_mesh_via_moorpy, build_section_properties,
-        synthesize_mesh, compute_rayleigh_alpha, compute_rayleigh_beta, static_robustness_overrides,
+        build_truss_properties, build_winch_properties, build_scalar_properties,
+        build_buoy_properties, synthesize_mesh, compute_rayleigh_alpha, compute_rayleigh_beta,
+        static_robustness_overrides,
     )
     from xml_h5_reader import SCHEMA_VERSION
 
@@ -311,6 +313,8 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
 
     soils_by_id = {s['id']: s for s in interface_json.get('soils', [])}
     materials_by_id = {m['id']: m for m in interface_json.get('materials', [])}
+    buoys_by_id = {b['id']: b for b in interface_json.get('buoys', [])}
+    curves_by_id = {c['id']: c for c in interface_json.get('curves', [])}
     currents_by_id = {c['id']: c for c in interface_json.get('currents', [])}
     waves_by_id = {w['id']: w for w in interface_json.get('waves', [])}
     load_cases_by_id = {lc['id']: lc for lc in interface_json.get('load_cases', [])}
@@ -338,7 +342,23 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
 
     def _material_props(m):
         """Derives the same E/G/A/IY/IZ/J/rho fields aml_reader.py's `beam_props` block does,
-        from the interface JSON's AML-like material fields."""
+        from the interface JSON's AML-like material fields -- shared by `beam`/`truss`/`winch`
+        materials, since none of this derivation is actually beam-specific (bending/torsion just
+        end up unused by truss/winch, same as real ANFLEX's own `%MATERIAL.FINITE_ELEMENT`
+        selecting which subset of a `%MATERIAL.FLEXIBLE_LINE` block the solver reads).
+
+        `scalar` materials carry none of these geometry/weight fields at all (a spring has no
+        cross-section) -- returns their own 6 raw stiffness fields unconverted instead, passed
+        through to `build_scalar_properties()` later.
+
+        Every return value carries `finite_element_type` (default `"beam"`, so a material written
+        before this field existed is unambiguously treated as beam) alongside whichever
+        type-specific fields apply.
+        """
+        fe_type = m.get('finite_element_type', 'beam')
+        if fe_type == 'scalar':
+            return {'finite_element_type': fe_type, **m}
+
         do, di = m['diameter_external_m'], m['diameter_internal_m']
         w_dry_kNm, w_wet_kNm = m['weight_dry_kNm'], m['weight_wet_kNm']
         ea_N = m['stiffness_axial_kN'] * 1000.0
@@ -351,18 +371,31 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
         E = ea_N / area_struct if area_struct > 0 else 2.1e11
         # I_y from EI/E, not the geometric tube formula -- same reasoning as
         # aml_reader.py's own beam_props block (a flexible riser's real bending stiffness is much
-        # lower than a solid tube of the same OD/ID).
+        # lower than a solid tube of the same OD/ID). Meaningless for truss/winch (no bending
+        # DOF), computed anyway since it's cheap and unused rather than branched around.
         I_y = ei_Nm2 / E if E > 0 else 5.0e-5
         G = gj_Nm2 / j_tors if j_tors > 0 else 8.0e10
         dry_mass_kgm = (w_dry_kNm * 1000.0) / gravity if gravity > 0 else 0.0
-        return {
+        props = {
+            'finite_element_type': fe_type,
             'E_Pa': E, 'G_Pa': G, 'A_m2': area_struct, 'IY_m4': I_y, 'IZ_m4': I_y, 'J_m4': j_tors,
             'EI_Nm2': ei_Nm2, 'EA_N': ea_N,
             'weight_wet_kNm': w_wet_kNm,
             'rho_kgm3': dry_mass_kgm / area_struct if area_struct > 0 else 7850.0,
             'outer_diameter_m': do, 'inner_diameter_m': di,
             'Cd': m['morison_drag_Cd'], 'Cm': m['morison_inertia_Cm'],
+            'initial_tension_kN': m.get('initial_tension_kN', 0.0),
         }
+        if fe_type == 'winch' and m.get('winch_payout_curve_id') is not None:
+            curve = curves_by_id.get(m['winch_payout_curve_id'])
+            if curve is None:
+                warnings.append(
+                    f"Material '{m.get('name')}' (id={m['id']}): winch_payout_curve_id="
+                    f"{m['winch_payout_curve_id']} não encontrado -- winch usará comprimento "
+                    "constante (sem curva de recolhimento).")
+            else:
+                props['payout_curve'] = {'time_s': curve['time_s'], 'fraction': curve['fraction']}
+        return props
 
     material_props_by_id = {mid: _material_props(m) for mid, m in materials_by_id.items()}
 
@@ -393,6 +426,11 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
             raise ValueError(
                 f"Linha '{line.get('name')}': segmento referencia material_id="
                 f"{first_seg.get('material_id')}, não encontrado.")
+        if first_mat.get('finite_element_type') == 'scalar':
+            raise ValueError(
+                f"Linha '{line.get('name')}': o primeiro segmento não pode ser do tipo 'scalar' -- "
+                "a solução de geometria de catenária precisa de rigidez axial e peso do primeiro "
+                "segmento (use um material beam/truss/winch como primeiro segmento da linha).")
         first_soil = soils_by_id.get(first_seg.get('soil_id'))
         friction_coeff = first_soil['friction_lateral'] if first_soil else 0.5
 
@@ -424,22 +462,59 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
             id_offset=node_id_offset, element_id_offset=elem_id_offset,
         )
 
-        # Per-segment section_properties: unlike aml_reader.py's single-material path, every
-        # segment here can carry its own real material, resolved by id -- genuinely finer
-        # fidelity than any AML-derived interface JSON produces today (which only ever has one).
+        # Per-segment element_type/properties: unlike aml_reader.py's single-material path, every
+        # segment here can carry its own real material (and now its own finite_element_type),
+        # resolved by id -- genuinely finer fidelity than any AML-derived interface JSON produces
+        # today (which only ever had one, and silently beam-only until this round -- see
+        # docs/roadmap.md).
         elem_idx = 0
+        buoy_elements_this_line = []
         for seg, spec in zip(segments, seg_specs):
             seg_mat = material_props_by_id.get(seg.get('material_id'))
             if seg_mat is None:
                 raise ValueError(
                     f"Linha '{line.get('name')}': segmento referencia material_id="
                     f"{seg.get('material_id')}, não encontrado.")
+            fe_type = seg_mat.get('finite_element_type', 'beam')
             if num_elements_override is None:
-                sp = build_section_properties(seg_mat, {'water_density_kgm3': water_density_kgm3})
+                if fe_type == 'truss':
+                    props_key, props = 'truss_properties', build_truss_properties(seg_mat)
+                elif fe_type == 'winch':
+                    props_key, props = 'winch_properties', build_winch_properties(seg_mat)
+                elif fe_type == 'scalar':
+                    props_key, props = 'scalar_properties', build_scalar_properties(seg_mat)
+                else:
+                    props_key = 'section_properties'
+                    props = build_section_properties(seg_mat, {'water_density_kgm3': water_density_kgm3})
                 for _ in range(spec['num_elements']):
-                    elements[elem_idx]['section_properties'] = dict(sp)
+                    elements[elem_idx]['element_type'] = fe_type
+                    elements[elem_idx][props_key] = dict(props)
                     elem_idx += 1
-            if min_ei_nm2 is None or seg_mat['EI_Nm2'] < min_ei_nm2:
+
+                # Boia anexada ao ÚLTIMO nó da subcadeia deste segmento -- BuoyElement é de 1 nó
+                # só e pode compartilhar o nó com o elemento estrutural adjacente (mesmo que o
+                # cBuoyElement real, ver docs/roadmap.md pra essa suposição de design). Ignorado
+                # em modo num_elements_override (ver aviso abaixo) -- a subdivisão por segmento
+                # não sobrevive à malha uniforme desse modo.
+                buoy_id = seg.get('buoy_id')
+                if buoy_id is not None:
+                    buoy = buoys_by_id.get(buoy_id)
+                    if buoy is None:
+                        raise ValueError(
+                            f"Linha '{line.get('name')}': segmento referencia buoy_id={buoy_id}, "
+                            "não encontrado.")
+                    last_node_id = elements[elem_idx - 1]['node2_id']
+                    buoy_elements_this_line.append({
+                        "id": elem_id_offset + len(elements) + len(buoy_elements_this_line) + 1,
+                        "element_type": "buoy",
+                        "node_id": last_node_id,
+                        "buoy_properties": build_buoy_properties(buoy),
+                    })
+            elif seg.get('buoy_id') is not None:
+                warnings.append(
+                    f"Linha '{line.get('name')}': buoy_id do segmento ignorado sob "
+                    "num_elements_override (malha uniforme não preserva limites de segmento).")
+            if fe_type == 'beam' and (min_ei_nm2 is None or seg_mat['EI_Nm2'] < min_ei_nm2):
                 min_ei_nm2 = seg_mat['EI_Nm2']
 
             seg_soil = soils_by_id.get(seg.get('soil_id'))
@@ -459,14 +534,19 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
             # num_elements_override path always used.
             sp = build_section_properties(first_mat, {'water_density_kgm3': water_density_kgm3})
             for elem in elements:
+                elem['element_type'] = 'beam'
                 elem['section_properties'] = dict(sp)
 
         # Fixes the straight-chord initial mesh to MoorPy's real equilibrium shape (arc-length-
         # consistent) -- same technique aml_reader.py's multi-line path already uses per line.
+        # Runs on the pure structural chain ONLY (before buoy elements are appended below) --
+        # `correct_line_mesh_via_moorpy` assumes every element is a 2-node chain link
+        # (`node1_id`/`node2_id`), which a 1-node buoy element isn't.
         top_id, anchor_id = nodes[0]["id"], nodes[-1]["id"]
         correct_line_mesh_via_moorpy(
             nodes, elements, top_id, anchor_id, total_length_m, {"depth_m": -abs(water_depth_m)},
         )
+        elements.extend(buoy_elements_this_line)
 
         all_nodes.extend(nodes)
         all_elements.extend(elements)
