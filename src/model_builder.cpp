@@ -14,6 +14,46 @@ namespace risersim {
 
 namespace {
 
+/**
+ * @brief Estimates the signed geometric curvature (1/m) of the target initial shape at `mid`,
+ * about the local Y axis of `rotgf` (a specific element's own `build_frame_from_chord()` frame),
+ * from the 3 consecutive node positions `prev`/`mid`/`next` -- feeds
+ * `CorotationalBeam3D`'s `curvature1`/`curvature2` constructor params (see its own comment for
+ * why: replicates ANFLEX's `curvature_1`/`curvature_2`, normally read from a `.dat` column
+ * populated by the closed-source `tec_line` mesh generator, which isn't available here).
+ *
+ * `angle` between the incoming/outgoing unit tangents, divided by the average of the two segment
+ * lengths, is the standard discrete curvature estimate for 3 points along a sampled curve
+ * (converges to the true continuous curvature as segment length -> 0); `axis` (their cross
+ * product) is the bending axis, and projecting onto `rotgf.row(1)` (this element's own local Y)
+ * turns that 3D curvature vector into the single signed scalar ANFLEX's Hermite nodal-slope
+ * formula (`tetai`/`tetaj`) expects -- consistent with `curvature_1`/`curvature_2` being described
+ * as *this element's own* pre-curvature, not an element-independent 3D quantity.
+ *
+ * Returns 0.0 (straight/no birth twist) at a chain boundary (`prev`/`next` null, e.g. a line's
+ * very first or last node) or for near-degenerate segments (near-zero length, or the 3 points
+ * already collinear) -- a conservative fallback, not an approximation of some nonzero "true"
+ * value: a real chain end has no well-defined neighbor to estimate curvature from either way.
+ */
+double discrete_signed_curvature(const Eigen::Vector3d* prev, const Eigen::Vector3d& mid,
+                                  const Eigen::Vector3d* next, const Eigen::Matrix3d& rotgf) {
+    if (!prev || !next) return 0.0;
+    Eigen::Vector3d t_in = mid - *prev;
+    Eigen::Vector3d t_out = *next - mid;
+    double len_in = t_in.norm(), len_out = t_out.norm();
+    if (len_in < 1.0e-9 || len_out < 1.0e-9) return 0.0;
+    t_in /= len_in;
+    t_out /= len_out;
+    Eigen::Vector3d axis = t_in.cross(t_out);
+    double axis_norm = axis.norm();
+    if (axis_norm < 1.0e-12) return 0.0;
+    axis /= axis_norm;
+    double angle = std::atan2(axis_norm, t_in.dot(t_out));
+    double avg_len = 0.5 * (len_in + len_out);
+    Eigen::Vector3d kappa_vec = axis * (angle / avg_len);
+    return kappa_vec.dot(rotgf.row(1));
+}
+
 /// Reads `obj[key]`, falling back to `default_val` and recording a warning when the key is
 /// absent. Only for scalar/string fields -- vector-typed and multi-key-fallback defaults are
 /// handled by hand at their call sites (their "missing" phrasing doesn't fit this generic form).
@@ -200,6 +240,20 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         int elements_missing_nodes = 0;
         if (j.contains("model") && j["model"].contains("elements") && !model.nodes().empty()) {
             auto elems_json = j["model"]["elements"];
+
+            // First pass: resolve node1/node2 (skipping anything unresolvable, same as before) --
+            // curvature1/curvature2 (below) need to look at NEIGHBORING elements' nodes, which
+            // aren't necessarily known yet mid-loop in a single pass, so element construction
+            // itself (add_element(), which needs curvature1/curvature2 as constructor args -- see
+            // element_beam.hpp) is deferred to a second pass.
+            struct PendingElement {
+                int id;
+                Node3D *n1, *n2;
+                BeamMaterialProps props;
+                double L_unstretched;
+            };
+            std::vector<PendingElement> pending;
+            pending.reserve(elems_json.size());
             for (auto& e_j : elems_json) {
                 int id = e_j["id"];
                 auto n1_it = node_by_id.find(e_j["node1_id"].get<int>());
@@ -217,7 +271,40 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
                 }
 
                 double L_unstretched = (n2_it->second->coords - n1_it->second->coords).norm();
-                model.add_element(id, n1_it->second, n2_it->second, elem_props, L_unstretched);
+                pending.push_back({id, n1_it->second, n2_it->second, elem_props, L_unstretched});
+            }
+
+            // Chain adjacency (node id -> the pending element starting/ending there) -- a node
+            // shared by exactly 2 elements (interior of a line's own chain) gets both a
+            // predecessor and a successor; a line's first/last node (or any node otherwise only
+            // touched by one element) has one side missing, correctly falling back to curvature 0
+            // in discrete_signed_curvature() (a real chain end has no neighbor to estimate from).
+            std::map<int, size_t> starts_at, ends_at; // node id -> index into `pending`
+            for (size_t i = 0; i < pending.size(); ++i) {
+                starts_at[pending[i].n1->id] = i;
+                ends_at[pending[i].n2->id] = i;
+            }
+
+            for (const auto& pe : pending) {
+                Eigen::Vector3d ex0 = (pe.n2->coords - pe.n1->coords).normalized();
+                Eigen::Matrix3d rotgf = CorotationalBeam3D::build_frame_from_chord(ex0);
+
+                auto pred_it = ends_at.find(pe.n1->id);
+                const Node3D* pred = (pred_it != ends_at.end() && pending[pred_it->second].id != pe.id)
+                                      ? pending[pred_it->second].n1 : nullptr;
+                auto succ_it = starts_at.find(pe.n2->id);
+                const Node3D* succ = (succ_it != starts_at.end() && pending[succ_it->second].id != pe.id)
+                                      ? pending[succ_it->second].n2 : nullptr;
+
+                Eigen::Vector3d prev_coords, next_coords;
+                const Eigen::Vector3d* prev_ptr = nullptr, *next_ptr = nullptr;
+                if (pred) { prev_coords = pred->coords; prev_ptr = &prev_coords; }
+                if (succ) { next_coords = succ->coords; next_ptr = &next_coords; }
+
+                double curvature1 = discrete_signed_curvature(prev_ptr, pe.n1->coords, &pe.n2->coords, rotgf);
+                double curvature2 = discrete_signed_curvature(&pe.n1->coords, pe.n2->coords, next_ptr, rotgf);
+
+                model.add_element(pe.id, pe.n1, pe.n2, pe.props, pe.L_unstretched, curvature1, curvature2);
             }
         }
         if (elements_missing_nodes > 0) {

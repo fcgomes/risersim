@@ -27,8 +27,14 @@ static double safe_num(double val) {
  * dataset's full `.value` at once (see DataLoaderService.js::parseHDF5Group), so chunk size
  * mainly affects compression ratio (each chunk compresses independently; ~50 steps' worth of a
  * smooth engineering time series compresses well) rather than partial-read performance.
+ *
+ * Templated on the HDF5 location type (`H5::Group` or `H5::H5File`, both expose the same
+ * `createDataSet` -- both derive from `H5::CommonFG` in this HDF5 C++ API version) so the same
+ * function writes per-analysis-group datasets (node_positions/element_tensions_kN/...) AND the
+ * file-root connectivity datasets (write_connectivity(), below).
  */
-static void write_compressed_dataset(H5::Group& group, const std::string& name, const std::vector<double>& buf,
+template <typename Loc>
+static void write_compressed_dataset(Loc& loc, const std::string& name, const std::vector<double>& buf,
                                       int rank, const hsize_t* dims) {
     H5::DataSpace space(rank, dims);
     std::vector<hsize_t> chunk_dims(dims, dims + rank);
@@ -38,8 +44,48 @@ static void write_compressed_dataset(H5::Group& group, const std::string& name, 
     plist.setChunk(rank, chunk_dims.data());
     plist.setDeflate(6);
 
-    H5::DataSet dataset = group.createDataSet(name, H5::PredType::NATIVE_DOUBLE, space, plist);
+    H5::DataSet dataset = loc.createDataSet(name, H5::PredType::NATIVE_DOUBLE, space, plist);
     dataset.write(buf.data(), H5::PredType::NATIVE_DOUBLE);
+}
+
+/**
+ * @brief Writes the model's node/element connectivity once, at the file root (topology is the
+ * same for both the static and dynamic groups -- same `model`, see Simulation::run()) --
+ * `node_ids` (real id per `node_positions` array index) and `element_node1_ids`/
+ * `element_node2_ids` (real node id pair per `element_*` array index).
+ *
+ * Without this, a consumer has no way to know which two nodes an element actually connects other
+ * than ASSUMING element `i` connects nodes `i`/`i+1` -- true for a single riser line, but wrong
+ * for a multi-line model (each extra line's node/element arrays are appended after the previous
+ * one's, so every element past the first line's boundary is off by however many "line start"
+ * nodes came before it -- found and fixed on the unsolved-preview path in
+ * `Riser3DRenderer.js::renderStep()`; this closes the same gap for solved HDF5 results, which
+ * never had real connectivity to fall back on before now).
+ *
+ * No-op (writes nothing) if `model` is null -- `Analysis::model` is only ever unset for a
+ * default-constructed `Analysis` never passed through `Simulation::run()` (e.g. the Python
+ * binding's `SimulationExporter.export_hdf5`, unused by the actual run pipeline, which always
+ * goes through the compiled `risersim_test_main`/`Simulation::export_results()`).
+ */
+static void write_connectivity(H5::H5File& file, const RiserModel* model) {
+    if (!model) return;
+    const auto& nodes = model->nodes();
+    const auto& elements = model->elements();
+    if (nodes.empty() || elements.empty()) return;
+
+    std::vector<double> node_ids(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) node_ids[i] = static_cast<double>(nodes[i]->id);
+    hsize_t dims_nodes[1] = { nodes.size() };
+    write_compressed_dataset(file, "node_ids", node_ids, 1, dims_nodes);
+
+    std::vector<double> node1_ids(elements.size()), node2_ids(elements.size());
+    for (size_t e = 0; e < elements.size(); ++e) {
+        node1_ids[e] = static_cast<double>(elements[e]->node(0)->id);
+        node2_ids[e] = static_cast<double>(elements[e]->node(1)->id);
+    }
+    hsize_t dims_elem[1] = { elements.size() };
+    write_compressed_dataset(file, "element_node1_ids", node1_ids, 1, dims_elem);
+    write_compressed_dataset(file, "element_node2_ids", node2_ids, 1, dims_elem);
 }
 
 /**
@@ -108,6 +154,7 @@ bool SimulationExporter::export_hdf5(const Analysis& static_analysis, const Anal
 
         write_hdf5_group(file, "/static_analysis", static_analysis.history);
         write_hdf5_group(file, "/dynamic_analysis", dynamic_analysis.history);
+        write_connectivity(file, static_analysis.model ? static_analysis.model : dynamic_analysis.model);
 
         std::cout << "✅ Binary HDF5 simulation history successfully exported to: " << filename
                   << " (Static: " << static_analysis.history.size()

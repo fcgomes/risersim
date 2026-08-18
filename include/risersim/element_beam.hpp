@@ -85,13 +85,40 @@ struct BeamMaterialProps {
  */
 class CorotationalBeam3D : public Element {
 public:
-    CorotationalBeam3D(int elem_id, Node3D* n1, Node3D* n2, const BeamMaterialProps& p, double L_unstretched = 0.0)
+    /**
+     * @param curvature1 Signed geometric curvature (1/m) of the target initial shape at node1,
+     * about THIS element's own local Y axis (`build_frame_from_chord(ex0)`'s row 1) -- ANFLEX's
+     * `curvature_1` (`beam.cpp`'s `m_curvature[0]`, read from a `.dat` input column populated by
+     * the closed-source `tec_line` mesh generator; here, estimated discretely from the initial
+     * mesh's own node coordinates by `ModelBuilder`, see its `discrete_signed_curvature()`).
+     * Defaults to 0.0 (a straight initial chord -- every call site before this parameter existed
+     * behaves identically).
+     * @param curvature2 Same, at node2 (ANFLEX's `curvature_2`/`m_curvature[1]`).
+     */
+    CorotationalBeam3D(int elem_id, Node3D* n1, Node3D* n2, const BeamMaterialProps& p, double L_unstretched = 0.0,
+                        double curvature1 = 0.0, double curvature2 = 0.0)
         : id_(elem_id), node1_(n1), node2_(n2), props_(p), tension_true_(0.0), tension_effective_(0.0),
           p_i_(0.0), p_e_(0.0), net_upward_buoyancy_(0.0) {
         initial_length_ = (L_unstretched > 0.0) ? L_unstretched : (node2_->coords - node1_->coords).norm();
         Eigen::Vector3d ex0 = (node2_->coords - node1_->coords).normalized();
-        node1_init_triad_ = build_frame_from_chord(ex0);
-        node2_init_triad_ = node1_init_triad_;
+        Eigen::Matrix3d rotgf = build_frame_from_chord(ex0);
+
+        // "Birth twist" -- ANFLEX's `cBeam::calc_init_rot_mt()`/`bttil()` (beam.cpp:300-325): when
+        // the initial mesh is genuinely curved (e.g. this line's real catenary/seabed-lay shape,
+        // not a straight chord), a node's true material tangent differs slightly from ITS OWN
+        // element's chord -- without this, that real initial curvature gets counted as elastic
+        // bending strain the instant the solver starts (compute_corotational_forces() measures
+        // deformation against node1_init_triad_/node2_init_triad_), inflating bending stress/
+        // reaction on every genuinely curved element. Same cubic-Hermite nodal-slope-from-
+        // curvature formula ANFLEX uses (`tetai`/`tetaj` below); reduces to the identity (both
+        // triads = rotgf, previous behavior) when curvature1=curvature2=0, e.g. a straight chord
+        // or any caller that doesn't pass these two new parameters.
+        double ka = -curvature1, kb = curvature2;
+        double tetai = (2.0 * ka - kb) * initial_length_ / 6.0;
+        double tetaj = (2.0 * kb - ka) * initial_length_ / 6.0;
+        Eigen::Vector3d ey = rotgf.row(1).transpose();
+        node1_init_triad_ = rotgf * rodrigues(ey * tetai).transpose();
+        node2_init_triad_ = rotgf * rodrigues(ey * tetaj).transpose();
     }
 
     /** @brief Element ID, set at construction. */
@@ -132,10 +159,12 @@ public:
     /**
      * @brief Fixed reference triads at both ends, computed once in the initial (t=0) configuration.
      *
-     * Equivalent to ANFLEX's `TELNOAORIG`/`TELNOBORIG` (`calc_init_rot_mt`, `beam.cpp:301`).
-     * Without a manual pre-curvature input (`curvature1`/`curvature2` in ANFLEX's `.dat` format),
-     * both triads coincide with the initial-chord frame. Each node's local/deformational rotation
-     * is measured against this *fixed* reference every iteration -- not against the current chord
+     * Equivalent to ANFLEX's `TELNOAORIG`/`TELNOBORIG` (`calc_init_rot_mt`, `beam.cpp:301`). Equal
+     * to the initial-chord frame when `curvature1`/`curvature2` (constructor params) are zero
+     * (straight initial chord); otherwise each carries a small "birth twist" reflecting the real
+     * initial mesh's own curvature at that node (see the constructor's own comment). Each node's
+     * local/deformational rotation is measured against this *fixed* reference every iteration --
+     * not against the current chord
      * (which changes every iteration and would mix rigid-body rotation with elastic deformation).
      * This is the fix for the divergence bug documented in `docs/mapa_classes_anflex_estatica.md`:
      * feeding the total accumulated rotation into the bending stiffness collapses convergence far

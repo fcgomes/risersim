@@ -111,25 +111,69 @@ Eigen::Matrix<double, 12, 12> CorotationalBeam3D::local_mass_matrix(double rho_w
 }
 
 Eigen::Matrix3d CorotationalBeam3D::build_frame_from_chord(const Eigen::Vector3d& ex) {
-    // Picks the global axis least aligned with ex (rather than a fixed Z threshold),
-    // to avoid a discontinuous reference switch when many elements sit close to a
-    // single threshold (e.g. near-vertical elements all near |ex.z|=0.99, where a
-    // small Newton correction can push them to the other side and cause an abrupt
-    // jump in the local stiffness matrix between iterations).
-    double adx = std::abs(ex.x()), ady = std::abs(ex.y()), adz = std::abs(ex.z());
-    Eigen::Vector3d ez_temp(0, 0, 1);
-    if (adx <= ady && adx <= adz) {
-        ez_temp = Eigen::Vector3d(1, 0, 0);
-    } else if (ady <= adx && ady <= adz) {
-        ez_temp = Eigen::Vector3d(0, 1, 0);
-    }
-    Eigen::Vector3d ey = ez_temp.cross(ex).normalized();
-    Eigen::Vector3d ez = ex.cross(ey).normalized();
+    // Replicates real ANFLEX's own local-axis convention exactly (`nMathUtils::calc_angbeta` +
+    // `calc_local_mt_rot`, anf_analysis/src/math_utils.cpp:419-500) instead of an axis-picking
+    // heuristic of our own. Found and fixed 2026-08-18 by comparing this function's row(1) (fed
+    // into the birth-twist curvature projection, see discrete_signed_curvature() in
+    // model_builder.cpp) against ANFLEX's own `tec_line`-generated CURV1/CURV2 ground truth
+    // (Exemplo_01c's includes/L1_beam.ele): the old "least-aligned global axis" heuristic picked a
+    // genuinely different Y direction than ANFLEX's, undershooting real curvature by ~35% on
+    // average and flipping its sign on 6% of elements.
+    //
+    // This is the ONE function used to build a frame from a bare chord direction, called both by
+    // the constructor (t=0, seeding node1_init_triad_/node2_init_triad_) and by
+    // transformation_matrix() (rotates the local mass matrix into global coords each step) --
+    // fixing it here keeps both self-consistent automatically. The ongoing corotational tracking
+    // in compute_corotational_forces() never calls this function past t=0 -- it only composes
+    // rotations forward from the birth triad -- so this change cannot introduce a mismatch
+    // between the "birth" frame and the "current" frame.
+    //
+    // `ex` is already a unit vector (L=1): calc_angbeta/calc_local_mt_rot are scale-invariant
+    // (every term is a ratio of dx/dy/dz/L), so using ex's own components directly instead of raw
+    // node deltas gives identical results.
+    double dx = ex.x(), dy = ex.y(), dz = ex.z();
+    double pr = std::sqrt(dx * dx + dz * dz);
 
+    double ang_beta = 0.0;
+    double dcxy = std::sqrt(dx * dx + dy * dy);
+    if (dcxy != 0.0) {
+        double sen_teta = -dy / dcxy;
+        double cos_teta = -dx / dcxy;
+        double c1, s1, c2, s2;
+        if (pr >= 1.0e-10) {
+            c1 = dx / pr; s1 = dz / pr; c2 = pr; s2 = dy;
+        } else {
+            c1 = 1.0; s1 = 0.0; c2 = 0.0; s2 = 1.0;
+        }
+        double aux1 = s1 * sen_teta;
+        double aux2 = c1 * s2 * sen_teta + c2 * cos_teta;
+        if (std::abs(aux2) > 0.0) {
+            ang_beta = (aux2 > 0.0) ? std::atan(aux1 / aux2) : std::atan(aux1 / aux2) + std::numbers::pi;
+        } else {
+            ang_beta = (s1 * s2 > 0.0) ? 3.0 * std::numbers::pi / 2.0 : std::numbers::pi / 2.0;
+        }
+    }
+
+    double cosb = std::cos(ang_beta), sinb = std::sin(ang_beta);
     Eigen::Matrix3d R;
     R.row(0) = ex.transpose();
-    R.row(1) = ey.transpose();
-    R.row(2) = ez.transpose();
+    if (pr >= 1.0e-10) {
+        double c1 = dx / pr, s1 = dz / pr, c2 = pr, s2 = dy;
+        R(1, 0) = -s1 * sinb - c1 * s2 * cosb;
+        R(1, 1) =  c2 * cosb;
+        R(1, 2) =  c1 * sinb - s1 * s2 * cosb;
+        R(2, 0) =  c1 * s2 * sinb - s1 * cosb;
+        R(2, 1) = -c2 * sinb;
+        R(2, 2) =  c1 * cosb + s1 * s2 * sinb;
+    } else {
+        double s2 = dy;
+        R(1, 0) = -cosb * s2;
+        R(1, 1) = 0.0;
+        R(1, 2) = sinb;
+        R(2, 0) = sinb * s2;
+        R(2, 1) = 0.0;
+        R(2, 2) = cosb;
+    }
     return R;
 }
 

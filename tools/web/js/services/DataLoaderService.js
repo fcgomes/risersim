@@ -17,7 +17,17 @@ export class DataLoaderService {
         return await DataLoaderService.loadHDF5(fileOrUrl);
     }
 
-    static parseHDF5Group(group) {
+    /**
+     * @param {*} group - An h5wasm File or Group handle.
+     * @param {number[]|null} [nodeIds] - Real node id per `node_positions` array index (file-root
+     * `node_ids` dataset, see `SimulationExporter::write_connectivity()`) -- absent for a results
+     * file exported before that dataset existed, in which case `n + 1` is used, matching what the
+     * exporter always assigned anyway when connectivity wasn't tracked.
+     * @param {number[]|null} [elemNode1Ids] - Real node id pair per `element_*` array index
+     * (file-root `element_node1_ids`/`element_node2_ids`).
+     * @param {number[]|null} [elemNode2Ids]
+     */
+    static parseHDF5Group(group, nodeIds = null, elemNode1Ids = null, elemNode2Ids = null) {
         if (!group) return [];
         try {
             const posDS = group.get("node_positions");
@@ -49,7 +59,8 @@ export class DataLoaderService {
                 const nodesList = [];
                 for (let n = 0; n < numNodes; ++n) {
                     const idx = (s * numNodes + n) * 3;
-                    nodesList.push(new Node3D(n + 1, posData[idx], posData[idx + 1], posData[idx + 2]));
+                    const realId = nodeIds ? nodeIds[n] : (n + 1);
+                    nodesList.push(new Node3D(realId, posData[idx], posData[idx + 1], posData[idx + 2]));
                 }
 
                 const elementsList = [];
@@ -61,7 +72,9 @@ export class DataLoaderService {
                         momentData ? momentData[idxTens] : 0.0,
                         curvData ? curvData[idxTens] : 0.0,
                         vmData ? vmData[idxTens] : 0.0,
-                        mbrData ? mbrData[idxTens] : 5.0
+                        mbrData ? mbrData[idxTens] : 5.0,
+                        elemNode1Ids ? elemNode1Ids[e] : null,
+                        elemNode2Ids ? elemNode2Ids[e] : null
                     ));
                 }
 
@@ -96,18 +109,36 @@ export class DataLoaderService {
         const h5file = new h5wasm.File("temp_render.h5", "r");
 
         try {
-            const defaultSteps = DataLoaderService.parseHDF5Group(h5file);
+            // File-root connectivity (see SimulationExporter::write_connectivity()) -- shared by
+            // both groups below (same model, topology doesn't change between static/dynamic).
+            // Absent in a file exported before this dataset existed; `parseHDF5Group()` falls back
+            // to positional indexing in that case (correct only for a single-line model -- same
+            // fallback `Riser3DRenderer.js::renderStep()` uses when an element carries no
+            // node1_id/node2_id at all).
+            let nodeIds = null, elemNode1Ids = null, elemNode2Ids = null;
+            try {
+                const nodeIdsDS = h5file.get("node_ids");
+                const n1DS = h5file.get("element_node1_ids");
+                const n2DS = h5file.get("element_node2_ids");
+                if (nodeIdsDS && n1DS && n2DS) {
+                    nodeIds = nodeIdsDS.value;
+                    elemNode1Ids = n1DS.value;
+                    elemNode2Ids = n2DS.value;
+                }
+            } catch (e) {}
+
+            const defaultSteps = DataLoaderService.parseHDF5Group(h5file, nodeIds, elemNode1Ids, elemNode2Ids);
             let staticSteps = [];
             let dynamicSteps = [];
 
             try {
                 const staticGroup = h5file.get("static_analysis");
-                if (staticGroup) staticSteps = DataLoaderService.parseHDF5Group(staticGroup);
+                if (staticGroup) staticSteps = DataLoaderService.parseHDF5Group(staticGroup, nodeIds, elemNode1Ids, elemNode2Ids);
             } catch(e) {}
 
             try {
                 const dynamicGroup = h5file.get("dynamic_analysis");
-                if (dynamicGroup) dynamicSteps = DataLoaderService.parseHDF5Group(dynamicGroup);
+                if (dynamicGroup) dynamicSteps = DataLoaderService.parseHDF5Group(dynamicGroup, nodeIds, elemNode1Ids, elemNode2Ids);
             } catch(e) {}
 
             // File-level attributes (see SimulationExporter::export_hdf5) -- defensive, since

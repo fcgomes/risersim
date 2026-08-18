@@ -1200,6 +1200,118 @@ auditoria de fórmula isolada; (2) `%CURRENT.ANGLE` varia com profundidade nos d
 completo já confirmado propagado corretamente ponto-a-ponto, mas pode haver erro de
 interpolação/sinal em algum lugar do caminho de aplicação da força não auditado a fundo ainda).
 
+**Atualização 19** (2026-08-18, hipótese 1 acima testada -- descartada em 3 partes, mas achado um
+gap real e menor no processo): comparação fórmula-por-fórmula direta contra o C++ real (não só
+revisão de forma, como as rodadas anteriores desta seção fizeram para EI/EA):
+- **`calc_transformation_mt`** (`element.cpp:225-267`, o "ghost frame" de Crisfield) vs
+  `compute_corotational_forces()`'s ghost-frame block (`element_beam.cpp:180-197`) -- **match
+  exato**, termo a termo (`PX`/`PY`/`PZ`, `A1`/`A2`/`A3`, `I2`/`I3`).
+- **`pseudo_sum`** (`math_utils.cpp:134-194`, composição de quatérnion) vs `compose_rotations()`
+  (`rotation_utils.hpp`) -- **match exato**: mesma convenção de composição (`qp = q_delta ⊗
+  q_old`, equivalente a `R_new = R_delta * R_old` em forma matricial).
+- **`update_transformations_matrices`** (`beam.cpp:1055-1063`, `m_node_tm = m_node_init_tm *
+  trans(m_transf_mt)`, com `m_transf_mt` construído por `gen_mat_3d(m_rot_desl)` a partir da
+  rotação total acumulada do nó, `node.cpp:973-985`) vs `node1_tm = node1_init_triad() *
+  rodrigues(node->rot).transpose()` -- **match estrutural exato**.
+
+**Achado real, não testado antes**: `cBeam::calc_init_rot_mt()` (`beam.cpp:300-325`) dá a cada
+elemento uma "torção de nascença" (`teta_i`/`teta_j`, via `bttil()`) calculada a partir de
+`curvature_1`/`curvature_2` -- valores lidos DIRETO de uma coluna do arquivo de entrada
+(`columns_reader.get_double_column("curvature_1")`, `model_builder_dat.cpp:1646`), ou seja,
+computados pelo gerador de malha fechado (`tec_line`, já documentado indisponível neste repo), não
+pelo solver. O risersim, em contraste, sempre dava aos dois nós de um elemento o MESMO triedro
+inicial (`node1_init_triad_ = node2_init_triad_ = build_frame_from_chord(...)`, `element_beam.hpp`
+-- já documentado como simplificação deliberada no próprio comentário da classe) -- ou seja, curvatura
+inicial zero sempre, mesmo numa malha inicial genuinamente curva (a catenária/apoio-no-leito real,
+corrigida via MoorPy). Bate com o padrão do gap (trecho reto no leito ≈ correto, trecho curvo no
+vão suspenso diverge).
+
+**Implementado**: já que `tec_line` está indisponível, `curvature_1`/`curvature_2` são estimadas
+por diferença finita discreta (curvatura de Menger, 3 pontos consecutivos da malha inicial já
+corrigida) em `ModelBuilder::load_from_json()` (`discrete_signed_curvature()`, novo), projetada no
+eixo Y local do próprio elemento -- mesmo escopo/convenção do `curvature_1`/`curvature_2` reais.
+`CorotationalBeam3D` ganhou dois parâmetros novos (`curvature1`/`curvature2`, default 0.0 -- toda
+chamada anterior ao fix se comporta identicamente) e replica `bttil()`/`calc_init_rot_mt()` pra
+construir `node1_init_triad_`/`node2_init_triad_` com a torção correta em vez de sempre coincidirem.
+Suíte: 405/405, zero regressão.
+
+**Resultado, medido isoladamente (mesmo build, só esse fix ligado/desligado) contra o Exemplo_01a
+real (Near/Far/Transverse/Cross)**: tração no topo desloca ~0,02% em TODOS os 4 casos (ex. Cross:
+213,930→213,887 kN); deslocamento nodal máximo em toda a linha inteira é de **14cm**, a maioria na
+faixa de 1-4cm. **Correto (mais fiel ao ANFLEX real), mas efeito numérico pequeno demais pra
+explicar o gap de 5-8m documentado nesta seção** -- não é a causa raiz. **Mantido de qualquer forma**
+(decisão do usuário: correto, testado, zero regressão, mesmo sem resolver o gap).
+
+Achado colateral (não relacionado ao fix): o baseline `T_eff` do Cross documentado alhures nesta
+sessão (217,5 kN) já não bate nem SEM este fix (213,93 kN, mesma build) -- já tinha se afastado por
+alguma mudança anterior não identificada. Vale re-auditar esse baseline separadamente.
+
+**Conclusão**: as 3 partes da mecânica corrotacional (ghost frame, composição de rotação,
+atualização de tríade) mais a torção inicial agora estão todas verificadas/testadas -- nenhuma
+explica o gap de 5-8m. **Investigação pausada** (decisão do usuário) -- precisa de uma pista
+genuinamente nova pra continuar (ex. instrumentar os dois códigos com prints e comparar valor por
+valor, iteração por iteração, como foi feito com sucesso pro gap de heave/roll do Far).
+
+**Atualização 20** (2026-08-18, mesma sessão -- usuário pediu "os valores de curvatura estão
+corretos?", achado um bug real de eixo, corrigido e remedido -- **não fecha o gap, mas fecha o
+capítulo da torção inicial com evidência direta contra dado real, não só T_eff**):
+
+**Verificação direta contra o dado real do `tec_line`** (nunca feita antes -- as rodadas anteriores
+só mediam o EFEITO agregado do fix, não os valores de curvatura em si): o `.DAT` real gerado pelo
+ANFLEX pra este mesmo modelo (`Exemplo_01c_A1_NearS.DAT`, achado em
+`exemplos/.../Exemplo_01c_analysis/includes/L1_beam.ele`) tem as colunas `CURV1`/`CURV2` originais
+que o `tec_line` calculou -- dado que eu não sabia que existia até procurar. Portei
+`discrete_signed_curvature()` (a estimativa por diferença finita) e `build_frame_from_chord()` (o
+eixo Y local que ela projeta) pra Python e comparei elemento por elemento contra essas 540
+curvaturas reais (`includes/L1.nod` dá a malha inicial, mesma usada pelo `tec_line`):
+- **A fórmula de curvatura discreta em si bate quase exatamente** com o valor real do `tec_line`
+  quando projetada no eixo Y que o ANFLEX real usa (razão real/estimado entre 0,9997 e 1,0004 na
+  maioria dos elementos, erro médio ~1,3e-5).
+- **Mas `build_frame_from_chord()` usa uma convenção de eixo Y diferente da real** -- a heurística
+  própria do risersim ("eixo global menos alinhado com a corda") nunca tinha sido comparada
+  diretamente contra `nMathUtils::calc_angbeta`/`calc_local_mt_rot` (`math_utils.cpp:419-500`), a
+  fórmula real que define ROTGF (usada tanto pra construir os triedros de nascença quanto, no
+  ANFLEX real, pra tracking corrotacional contínuo -- as 3 partes já validadas na Atualização 19
+  eram sobre a mecânica de COMPOSIÇÃO, não sobre esta escolha de eixo específica). Projetando o
+  MESMO vetor de curvatura 3D no eixo Y errado do risersim, o valor sai sistematicamente ~35-40%
+  menor que o real, e com **sinal invertido em 18 de 298 elementos (6%)** do vão suspenso do caso
+  Near.
+
+**Corrigido**: `build_frame_from_chord()` (`element_beam.cpp`) reescrito pra replicar
+`calc_angbeta`/`calc_local_mt_rot` exatamente, em vez da heurística antiga. É a ÚNICA função usada
+tanto pelo construtor (triedros de nascença, `ex0` inicial) quanto por `transformation_matrix()`
+(rotaciona a matriz de massa local, chamada a cada passo) -- corrigir aqui mantém as duas
+consistentes automaticamente, e o tracking corrotacional contínuo (`compute_corotational_forces()`)
+nunca chama esta função depois de t=0 (só compõe rotações a partir do triedro de nascença), então a
+mudança não pode introduzir um descasamento entre o triedro "de nascença" e o "atual".
+
+**Regressão**: 2 dos 20 casos de teste (`test_multiline.cpp`, os dois testes que passam por
+`ModelBuilder::load_from_json()` com uma catenária sintética de malha muito grossa e um TDP quase
+vertical) pararam de convergir em 300 iterações -- diagnosticado como dificuldade genuína (não bug):
+a torção de nascença agora reflete a curvatura real (antes artificialmente amortecida pelo bug de
+eixo), e pra essa malha grossa (8m/elemento) isso é uma perturbação geométrica inicial maior.
+Convergiu em 1339 iterações com `max_iter_per_step` elevado pra 2000 (residual já estava em ~1e-5,
+só oscilando perto da tolerância de incremento) -- malhas reais do `tec_line` refinam exatamente
+essas regiões (0,25-1m, não 8m), então produção não paga esse custo. Comentário explicativo deixado
+nos dois testes. Suíte: 405/405 restaurado.
+
+**Remedido contra o dado real (não só T_eff -- posição nodal absoluta, mesma metodologia da
+Atualização 19: `NODAL DATA` inicial do `.SAI` + `NODAL DISPLACEMENTS` do último passo convergido =
+posição final real, comparada por fração de comprimento de arco)**: caso Near, T_eff idêntico ao
+build anterior (217,1 kN) e **forma convergida praticamente idêntica** entre o build com o bug de
+eixo e o build corrigido -- erro horizontal médio 4,246m→4,248m, máximo 13,273m→13,273m (diferenças
+na 4ª casa decimal). Ou seja: mesmo com os valores de curvatura ~35-40% errados (às vezes com sinal
+trocado) sendo substituídos pelos corretos, a forma final da catenária sob corrente não muda de
+forma perceptível -- confirma de forma direta e definitiva que a torção de nascença, seja qual for
+sua magnitude exata, **não é o mecanismo por trás do gap de 5-8m**, fechando esta linha de
+investigação com uma evidência mais forte que a da Atualização 19 (que só tinha T_eff agregado).
+
+**Mantido**: mesmo não fechando o gap, o fix de eixo é uma correção real (documentada e verificada
+contra dado real do `tec_line`, não uma hipótese) e melhora a fidelidade da mecânica corrotacional
+como um todo (não só a torção de nascença -- `transformation_matrix()`/matriz de massa também
+passam a usar a convenção real). **Investigação do gap de 5-8m continua pausada** -- mesma
+conclusão da Atualização 19, agora com uma hipótese a mais eliminada com evidência direta.
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio
@@ -1553,11 +1665,29 @@ mostrando a linha 2 completa e corretamente formada; regressão do projeto real 
 com azimutes diferentes) idêntica a antes; regressão de um projeto de exemplo real de 1 linha só
 (`Exemplo_01a` no pré-processador) sem mudança nenhuma. Docker reconstruído e saudável.
 
+**Atualização 9** (fecha o gap do pós-processador deixado em aberto na Atualização 8): o HDF5
+(`SimulationExporter::export_hdf5()`, C++) passou a exportar conectividade real -- `node_ids` (id
+real por índice de `node_positions`) e `element_node1_ids`/`element_node2_ids` (par de ids reais por
+índice de `element_*`), escritos uma vez na raiz do arquivo (`write_connectivity()`, novo) a partir
+de `Analysis::model` (já disponível em `Simulation::export_results()`, nenhum parâmetro novo
+precisou ser passado). `DataLoaderService.js::parseHDF5Group()` agora lê esses três datasets (se
+existirem -- arquivo mais antigo sem eles cai no fallback posicional de sempre) e repassa pro
+`BeamElement3D`/`Node3D` de cada elemento/nó, então `Riser3DRenderer.js::renderStep()` (Atualização
+8) resolve por id de verdade também no pós-processador, não só no editor/pré-processador. Verificado
+em 3 camadas: `risersim_tests.exe` 405/405 sem regressão; `risersim_test_main.exe` local contra um
+modelo de 2 linhas escrito à mão, HDF5 resultante com os 3 datasets novos e valores corretos
+(elemento na fronteira entre as duas linhas pula direto pro id real do topo da linha 2, sem o
+cilindro fantasma; último elemento da linha 2 presente, não mais dropado); e um projeto real de 2
+linhas criado e rodado via Docker (endpoint `/api/projects/blank` + `/api/projects/<id>/runs`, o
+mesmo caminho de produção que `run_worker.py` usa) -- HDF5 do worker confirmado com os datasets
+novos, e o pós-processador (`posprocessor.html`) desenhando as duas linhas corretamente contra esse
+resultado real. Assinatura do `SimulationExporter::export_hdf5()` não mudou (usa
+`Analysis::model`, já público) -- o binding Python exposto em `bindings.cpp` (não usado por nenhum
+`.py` do repo) continua compilando sem alteração.
+
 **Fora de escopo do v1** (explícito): movimento de topo real/RAO, upload de `.RAO`, corpo
 flutuante compartilhado entre linhas (fase 2 futura); editar/reabrir um projeto importado de AML/
-XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura; exportar
-conectividade real (`node1_id`/`node2_id`) no HDF5 para o pós-processador também usar resolução por
-id (mudança em C++, ver Atualização 8).
+XML no editor (só projetos "em branco" são editáveis); boias/tendões/turret/ruptura.
 
 ### 3b. Interface de controle de simulação (projetos, disparo, acompanhamento)
 

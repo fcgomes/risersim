@@ -337,13 +337,22 @@ TEST_CASE("ModelBuilder parses a multi-line JSON fixture (references/connections
 
     // Solve estático (sem offset -- só prova que o modelo parseado converge, física detalhada já
     // coberta pelo teste C++-direto acima) -- ambas as linhas independentemente.
+    // max_iter_per_step 2000 (não 300 como os outros testes deste arquivo): build_line_json()'s
+    // TDP fica quase vertical (X_tdp cai no piso de 1m via max(1, S_susp²-h_water²)), um trecho
+    // suspenso muito mais "dobrado" que o real -- e curvature1/curvature2 (birth twist,
+    // model_builder.cpp) agora refletem essa curvatura real em vez de ficarem artificialmente
+    // amortecidos por um bug de eixo já corrigido (build_frame_from_chord() projetava a curvatura
+    // no eixo Y errado -- ver histórico do fix, 2026-08-18). Malhas reais do tec_line (ex.
+    // Exemplo_01c) refinam o elemento exatamente nessas regiões (0.25-1m, não os 8m deste
+    // fixture) então não pagam esse custo -- aqui é só um teste de parsing/convergência, não de
+    // física fina, então dar mais orçamento de iteração é a correção certa, não afrouxar a física.
     risersim::StaticAnalysis sa;
     sa.model = model;
     sa.water_density = 1025.0;
     sa.water_density_for_mass = 1025.0;
     sa.seabed = risersim::SeabedInteraction(-100.0, 1.0e5, 0.5);
     sa.load_steps = 20;
-    sa.max_iter_per_step = 300;
+    sa.max_iter_per_step = 2000;
     sa.tol = 0.01;
     REQUIRE(sa.solve());
 }
@@ -378,13 +387,15 @@ TEST_CASE("ModelBuilder keeps single-line JSON (no lines[]) working exactly as b
     CHECK(attachments.front().top_node == model->nodes().front().get());
     CHECK(attachments.front().vessel_motion == &model->environmental().vessel_motion);
 
+    // max_iter_per_step 2000: mesma justificativa do teste acima (build_line_json()'s TDP quase
+    // vertical + curvature1/curvature2 agora corretos, não mais amortecidos pelo bug de eixo).
     risersim::StaticAnalysis sa;
     sa.model = model;
     sa.water_density = 1025.0;
     sa.water_density_for_mass = 1025.0;
     sa.seabed = risersim::SeabedInteraction(-100.0, 1.0e5, 0.5);
     sa.load_steps = 20;
-    sa.max_iter_per_step = 300;
+    sa.max_iter_per_step = 2000;
     sa.tol = 0.01;
     REQUIRE(sa.solve());
 }
