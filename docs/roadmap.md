@@ -1312,6 +1312,21 @@ como um todo (não só a torção de nascença -- `transformation_matrix()`/matr
 passam a usar a convenção real). **Investigação do gap de 5-8m continua pausada** -- mesma
 conclusão da Atualização 19, agora com uma hipótese a mais eliminada com evidência direta.
 
+**Tentativa de retomada, mesma sessão: técnica do `anflex_cmd.exe` (probe do solver real) não
+deslanchou, pausada de novo.** Achado promissor: `anflex_cmd.exe` (raiz do repo,
+`src/main_dll.cpp`/`main_cmd.cpp`, já compilado em `build/bin/Release/`) é um CLI real, sem GUI,
+sem Fortran, que roda o solver ANFLEX de verdade ponto-a-ponto -- a mesma técnica que resolveu o
+gap de heave/roll do Far ([[project_far_heave_roll_gap]]). Duas tentativas limpas (`.DAT` puro do
+Exemplo_01c, depois -- corrigido pelo usuário, já que `cReader` é baseado em pugixml -- o XML+H5
+real do Exemplo_01a/Cross) queimaram ~7-8min de CPU real cada (confirmado via contador de CPU
+subindo, não travado/ocioso) sem NENHUMA saída, e foram mortas. Causa parcialmente explicada
+(stdout do Windows fica totalmente bufferizado sem console interativo, `main_cmd.cpp` não tem
+`fflush`), mas isso não distingue "solver denso legado genuinamente lento" de "travado antes mesmo
+de começar a resolver". **Pausado sem resolver a ambiguidade** (decisão do usuário) -- duas opções
+não tentadas pra uma próxima rodada: deixar rodar bem mais tempo sem matar, ou instrumentar
+`static_analysis.cpp`/`model_builder_dat.cpp` com prints com `fflush` explícito antes de rodar de
+novo. Detalhe completo na memória (`project_static_catenary_current_gap.md`).
+
 ### 2b. Suporte a múltiplas zonas de solo por segmento (opcional, avaliar sob demanda)
 
 Achado no `Boiao/P52_Boiao.aml` (uma linha atravessando 3 solos diferentes ao longo do próprio
