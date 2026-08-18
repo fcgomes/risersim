@@ -2199,24 +2199,29 @@ ver Eixo 2c.)
 
 ## Ordem sugerida (não é obrigatória — ponto de partida pra decidir)
 
-> Atualizado 2026-08-17 -- versão anterior desta seção estava bem desatualizada (descrevia 1b como
-> "em progresso, 15/20 passos" e 2a como não iniciado); ambos avançaram muito além disso desde
-> então, ver os eixos acima para o estado real e o histórico completo.
+> Atualizado 2026-08-18 -- versão anterior (2026-08-17) já estava desatualizada de novo: descrevia
+> 3c como "falta só integrar com 3b", mas as 7 fases de 3c foram implementadas e verificadas nesse
+> meio-tempo, junto com as 3 fases de 3b. Praticamente todo o escopo original dos Eixos 1-3 está
+> concluído -- o que resta é só investigação pausada (sem lead) e backlog explicitamente sob
+> demanda. Ver os eixos acima para o histórico completo.
 
-1. ~~**1a** (bug estático)~~ — ✅ resolvido (era um bug de dados no perfil de corrente, não
-   numérico). Confiança no motor pra Exemplo_01a estático estabelecida.
+1. ~~**1a** (bug estático)~~ — ✅ resolvido.
 2. ~~**1b** (dinâmica)~~ — ✅ resolvido (Exemplo_01a converge os 20 passos completos).
-3. ~~**2a** (religar `aml_reader.py`)~~ — ✅ resolvido, refinamentos menores em aberto (gap
-   residual de ~5-7% em heave/roll do Far, pausado; detector de chattering período-N genérico,
-   baixa prioridade). O bloqueio real (dinâmica do Far não fechando) caiu na Atualização 17.
+3. ~~**2a** (religar `aml_reader.py`)~~ — ✅ resolvido, refinamento residual **pausado** (gap de
+   ~5-7% em heave/roll do Far, sem parâmetro corrigível encontrado).
 4. ~~**2c** (múltiplas linhas)~~ — ✅ implementado, convergência real verificada.
-5. ~~**3a** (entrada de dados)~~ — ✅ v1 implementada (2026-08-17): editor completo (8 abas),
-   compilador único interface→simulação (também reroteando o caminho AML), backend + verificação
-   real via servidor local. Fora de escopo do v1: RAO/movimento de topo, editar projeto importado.
-6. **3c** (pós-processamento) — base já existe (viewer 3D, Plotly); falta só integrar com o
-   conceito de projeto/rodada do 3b, que já está pronto (Fases 1-3 implementadas).
-7. **Backlog de recursos faltantes** — sob demanda, conforme cada item vire necessário pra um caso
-   de teste real específico.
+5. ~~**3a** (entrada de dados)~~ — ✅ v1 implementada. Fora de escopo do v1: RAO/movimento de topo
+   real, editar projeto importado de AML pelo editor.
+6. ~~**3b** (controle de simulação)~~ — ✅ Fases 1-3 implementadas (projetos/rodadas, proveniência
+   de versões, caso de carregamento por rodada).
+7. ~~**3c** (pós-processamento)~~ — ✅ Fases 1-7 implementadas (envoltórias, histórico no tempo,
+   nomenclatura de arquivo por caso, integração completa com projeto/rodada).
+8. **2b** (múltiplas zonas de solo por segmento) e **Backlog de recursos faltantes** (boias/
+   tendões, flexjoint/drilljoint, turret, ruptura, DNV check) — ambos explicitamente sob demanda,
+   sem gatilho concreto no momento; não vale implementar especulativamente.
+9. **Gap da catenária estática sob corrente** (5-8m, Eixo 2a) — **pausado**, 4 sub-hipóteses da
+   mecânica corrotacional descartadas com evidência direta (Atualizações 19-20); precisa de uma
+   pista genuinamente nova (ex. instrumentação comparativa iteração-por-iteração) pra retomar.
 
 ## Ver também
 
