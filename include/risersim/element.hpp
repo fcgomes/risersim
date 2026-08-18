@@ -70,6 +70,18 @@ public:
      * model-wide MAXIMUM across whichever elements do have a physically meaningful value.
      */
     virtual double characteristic_stiffness() const { return 0.0; }
+
+    /**
+     * @brief Notifies this element of the analysis's current pseudo-time, for an element whose
+     * own state is an explicit function of time -- currently only `WinchElement`'s payout-length
+     * curve (mirrors real ANFLEX's `cWinch::update_axial_strain_and_force(step, current_time,
+     * is_static)`). Default no-op: every other element type ignores it. Called by
+     * `Analysis::assemble_system()` once per element per Newton iteration, right before
+     * `update_effective_tension()` -- see `Analysis::current_time`'s doc comment for what value
+     * callers set it to (load-step fraction during statics, elapsed simulation time during
+     * dynamics).
+     */
+    virtual void set_time(double /*current_time*/) {}
 };
 
 } // namespace risersim

@@ -34,6 +34,18 @@ public:
     double water_density_for_mass;  ///< Added mass in M and drag loading (always 1025.0).
     int num_dofs;
 
+    /**
+     * @brief Pseudo-time forwarded to every element's `Element::set_time()` at the start of each
+     * `assemble_system()` call -- currently only consumed by `WinchElement`'s payout curve. The
+     * caller (StaticAnalysis/DynamicAnalysis) is responsible for keeping this current before
+     * assembling: StaticAnalysis sets it to the load-step fraction `t` in `[0,1]` (same convention
+     * already used for the current-load ramp -- real ANFLEX's own static "current_time" is a
+     * step-progression value, not wall-clock time either), DynamicAnalysis sets it to the real
+     * elapsed simulation time. Defaults to 0.0 so any caller that never sets it (every analysis
+     * with no WinchElement in the model) behaves exactly as before this field existed.
+     */
+    double current_time = 0.0;
+
     std::vector<StepSnapshot> history;
 
     /**

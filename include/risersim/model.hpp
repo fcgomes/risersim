@@ -9,6 +9,8 @@
 #include "risersim/element.hpp"
 #include "risersim/element_beam.hpp"
 #include "risersim/element_scalar.hpp"
+#include "risersim/element_truss.hpp"
+#include "risersim/element_winch.hpp"
 #include "risersim/seabed.hpp"
 #include "risersim/vessel_offset.hpp"
 #include "risersim/vessel_motion.hpp"
@@ -275,6 +277,32 @@ public:
     ScalarElement* add_scalar_element(Args&&... args) {
         auto elem = std::make_unique<ScalarElement>(std::forward<Args>(args)...);
         ScalarElement* ptr = elem.get();
+        elements_.push_back(std::move(elem));
+        return ptr;
+    }
+
+    /**
+     * @brief Constructs a TrussElement (axial cable/tendon/mooring bar, see element_truss.hpp)
+     * owned by this model and returns a non-owning pointer to it.
+     * @param args Forwarded to TrussElement's constructor.
+     */
+    template <typename... Args>
+    TrussElement* add_truss_element(Args&&... args) {
+        auto elem = std::make_unique<TrussElement>(std::forward<Args>(args)...);
+        TrussElement* ptr = elem.get();
+        elements_.push_back(std::move(elem));
+        return ptr;
+    }
+
+    /**
+     * @brief Constructs a WinchElement (variable-length axial bar, see element_winch.hpp) owned
+     * by this model and returns a non-owning pointer to it.
+     * @param args Forwarded to WinchElement's constructor.
+     */
+    template <typename... Args>
+    WinchElement* add_winch_element(Args&&... args) {
+        auto elem = std::make_unique<WinchElement>(std::forward<Args>(args)...);
+        WinchElement* ptr = elem.get();
         elements_.push_back(std::move(elem));
         return ptr;
     }

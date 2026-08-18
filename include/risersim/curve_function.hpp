@@ -45,6 +45,15 @@ public:
     /** @brief A curve that's always exactly zero (no force/stiffness) -- the default for an unused DOF. */
     static PiecewiseLinearCurve zero() { return linear(0.0); }
 
+    /**
+     * @brief A curve that's constant at `y` everywhere -- e.g. `cWinch`'s payout fraction when no
+     * real time-varying function is given (fraction 1.0 = unstretched length always equals the
+     * element's own original length, same behavior as a plain `TrussElement`).
+     */
+    static PiecewiseLinearCurve constant(double y, double half_range = 1.0e6) {
+        return PiecewiseLinearCurve({-half_range, half_range}, {y, y});
+    }
+
     bool empty() const { return x_.size() < 2; }
 
     /** @brief Interpolated (or boundary-held) value at `x`. Returns 0.0 if the curve has fewer than 2 points. */

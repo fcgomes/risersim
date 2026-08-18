@@ -11,6 +11,8 @@
 #include "risersim/model.hpp"
 #include "risersim/element_beam.hpp"
 #include "risersim/element_scalar.hpp"
+#include "risersim/element_truss.hpp"
+#include "risersim/element_winch.hpp"
 #include <nlohmann/json.hpp>
 #include <map>
 #include <string>
@@ -52,6 +54,23 @@ BeamMaterialProps parse_beam_section_properties(const nlohmann::json& sp, std::m
  * docs/roadmap.md).
  */
 ScalarProps parse_scalar_properties(const nlohmann::json& sp);
+
+/**
+ * @brief Converts a `truss_properties` JSON object into TrussProps (`E`, `A`, `rho`,
+ * `initial_tension` -- plain numbers, defaulting to TrussProps's own field defaults when absent).
+ * Shared by `element_type: "truss"` and `element_type: "winch"` (the latter also reads
+ * `winch_properties.payout_curve`, see parse_winch_payout_curve()).
+ */
+TrussProps parse_truss_properties(const nlohmann::json& tp);
+
+/**
+ * @brief Converts a `winch_properties.payout_curve` JSON object (`{"time": [...], "fraction":
+ * [...]}`, both same length, `time` strictly ascending) into a PiecewiseLinearCurve. Returns
+ * `PiecewiseLinearCurve::constant(1.0)` (always fully paid out -- behaves like a plain
+ * TrussElement) when the object is absent or malformed (fewer than 2 points, or `time`/`fraction`
+ * length mismatch).
+ */
+PiecewiseLinearCurve parse_winch_payout_curve(const nlohmann::json& wp);
 
 /**
  * @brief Builds a RiserModel from a structured input JSON, mirroring ANFLEX's cModelBuilderDAT.

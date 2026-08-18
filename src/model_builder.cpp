@@ -216,6 +216,24 @@ ScalarProps parse_scalar_properties(const json& sp) {
     return props;
 }
 
+TrussProps parse_truss_properties(const json& tp) {
+    TrussProps props;
+    props.E = tp.value("E", props.E);
+    props.A = tp.value("A", props.A);
+    props.rho = tp.value("rho", props.rho);
+    props.initial_tension = tp.value("initial_tension", props.initial_tension);
+    return props;
+}
+
+PiecewiseLinearCurve parse_winch_payout_curve(const json& wp) {
+    if (!wp.contains("payout_curve")) return PiecewiseLinearCurve::constant(1.0);
+    const auto& pc = wp["payout_curve"];
+    auto time = pc.value("time", std::vector<double>{});
+    auto fraction = pc.value("fraction", std::vector<double>{});
+    if (time.size() < 2 || time.size() != fraction.size()) return PiecewiseLinearCurve::constant(1.0);
+    return PiecewiseLinearCurve(time, fraction);
+}
+
 bool ModelBuilder::load_from_json(const std::string& input_json_path) {
     std::ifstream ifs(input_json_path);
     if (!ifs.is_open()) return false;
@@ -249,6 +267,8 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         std::map<std::string, int> missing_field_counts;
         int elements_missing_section_properties = 0;
         int elements_missing_scalar_properties = 0;
+        int elements_missing_truss_properties = 0;
+        int elements_missing_winch_properties = 0;
         int elements_missing_nodes = 0;
         if (j.contains("model") && j["model"].contains("elements") && !model.nodes().empty()) {
             auto elems_json = j["model"]["elements"];
@@ -350,6 +370,57 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
 
                 model.add_scalar_element(id, n1_it->second, n2_it->second, scalar_props);
             }
+
+            // Truss elements (axial cable/tendon/mooring bar, element_truss.hpp) -- same simple
+            // single-pass shape as scalar above (no curvature/neighbor-chain concept).
+            for (auto& e_j : elems_json) {
+                std::string element_type = e_j.value("element_type", std::string("beam"));
+                if (element_type != "truss") continue;
+
+                int id = e_j["id"];
+                auto n1_it = node_by_id.find(e_j["node1_id"].get<int>());
+                auto n2_it = node_by_id.find(e_j["node2_id"].get<int>());
+                if (n1_it == node_by_id.end() || n2_it == node_by_id.end()) {
+                    elements_missing_nodes++;
+                    continue;
+                }
+
+                TrussProps truss_props;
+                if (e_j.contains("truss_properties")) {
+                    truss_props = parse_truss_properties(e_j["truss_properties"]);
+                } else {
+                    elements_missing_truss_properties++;
+                }
+
+                model.add_truss_element(id, n1_it->second, n2_it->second, truss_props);
+            }
+
+            // Winch elements (variable-length axial bar, element_winch.hpp) -- reuses
+            // TrussProps for E/A/rho/initial_tension, plus its own payout_curve.
+            for (auto& e_j : elems_json) {
+                std::string element_type = e_j.value("element_type", std::string("beam"));
+                if (element_type != "winch") continue;
+
+                int id = e_j["id"];
+                auto n1_it = node_by_id.find(e_j["node1_id"].get<int>());
+                auto n2_it = node_by_id.find(e_j["node2_id"].get<int>());
+                if (n1_it == node_by_id.end() || n2_it == node_by_id.end()) {
+                    elements_missing_nodes++;
+                    continue;
+                }
+
+                TrussProps truss_props;
+                PiecewiseLinearCurve payout_curve = PiecewiseLinearCurve::constant(1.0);
+                if (e_j.contains("winch_properties")) {
+                    const auto& wp = e_j["winch_properties"];
+                    truss_props = parse_truss_properties(wp);
+                    payout_curve = parse_winch_payout_curve(wp);
+                } else {
+                    elements_missing_winch_properties++;
+                }
+
+                model.add_winch_element(id, n1_it->second, n2_it->second, truss_props, payout_curve);
+            }
         }
         if (elements_missing_nodes > 0) {
             std::ostringstream oss;
@@ -364,6 +435,16 @@ bool ModelBuilder::load_from_json(const std::string& input_json_path) {
         if (elements_missing_scalar_properties > 0) {
             std::ostringstream oss;
             oss << elements_missing_scalar_properties << " elemento(s) 'scalar' sem 'scalar_properties' no JSON -- assumindo rigidez zero em todos os GDL (conector sem resistência).";
+            warnings.push_back({"warning", oss.str()});
+        }
+        if (elements_missing_truss_properties > 0) {
+            std::ostringstream oss;
+            oss << elements_missing_truss_properties << " elemento(s) 'truss' sem 'truss_properties' no JSON -- usando material genérico padrão (aço, A=0.001 m²).";
+            warnings.push_back({"warning", oss.str()});
+        }
+        if (elements_missing_winch_properties > 0) {
+            std::ostringstream oss;
+            oss << elements_missing_winch_properties << " elemento(s) 'winch' sem 'winch_properties' no JSON -- usando material genérico padrão e curva de recolhimento constante (sempre no comprimento original).";
             warnings.push_back({"warning", oss.str()});
         }
         for (const auto& [field, count] : missing_field_counts) {

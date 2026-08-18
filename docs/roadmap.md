@@ -1427,7 +1427,7 @@ disparar a auto-detecção (EI=21,7 kN·m² > limiar), comportamento idêntico a
 
 **Fora de escopo desta rodada** (confirmado com o usuário antes de começar): frontend (`Riser3DRenderer.js`/`DataLoaderService.js`/tabela de resultados -- hoje assumem uma corrente única contígua, precisam de conectividade real exportada no H5 primeiro); seleção de linha no gerenciador de rodadas web (`risersim_projects.py`/`run_server.py`, sem conceito de "linha" hoje); caminho XML+H5 (`xml_h5_reader.py`, sem export real multi-linha existente).
 
-### 2d. Suporte a múltiplos tipos de elemento — 🚧 EM ANDAMENTO (Fase 0 + Fase 1 implementadas)
+### 2d. Suporte a múltiplos tipos de elemento — 🚧 EM ANDAMENTO (Fases 0-3 implementadas)
 
 Usuário perguntou como o `risersim` está em relação aos tipos de elemento reais do ANFLEX
 (2026-08-18). Levantamento (3 agentes Explore) achou ~9 famílias reais (`cBeam` + 5 variantes,
@@ -1486,12 +1486,55 @@ reproduzindo o par de força clássico de mola de 2 pontos com sinal conferido, 
 **Verificação**: 585/585 (Catch2, 405 antigos + 180 novos), ALL_BUILD limpo (`risersim_test_main`,
 `risersim_tests`, módulo pybind), T_eff do Near reconfirmado idêntico após a Fase 1 também.
 
-**Fora de escopo desta rodada** (decisão do usuário -- só Fase 0+1 nesta sessão): Fase 2 (`cTruss`,
-cabo/amarração -- real ANFLEX NÃO tem clamp de compressão, decisão confirmada: replicar exatamente,
-não "melhorar"), Fase 3 (`cWinch`, extensão pequena da Fase 2), Fase 4 (`cBuoyElement`, elemento de
-1 nó só, mais distante do padrão atual -- carga hidrostática/Morison como carga EXTERNA, não força
-interna, precisa de ajuste nos hooks da Fase 0). Nenhuma integração de JSON-round-trip end-to-end
-pro `ScalarElement` ainda (só testes unitários da fórmula) -- lacuna conhecida, não bloqueante.
+**Fase 2 (`TrussElement`, cabo/amarração 3-GDL/nó) -- implementada (2026-08-18)**: novo
+`include/risersim/element_truss.hpp`. Réplica direta de `cTruss::calc_stiff_mt`/
+`calc_internal_forces` (`truss.cpp:142-352`): `axial_force = strain*E*A + initial_tension`,
+`strain = (L_deformado - L_referencia)/L_referencia`, rigidez `K3 = (E*A/L_ref)*cos⊗cos +
+(axial_force/L_ref)*I` em blocos `[[K3,-K3],[-K3,K3]]`. Decisão confirmada com o usuário antes desta
+rodada (plano em `cozy-cooking-kazoo.md`): **sem clamp de compressão**, réplica exata do `cTruss`
+real (que é uma barra bidirecional normal apesar do nome). Como todo `Element` monta num layout
+12x12/12x1 fixo (6 GDL/nó, ver `element.hpp`), as linhas/colunas rotacionais (3-5, 9-11) ficam
+zero -- reflete fielmente que `cTruss` real não tem GDL rotacional nenhum (`m_num_dof=3`).
+**Simplificação deliberada, MAIOR que a do `ScalarElement`**: sem peso próprio/empuxo/corrente --
+diferente de `cScalar` (que também não tem no ANFLEX real), o `cTruss` real HERDA essas cargas de
+`cBar::calc_weight_load`, então isso é uma divergência física real pra uma linha de amarração/tendão
+que dependa do próprio peso pra formar a catenária (tendões tensionados como TEND/AMAR sofrem menos
+com isso -- a rigidez axial domina; um cabo mais frouxo tipo Reboque sofreria mais). Fica registrado
+como lacuna conhecida pra uma rodada futura (precisaria de diâmetro externo/coef. de arrasto no
+`TrussProps`, hoje mínimo). Contato com o solo continua funcionando (esse loop é por NÓ, não por
+tipo de elemento). Massa: mass matrix concentrada simples (`rho*A*L_ref/2` por nó, só translação --
+mesmo termo líder de `cBar::calc_mass_vector`, sem fluido interno/massa adicionada hidrodinâmica).
+5 testes novos em `test_element.cpp`.
+
+**Fase 3 (`WinchElement`, extensão pequena da Fase 2) -- implementada (2026-08-18)**: novo
+`include/risersim/element_winch.hpp`, deriva de `TrussElement` e sobrescreve só
+`reference_length()` (comprimento de referência não-esticado passa a ser
+`initial_length()*payout_fraction(tempo)`, via uma curva `PiecewiseLinearCurve` -- default
+`constant(1.0)`, comportamento idêntico a um Truss simples se nenhuma curva for configurada).
+Simplificação em relação ao `cWinch` real: uma curva só (real tem `static_function`/
+`dynamic_function` separadas e compostas, `winch.cpp:124-153`) -- cobre o caso comum (recolher até
+um comprimento alvo, depois manter), recolhimento ativo DURANTE uma simulação dinâmica fica pra
+quando um caso real precisar. **Achado de arquitetura**: nem `Element::update_effective_tension()`
+nem `Analysis::assemble_system()` tinham como saber o "tempo atual" -- não existia esse conceito no
+laço de montagem genérico. Resolvido com um hook novo, mesmo padrão da Fase 0
+(`Element::set_time(double)`, default no-op) + um campo público `Analysis::current_time` (default
+0.0, zero mudança de comportamento pra quem nunca configura) que `StaticAnalysis` seta pra fração
+do passo de carga `t` (mesma convenção já usada pra rampa de corrente) e `DynamicAnalysis` seta pro
+tempo real decorrido, antes de cada `assemble_system()`. 2 testes novos em `test_element.cpp`.
+
+**Verificação (Fases 2+3)**: 707/707 assertions (Catch2, 585 antigos + 122 novos), ALL_BUILD limpo
+(`risersim_test_main`, `risersim_tests`, módulo pybind, `risersim_diag_isolated_segment`) --
+inclusive o próprio teste de convergência estática completo (1339 iterações, mesmo resultado de
+antes), forte evidência de zero regressão no caminho beam-only (nada em `CorotationalBeam3D` foi
+tocado). `ModelBuilder::load_from_json()` ganhou `element_type: "truss"`/`"winch"` +
+`truss_properties`/`winch_properties` (`E`/`A`/`rho`/`initial_tension`, e pro winch um
+`payout_curve: {"time":[...], "fraction":[...]}` opcional).
+
+**Fora de escopo desta rodada**: Fase 4 (`cBuoyElement`, elemento de 1 nó só, mais distante do
+padrão atual -- carga hidrostática/Morison como carga EXTERNA, não força interna, precisa de ajuste
+nos hooks da Fase 0/2). Nenhuma integração de JSON-round-trip end-to-end pro `ScalarElement`/
+`TrussElement`/`WinchElement` ainda (só testes unitários da fórmula) -- lacuna conhecida, não
+bloqueante. Peso/empuxo/corrente pra `TrussElement`/`WinchElement` (ver Fase 2 acima).
 
 ## Eixo 3 — Interfaces (podem começar em paralelo aos eixos 1-2, escopadas ao que o motor já suporta)
 

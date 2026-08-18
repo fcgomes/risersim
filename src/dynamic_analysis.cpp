@@ -263,6 +263,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
     std::function<bool(double, double, int)> try_advance = [&](double t_start, double dt_sub, int depth) -> bool {
         Eigen::VectorXd U_before = U, V_before = V, A_before = A, F_static_prev_before = F_static_prev;
         double time = t_start + dt_sub;
+        current_time = time; // see Analysis::current_time -- consumed by WinchElement's payout curve
 
         const double c1 = 1.0 / (beta_newmark * dt_sub * dt_sub);
 

@@ -46,6 +46,7 @@ void Analysis::assemble_system(Eigen::SparseMatrix<double>& K_global, const Eige
     }
 
     for (const auto& elem : model->elements()) {
+        elem->set_time(current_time);
         elem->update_effective_tension();
 
         // Stiffness and internal force from the consistent corotational state (each

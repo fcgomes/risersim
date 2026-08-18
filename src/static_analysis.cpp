@@ -361,6 +361,7 @@ bool StaticAnalysis::solve_catenary_static(int steps, int max_iter, double toler
 
     for (int step = 1; step <= steps; ++step) {
         double t = static_cast<double>(step) / static_cast<double>(steps);
+        current_time = t; // see Analysis::current_time -- consumed by WinchElement's payout curve
 
         // Peso próprio nunca é rampeado (nem aqui, nem no ANFLEX real -- ver o comentário em
         // StaticIntegrator::assemble_load_vector). Só a corrente tem rampa, e é uma curva própria,
