@@ -35,9 +35,11 @@ import { createSpreadsheetTable } from './ui/SpreadsheetTable.js';
  * plus a line's segments) all use `ui/SpreadsheetTable.js` -- a real spreadsheet grid (paste from
  * Excel/Sheets, per-column units, smooth with large row counts) instead of a plain HTML table --
  * see that module's docstring for why. Each catalog table is created ONCE (`this.tables.<name>`)
- * and updated in place from then on; the one exception is `this.tables.segments`, rebuilt every
- * time the active line changes since it's bound to a different underlying array (that line's own
- * `segments`) each time -- see renderSegments().
+ * and updated in place from then on; two exceptions: `this.tables.segments`, rebuilt every time
+ * the active line changes since it's bound to a different underlying array (that line's own
+ * `segments`) each time -- see renderSegments() -- and `this.tables.materials`, which is 4 tables
+ * (one per `finite_element_type` sub-tab) all sharing the SAME `this.model.materials` array via
+ * `SpreadsheetTable.js`'s `filter` option, not 4 separate arrays -- see renderMaterials().
  */
 
 const TABS = {
@@ -45,6 +47,15 @@ const TABS = {
     curves: 'panel-curves', currents: 'panel-currents', waves: 'panel-waves',
     buoys: 'panel-buoys', lines: 'panel-lines',
     loadcases: 'panel-loadcases', analyses: 'panel-analyses',
+};
+
+/** Sub-tabs of the "Materiais" tab -- one per `finite_element_type`, each showing only the fields
+ * that type actually uses (see renderMaterials()'s docstring for why). `panelId` feeds
+ * `switchTab()` (ui/TabPanel.js) directly -- same {key: panelId} shape as `TABS` above, just a
+ * separate map so the two tab bars don't interfere (switchTab() only touches the keys it's given). */
+const MATERIAL_SUBTABS = {
+    beam: 'material-subtab-beam', truss: 'material-subtab-truss',
+    scalar: 'material-subtab-scalar', winch: 'material-subtab-winch',
 };
 
 function nextId(items) {
@@ -114,7 +125,14 @@ class EditorApp {
         // place from then on, except `segments`, rebuilt each time the active line changes (see
         // renderSegments()). `materialUnits` is the display unit currently picked per unit-bearing
         // Materiais column, independent of the model itself (which always stays in SI).
-        this.tables = { soils: null, materials: null, curves: null, currents: null, waves: null, buoys: null, loadcases: null, analyses: null, segments: null };
+        this.tables = {
+            soils: null,
+            // One handle per Materiais sub-tab (Vigas/Cabos/Juntas/Guinchos), all sharing the SAME
+            // `this.model.materials` array via SpreadsheetTable.js's `filter` option -- see
+            // renderMaterials()'s docstring.
+            materials: { beam: null, truss: null, scalar: null, winch: null },
+            curves: null, currents: null, waves: null, buoys: null, loadcases: null, analyses: null, segments: null,
+        };
         this.materialUnits = {
             diameter_external_m: 'm', diameter_internal_m: 'm',
             weight_dry_kNm: 'kN/m', weight_wet_kNm: 'kN/m',
@@ -159,12 +177,18 @@ class EditorApp {
         document.querySelectorAll('.btn-tab[data-tab]').forEach(btn => {
             btn.addEventListener('click', () => switchTab(TABS, btn.getAttribute('data-tab')));
         });
+        document.querySelectorAll('.btn-tab[data-material-subtab]').forEach(btn => {
+            btn.addEventListener('click', () => switchTab(MATERIAL_SUBTABS, btn.getAttribute('data-material-subtab')));
+        });
 
         document.getElementById('save-draft-btn').addEventListener('click', () => this.save(false));
         document.getElementById('save-and-go-btn').addEventListener('click', () => this.save(true));
 
         document.getElementById('add-soil-btn').addEventListener('click', () => this.addSoil());
-        document.getElementById('add-material-btn').addEventListener('click', () => this.addMaterial());
+        document.getElementById('add-material-beam-btn').addEventListener('click', () => this.addMaterialOfType('beam'));
+        document.getElementById('add-material-truss-btn').addEventListener('click', () => this.addMaterialOfType('truss'));
+        document.getElementById('add-material-scalar-btn').addEventListener('click', () => this.addMaterialOfType('scalar'));
+        document.getElementById('add-material-winch-btn').addEventListener('click', () => this.addMaterialOfType('winch'));
         document.getElementById('add-curve-btn').addEventListener('click', () => this.addCurve());
         document.getElementById('add-current-btn').addEventListener('click', () => this.addCurrent());
         document.getElementById('add-wave-btn').addEventListener('click', () => this.addWave());
@@ -302,55 +326,97 @@ class EditorApp {
 
     // ---- Materials ----
     /**
-     * Real spreadsheet grid (via ui/SpreadsheetTable.js -- Tabulator) instead of a plain HTML
-     * table: pasting a block copied from Excel/Sheets works out of the box, and 5 unit-bearing
-     * columns (diameter/weight/EA) get their own unit dropdown right in the header (`type:
-     * 'unit'`, see SpreadsheetTable.js). The model stays in SI internally (`this.model.materials`,
-     * mutated in place) -- only the display/edit path goes through a conversion.
+     * One spreadsheet grid PER `finite_element_type` (Vigas/Cabos/Juntas/Guinchos sub-tabs,
+     * `MATERIAL_SUBTABS`), each showing only the fields that type actually reads (see
+     * `docs/roadmap.md`, Eixo 3a) -- e.g. a scalar/flexjoint has no diameter/weight/EA, a truss has
+     * no bending/torsion. All 4 tables share the SAME underlying `this.model.materials` array (the
+     * "Tipo" field decides which sub-tab a material shows up in -- there's no separate per-type
+     * catalog, matching real ANFLEX where `%MATERIAL.FINITE_ELEMENT` is a field ON the material,
+     * not its own entity); `SpreadsheetTable.js`'s `filter` option hides non-matching rows per
+     * table WITHOUT slicing the array, so add/delete/id-generation all keep operating on the real
+     * catalog no matter which sub-tab they're clicked from.
+     *
+     * Rayleigh damping (T1/T2/ξ1/ξ2) is the one exception to "each sub-tab only shows its own
+     * fields" -- it's not actually per-element-type at all, it's a single GLOBAL value the
+     * compiler derives from whichever material happens to be the FIRST segment of the FIRST line
+     * (`risersim_runner.py`'s `build_config_from_interface()`), regardless of that material's
+     * type. Since any type could end up being that material, all 4 sub-tabs show these columns
+     * (see the panel's hint text in editor.html for the explanation shown to the user).
      */
     renderMaterials() {
-        if (this.tables.materials) return;
-        const unitCol = (key, label, group, decimals) => ({
+        if (this.tables.materials.beam) return;
+        const unitCol = (type, key, label, group, decimals) => ({
             key, label, type: 'unit', group, decimals,
             getUnit: () => this.materialUnits[key],
-            setUnit: (u) => { this.materialUnits[key] = u; this.tables.materials.refresh(); },
+            setUnit: (u) => { this.materialUnits[key] = u; this.tables.materials[type].refresh(); },
         });
-        this.tables.materials = createSpreadsheetTable(
-            '#materials-table', this.model.materials,
+        const rayleighCols = [
+            { key: 'rayleigh_period_first_s', label: 'Rayleigh T1 (s)', type: 'number', decimals: 2 },
+            { key: 'rayleigh_period_second_s', label: 'Rayleigh T2 (s)', type: 'number', decimals: 2 },
+            { key: 'rayleigh_damping_first', label: 'Rayleigh ξ1', type: 'number', decimals: 4 },
+            { key: 'rayleigh_damping_second', label: 'Rayleigh ξ2', type: 'number', decimals: 4 },
+        ];
+        const nameCol = { key: 'name', label: 'Nome', type: 'text' };
+
+        this.tables.materials.beam = createSpreadsheetTable(
+            '#materials-table-beam', this.model.materials,
             [
-                { key: 'name', label: 'Nome', type: 'text' },
-                {
-                    key: 'finite_element_type', label: 'Tipo', type: 'select',
-                    options: () => [
-                        { value: 'beam', label: 'Viga (beam)' },
-                        { value: 'truss', label: 'Cabo (truss)' },
-                        { value: 'scalar', label: 'Junta flexível (scalar)' },
-                        { value: 'winch', label: 'Guincho (winch)' },
-                    ],
-                },
-                unitCol('diameter_external_m', 'D. externo', 'length', 4),
-                unitCol('diameter_internal_m', 'D. interno', 'length', 4),
-                unitCol('weight_dry_kNm', 'Peso seco', 'forcePerLength', 4),
-                unitCol('weight_wet_kNm', 'Peso molhado', 'forcePerLength', 4),
-                unitCol('stiffness_axial_kN', 'EA', 'force', 1),
-                unitCol('initial_tension_kN', 'Tração inicial (truss/winch)', 'force', 1),
+                nameCol,
+                unitCol('beam', 'diameter_external_m', 'D. externo', 'length', 4),
+                unitCol('beam', 'diameter_internal_m', 'D. interno', 'length', 4),
+                unitCol('beam', 'weight_dry_kNm', 'Peso seco', 'forcePerLength', 4),
+                unitCol('beam', 'weight_wet_kNm', 'Peso molhado', 'forcePerLength', 4),
                 { key: 'morison_inertia_Cm', label: 'Cm', type: 'number', decimals: 2 },
                 { key: 'morison_drag_Cd', label: 'Cd', type: 'number', decimals: 2 },
+                unitCol('beam', 'stiffness_axial_kN', 'EA', 'force', 1),
                 { key: 'stiffness_bending_kNm2', label: 'EI (kN·m²)', type: 'number', decimals: 1 },
                 { key: 'stiffness_torsional_kNm2', label: 'GJ (kN·m²)', type: 'number', decimals: 1 },
-                { key: 'rayleigh_period_first_s', label: 'Rayleigh T1 (s)', type: 'number', decimals: 2 },
-                { key: 'rayleigh_period_second_s', label: 'Rayleigh T2 (s)', type: 'number', decimals: 2 },
-                { key: 'rayleigh_damping_first', label: 'Rayleigh ξ1', type: 'number', decimals: 4 },
-                { key: 'rayleigh_damping_second', label: 'Rayleigh ξ2', type: 'number', decimals: 4 },
-                { key: 'scalar_stiffness_translational_kNm', label: 'Rigidez transl. (scalar)', type: 'number', decimals: 1 },
-                { key: 'scalar_stiffness_torsional_kNm_per_rad', label: 'Rigidez torc. (scalar)', type: 'number', decimals: 1 },
-                { key: 'scalar_stiffness_bending_kNm_per_rad', label: 'Rigidez flexão (scalar)', type: 'number', decimals: 1 },
+                ...rayleighCols,
+            ],
+            { filter: m => (m.finite_element_type ?? 'beam') === 'beam', onDelete: () => this.onMaterialsChanged(), onChange: () => this.onMaterialsChanged() },
+        );
+        this.tables.materials.truss = createSpreadsheetTable(
+            '#materials-table-truss', this.model.materials,
+            [
+                nameCol,
+                unitCol('truss', 'diameter_external_m', 'D. externo', 'length', 4),
+                unitCol('truss', 'diameter_internal_m', 'D. interno', 'length', 4),
+                unitCol('truss', 'weight_dry_kNm', 'Peso seco', 'forcePerLength', 4),
+                unitCol('truss', 'weight_wet_kNm', 'Peso molhado', 'forcePerLength', 4),
+                unitCol('truss', 'stiffness_axial_kN', 'EA', 'force', 1),
+                unitCol('truss', 'initial_tension_kN', 'Tração inicial', 'force', 1),
+                ...rayleighCols,
+            ],
+            { filter: m => m.finite_element_type === 'truss', onDelete: () => this.onMaterialsChanged(), onChange: () => this.onMaterialsChanged() },
+        );
+        this.tables.materials.scalar = createSpreadsheetTable(
+            '#materials-table-scalar', this.model.materials,
+            [
+                nameCol,
+                { key: 'scalar_stiffness_translational_kNm', label: 'Rigidez translacional (kN/m)', type: 'number', decimals: 1 },
+                { key: 'scalar_stiffness_torsional_kNm_per_rad', label: 'Rigidez torcional (kN·m/rad)', type: 'number', decimals: 1 },
+                { key: 'scalar_stiffness_bending_kNm_per_rad', label: 'Rigidez à flexão (kN·m/rad)', type: 'number', decimals: 1 },
+                ...rayleighCols,
+            ],
+            { filter: m => m.finite_element_type === 'scalar', onDelete: () => this.onMaterialsChanged(), onChange: () => this.onMaterialsChanged() },
+        );
+        this.tables.materials.winch = createSpreadsheetTable(
+            '#materials-table-winch', this.model.materials,
+            [
+                nameCol,
+                unitCol('winch', 'diameter_external_m', 'D. externo', 'length', 4),
+                unitCol('winch', 'diameter_internal_m', 'D. interno', 'length', 4),
+                unitCol('winch', 'weight_dry_kNm', 'Peso seco', 'forcePerLength', 4),
+                unitCol('winch', 'weight_wet_kNm', 'Peso molhado', 'forcePerLength', 4),
+                unitCol('winch', 'stiffness_axial_kN', 'EA', 'force', 1),
+                unitCol('winch', 'initial_tension_kN', 'Tração inicial', 'force', 1),
                 {
-                    key: 'winch_payout_curve_id', label: 'Curva de recolhimento (winch)', type: 'select', nullable: true,
+                    key: 'winch_payout_curve_id', label: 'Curva de recolhimento', type: 'select', nullable: true,
                     options: () => this.model.curves.map(c => ({ value: c.id, label: `${c.name} (${c.id})` })),
                 },
+                ...rayleighCols,
             ],
-            { onDelete: () => this.onMaterialsChanged(), onChange: () => this.onMaterialsChanged() },
+            { filter: m => m.finite_element_type === 'winch', onDelete: () => this.onMaterialsChanged(), onChange: () => this.onMaterialsChanged() },
         );
     }
     /** A material's name/diameter feeds the Segmentos table's `material_id` dropdown AND the
@@ -359,19 +425,26 @@ class EditorApp {
         if (this.tables.segments) this.tables.segments.refresh();
         this.schedulePreviewUpdate();
     }
-    addMaterial() {
-        this.tables.materials.addRow({
-            id: nextId(this.model.materials), name: `Material_${this.model.materials.length + 1}`,
-            finite_element_type: 'beam',
+    /** @param {'beam'|'truss'|'scalar'|'winch'} type */
+    addMaterialOfType(type) {
+        const n = this.model.materials.filter(m => (m.finite_element_type ?? 'beam') === type).length + 1;
+        const NAMES = { beam: 'Viga', truss: 'Cabo', scalar: 'Junta', winch: 'Guincho' };
+        const base = {
+            id: nextId(this.model.materials), name: `${NAMES[type]}_${n}`, finite_element_type: type,
             diameter_external_m: 0.25, diameter_internal_m: 0.20, weight_dry_kNm: 1.0, weight_wet_kNm: 0.4,
             morison_inertia_Cm: 2.0, morison_drag_Cd: 1.0, stiffness_axial_kN: 360000.0,
-            initial_tension_kN: 0.0,
             stiffness_bending_kNm2: 21.7, stiffness_torsional_kNm2: 3200.0,
+            initial_tension_kN: 0.0,
             rayleigh_period_first_s: 0.0, rayleigh_period_second_s: 0.0,
             rayleigh_damping_first: 0.0, rayleigh_damping_second: 0.0,
-            scalar_stiffness_translational_kNm: 0.0, scalar_stiffness_torsional_kNm_per_rad: 0.0,
-            scalar_stiffness_bending_kNm_per_rad: 0.0, winch_payout_curve_id: null,
-        });
+            // A freshly-created flexjoint defaults to non-zero stiffness -- 0.0 would be a free
+            // hinge (no resistance at all), which is never what "add a joint" means in practice.
+            scalar_stiffness_translational_kNm: type === 'scalar' ? 50000.0 : 0.0,
+            scalar_stiffness_torsional_kNm_per_rad: type === 'scalar' ? 500.0 : 0.0,
+            scalar_stiffness_bending_kNm_per_rad: type === 'scalar' ? 500.0 : 0.0,
+            winch_payout_curve_id: null,
+        };
+        this.tables.materials[type].addRow(base);
         this.onMaterialsChanged();
     }
 
@@ -388,9 +461,10 @@ class EditorApp {
             { onDelete: () => this.onCurvesChanged(), onChange: () => this.onCurvesChanged() },
         );
     }
-    /** A curve's name/id is shown in the Materiais table's `winch_payout_curve_id` dropdown. */
+    /** A curve's name/id is shown in the Materiais/Guinchos table's `winch_payout_curve_id`
+     * dropdown -- the only Materiais sub-tab that references curves. */
     onCurvesChanged() {
-        if (this.tables.materials) this.tables.materials.refresh();
+        if (this.tables.materials.winch) this.tables.materials.winch.refresh();
         this.schedulePreviewUpdate();
     }
     addCurve() {

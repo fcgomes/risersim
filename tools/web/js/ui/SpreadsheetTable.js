@@ -253,15 +253,21 @@ function buildColumn(col) {
  * `key` may use dot notation for a nested field (e.g. `"static.steps"`) -- Tabulator resolves
  * that natively, both for display and for edits.
  * @param {{onDelete?: (item: object) => void, onChange?: () => void, selectable?: boolean|number,
- * onRowSelected?: (item: object) => void}} [callbacks] `onDelete` fires after a row is removed
- * from `items` AND from the table. `onChange` fires after any cell edit commits. `selectable`
- * turns on click-to-highlight rows (pass `1` for "at most one row at a time", radio-button style
- * -- e.g. the Linhas tab picking which line's Segmentos table to show); `onRowSelected` fires with
- * the newly-selected row's data, from both a real click AND a programmatic `handle.selectRow(id)`.
+ * onRowSelected?: (item: object) => void, filter?: (item: object) => boolean}} [callbacks]
+ * `onDelete` fires after a row is removed from `items` AND from the table. `onChange` fires after
+ * any cell edit commits. `selectable` turns on click-to-highlight rows (pass `1` for "at most one
+ * row at a time", radio-button style -- e.g. the Linhas tab picking which line's Segmentos table
+ * to show); `onRowSelected` fires with the newly-selected row's data, from both a real click AND a
+ * programmatic `handle.selectRow(id)`. `filter`, if given, hides any row it returns falsy for --
+ * Tabulator's OWN filtering (`table.setFilter()`), not a JS-level slice of `items`, so `items`
+ * stays the SAME array/reference the caller passed in (e.g. several sub-tab tables can all share
+ * one catalog array, each just showing a different slice of it -- see editor_app.js's
+ * per-element-type Materiais sub-tabs) and add/delete/id-generation all keep working against the
+ * real data without needing to reconcile anything between tables.
  * @returns {{addRow: (item: object) => void, selectRow: (id: number) => void, refresh: () => void,
  * destroy: () => void, table: object}}
  */
-export function createSpreadsheetTable(container, items, columns, { onDelete, onChange, selectable, onRowSelected } = {}) {
+export function createSpreadsheetTable(container, items, columns, { onDelete, onChange, selectable, onRowSelected, filter } = {}) {
     const tableColumns = [
         { field: 'id', title: 'ID', width: 55, hozAlign: 'right', editable: false },
         ...columns.map(buildColumn),
@@ -290,6 +296,7 @@ export function createSpreadsheetTable(container, items, columns, { onDelete, on
 
     table.on('cellEdited', () => { onChange && onChange(); });
     if (onRowSelected) table.on('rowSelected', (row) => onRowSelected(row.getData()));
+    if (filter) table.setFilter((data) => filter(data));
 
     // Tabulator measures its container's width when it's built -- if that happens while the
     // container is `display:none` (any tab other than the one active when this table is first

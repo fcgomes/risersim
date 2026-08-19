@@ -80,9 +80,31 @@
             </div>
 
             <div class="bottom-tab-panel editor-tab-panel" id="panel-materials">
-                <div class="editor-tab-hint">Cada segmento de linha referencia um material por ID (aba "Linhas"). Cole direto de uma planilha (Excel/Sheets -- selecione a célula de destino e Ctrl+V) e troque a unidade de cada coluna marcada pelo seletor no cabeçalho.</div>
-                <div id="materials-table"></div>
-                <button class="btn small editor-add-row-btn" id="add-material-btn" type="button">+ Adicionar material</button>
+                <div class="editor-tab-hint">Cada segmento de linha referencia um material por ID (aba "Linhas"). Cole direto de uma planilha (Excel/Sheets -- selecione a célula de destino e Ctrl+V) e troque a unidade de cada coluna marcada pelo seletor no cabeçalho. Amortecimento de Rayleigh (T1/T2/ξ1/ξ2) é um valor GLOBAL da simulação -- só os valores do material do primeiro segmento da primeira linha (aba "Linhas") são realmente usados, independente do tipo dele; por isso essas 4 colunas aparecem em toda sub-aba, não só em Vigas.</div>
+
+                <div class="material-subtabs" id="material-subtabs">
+                    <button class="btn-tab active" id="tab-beam-btn" data-material-subtab="beam" type="button">Vigas</button>
+                    <button class="btn-tab" id="tab-truss-btn" data-material-subtab="truss" type="button">Cabos</button>
+                    <button class="btn-tab" id="tab-scalar-btn" data-material-subtab="scalar" type="button">Juntas</button>
+                    <button class="btn-tab" id="tab-winch-btn" data-material-subtab="winch" type="button">Guinchos</button>
+                </div>
+
+                <div class="bottom-tab-panel material-subtab-panel active" id="material-subtab-beam">
+                    <div id="materials-table-beam"></div>
+                    <button class="btn small editor-add-row-btn" id="add-material-beam-btn" type="button">+ Adicionar viga</button>
+                </div>
+                <div class="bottom-tab-panel material-subtab-panel" id="material-subtab-truss">
+                    <div id="materials-table-truss"></div>
+                    <button class="btn small editor-add-row-btn" id="add-material-truss-btn" type="button">+ Adicionar cabo</button>
+                </div>
+                <div class="bottom-tab-panel material-subtab-panel" id="material-subtab-scalar">
+                    <div id="materials-table-scalar"></div>
+                    <button class="btn small editor-add-row-btn" id="add-material-scalar-btn" type="button">+ Adicionar junta</button>
+                </div>
+                <div class="bottom-tab-panel material-subtab-panel" id="material-subtab-winch">
+                    <div id="materials-table-winch"></div>
+                    <button class="btn small editor-add-row-btn" id="add-material-winch-btn" type="button">+ Adicionar guincho</button>
+                </div>
             </div>
 
             <div class="bottom-tab-panel editor-tab-panel" id="panel-curves">

@@ -72,6 +72,17 @@
 
 .editor-add-row-btn { margin-top: 8px; }
 
+/* Materiais tab's per-element-type sub-tabs (Vigas/Cabos/Juntas/Guinchos) -- same .btn-tab look as
+   the top-level tab bar, just smaller/inline since it's nested one level down. The sub-panels
+   themselves reuse .bottom-tab-panel/.active (shared.css) for show/hide, not a class of their own. */
+.material-subtabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.material-subtabs .btn-tab { font-size: 11px; padding: 4px 10px; }
+
 .line-fields-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

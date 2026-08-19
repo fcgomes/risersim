@@ -2005,6 +2005,57 @@ esperado (âncora do segmento único desta linha de teste), sem cilindro espúri
 comportamento anterior a esta rodada (mesma catenária, mesma cor por diâmetro), zero
 exceções/erros de console.
 
+**Atualização 12** (sub-abas por tipo na aba "Materiais", pedido do usuário testando a Atualização
+11 na prática -- achou confuso ter as 5 colunas novas sempre visíveis numa tabela só, mesmo só
+relevantes pra um subconjunto dos materiais): entre "acinzentar campos irrelevantes" e "sub-abas
+por tipo, cada uma só com seus próprios campos", o usuário escolheu a segunda. A coluna "Tipo" foi
+removida -- o tipo fica implícito pela sub-aba onde o material é criado.
+
+- 4 sub-abas dentro de "Materiais" (**Vigas**/**Cabos**/**Juntas**/**Guinchos**), continuam
+  operando sobre o MESMO `this.model.materials[]` (um `id` global só, sem catálogos separados --
+  mesmo design do próprio ANFLEX real, `%MATERIAL.FINITE_ELEMENT` é campo NO material). Vigas
+  mantém exatamente as 13 colunas de antes desta rodada inteira de mudanças de tipo de elemento
+  (zero mudança pra quem só usa viga); Cabos/Guinchos ficam sem Cm/Cd/EI/GJ (truss/winch não têm
+  Morison nem rigidez de flexão/torção); Juntas só tem as 3 rigidezes scalar.
+- **Achado ao desenhar a divisão**: o amortecimento de Rayleigh (T1/T2/ξ1/ξ2) NÃO é por tipo de
+  elemento -- `risersim_runner.py:619-629` usa só o material do PRIMEIRO segmento da PRIMEIRA
+  linha pra esses 4 valores, sejam quais forem os tipos de todos os outros materiais (um único
+  alpha/beta global, limitação de schema pré-existente, não desta rodada). Como qualquer tipo pode
+  ser esse primeiro material, essas 4 colunas continuam em TODAS as sub-abas -- e o hint da aba
+  ganhou uma frase explicando essa regra, que antes não estava documentada em lugar nenhum da UI.
+- `SpreadsheetTable.js::createSpreadsheetTable()` ganhou um parâmetro `filter: (item) => boolean`
+  -- filtragem VISUAL via `table.setFilter()` (Tabulator), não uma cópia do array; as 4 tabelas de
+  sub-aba compartilham o array real (`this.model.materials`), então add/delete/geração de `id`
+  continuam operando sobre o catálogo de verdade em qualquer sub-aba, sem reconciliar nada entre
+  elas.
+- Criar um material numa sub-aba já grava o `finite_element_type` certo; Juntas ganhou default de
+  rigidez não-zero (antes: 0.0 em tudo, que na prática seria uma dobradiça livre -- nunca é o que
+  "adicionar uma junta" deveria significar).
+
+**Incidente durante a verificação, sem relação com o código**: matando processos por PID que
+pareciam estar segurando a porta 8000 (suspeita de round-robin entre servidor antigo/novo, mesmo
+padrão de gotcha já documentado nesta sessão), um dos PIDs matados era na verdade o backend do
+Docker Desktop em si -- derrubou o daemon inteiro (`docker ps` passou a falhar). Os containers
+`risersim-web-1`/`risersim-worker-1` foram parados (não apagados) nesse processo. Corrigido:
+Docker Desktop relançado, `docker compose up -d` religou os containers com o mesmo volume/imagem de
+antes, sem perda de dado. **Lição**: nunca matar um PID achado via `netstat` sem antes confirmar via
+`tasklist`/`wmic` qual processo/imagem ele é -- numa porta compartilhada com Docker Desktop no
+Windows, um PID "óbvio" pode não ser o servidor de teste. Verificação real desta rodada foi refeita
+inteira contra um servidor local numa porta DEDICADA (8010, nunca usada por Docker) para eliminar
+essa ambiguidade por completo, em vez de reusar a 8000.
+
+**Verificação real**: mesmo método CDP da Atualização 11, servidor local porta 8010 (ver acima):
+alternar as 4 sub-abas confirmando que cada uma mostra só suas colunas certas (Vigas: 13 colunas
+originais; Cabos: sem Cm/Cd/EI/GJ; Guinchos: idem + curva; Juntas: só as 3 rigidezes); criar um
+material em cada sub-aba (`Cabo_1`/`Junta_1`/`Guincho_1`) confirmando que aparece SÓ na sua própria
+sub-aba e com `id` sequencial correto no array real; apontar o guincho pra uma curva criada na aba
+Curvas e confirmar `winch_payout_curve_id` gravado certo; apagar o material truss pela sua própria
+sub-aba e confirmar que sai do array real (`this.model.materials`, 4→3). Zero exceções/erros de
+console (`Runtime.exceptionThrown`/`Runtime.consoleAPICalled` via CDP) em toda a sequência.
+Screenshots confirmam visualmente o layout das 4 sub-abas nos dois temas. Rebuild + restart do
+container Docker `web`/`worker` aplicado depois da verificação local, confirmado servindo o código
+novo (`MATERIAL_SUBTABS`/`addMaterialOfType` presentes no JS servido).
+
 ### 3b. Interface de controle de simulação (projetos, disparo, acompanhamento)
 
 A peça arquitetural mais nova de todo o roadmap — hoje não existe nenhum backend real, só
