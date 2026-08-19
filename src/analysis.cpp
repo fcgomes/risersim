@@ -230,4 +230,41 @@ Eigen::SparseMatrix<double> Analysis::assemble_buoyancy_stiffness() const {
     return K_buoyancy;
 }
 
+Eigen::SparseMatrix<double> Analysis::assemble_damping(double fallback_alpha, double fallback_beta) const {
+    Eigen::SparseMatrix<double> C_global(num_dofs, num_dofs);
+    if (!model) return C_global;
+
+    std::vector<Eigen::Triplet<double>> triplets;
+
+    for (const auto& elem : model->elements()) {
+        double a = elem->rayleigh_configured() ? elem->rayleigh_alpha() : fallback_alpha;
+        double b = elem->rayleigh_configured() ? elem->rayleigh_beta() : fallback_beta;
+        if (a == 0.0 && b == 0.0) continue; // also skips ScalarElement/BuoyElement for free
+
+        Eigen::MatrixXd K_local;
+        Eigen::VectorXd F_int_unused;
+        elem->assemble(K_local, F_int_unused);
+        Eigen::MatrixXd M_local = elem->mass_matrix(water_density_for_mass);
+        Eigen::MatrixXd C_local = a * M_local + b * K_local;
+
+        int n_dof = elem->num_nodes() * 6;
+        std::vector<int> dofs(n_dof);
+        for (int n = 0; n < elem->num_nodes(); ++n) {
+            Node3D* nd = elem->node(n);
+            for (int i = 0; i < 6; ++i) dofs[n * 6 + i] = nd->eq_numbers[i];
+        }
+
+        for (int i = 0; i < n_dof; ++i) {
+            if (dofs[i] < 0) continue;
+            for (int j = 0; j < n_dof; ++j) {
+                if (dofs[j] < 0) continue;
+                triplets.push_back(Eigen::Triplet<double>(dofs[i], dofs[j], C_local(i, j)));
+            }
+        }
+    }
+
+    C_global.setFromTriplets(triplets.begin(), triplets.end());
+    return C_global;
+}
+
 } // namespace risersim

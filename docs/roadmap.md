@@ -250,6 +250,76 @@ limitador de passo/backtracking) em vez do previsto. Como a divergência que mot
 resolvida, vale decidir com o usuário se ainda compensa perseguir Morison/massa molhada agora (physics
 gap real, mas não bloqueante) ou se o Eixo 1b deve ser considerado fechado por ora.
 
+### Amortecimento de Rayleigh genuinamente por-material (2026-08-19)
+
+Usuário, olhando a nova UI de sub-abas de Materiais (Eixo 3a), achou estranho a interface deixar
+configurar amortecimento de Rayleigh em todo material mas só um ter efeito de verdade. Investigação
+direta do ANFLEX real (`trunk/interfaces/src/material.h`/`.cpp`/`cb-material.cpp` -- a interface
+gráfica de verdade tem uma aba própria "Damping" no diálogo de material, com 2 checkboxes + 4 campos
+numéricos por material; `anf_analysis/src/element_properties.h`/`bar.cpp` -- o solver monta a matriz
+de amortecimento GLOBAL somando a contribuição de CADA elemento com o alpha/beta do SEU PRÓPRIO
+material, `cBar::calc_damping_matrix()`: `m_damping_matrix = beta_i*K_local +
+alpha_i*diag(M_local)`) confirmou: é uma propriedade genuína por-material desde a origem, não uma
+peculiaridade de schema. `cScalar`/`cBuoyElement::calc_damping_matrix()` são incondicionalmente
+vazios -- nunca amortecem, independente de qualquer configuração.
+
+O motor risersim fazia diferente: `DynamicAnalysis` usava um alpha/beta ESCALAR pro modelo inteiro
+(`C_global = alpha_rayleigh*M_global + beta_rayleigh*K_global`), e o compilador Python colapsava os
+valores reais (já lidos por-material tanto de `.aml` quanto de XML+H5) pro material de UM segmento
+específico (o primeiro da primeira linha), descartando o resto.
+
+**Achado que baixou o risco da migração**: o "piso de segurança" (`max(alpha,0.05)`) que
+`risersim_runner.py` aplicava só era necessário pra projetos SEM dado real de Rayleigh (em branco/
+editor) -- toda a investigação de convergência dinâmica documentada acima (Atualizações 1-7) foi
+feita com XML+H5 reais com `consider_damping="no"` em TODO material, ou seja, com amortecimento
+GENUINAMENTE ZERO -- o piso nunca esteve em jogo em nenhum caso já validado.
+
+**Design**: `Element` (`element.hpp`) ganhou 3 hooks -- `rayleigh_alpha()`/`rayleigh_beta()`
+(default 0.0) e `rayleigh_configured()` (default `true`, resolvendo a ambiguidade real do
+problema: um tipo sem noção de amortecimento -- Scalar/Buoy -- fica sempre "configurado pra zero",
+nunca cai em fallback nenhum, igual ao ANFLEX real; só `CorotationalBeam3D`/`TrussElement`
+sobrescrevem os 3 pra refletir se o JSON realmente trouxe dado por-elemento, default `false`).
+`BeamMaterialProps`/`TrussProps` ganharam os 3 campos correspondentes. `WinchElement` herda de
+`TrussElement` sem mudança (reusa `TrussProps` sem cópia própria). Novo
+`Analysis::assemble_damping(fallback_alpha, fallback_beta)` (mesmo padrão de
+`assemble_buoyancy_stiffness()`) monta `C_global` somando `alpha_i*M_i + beta_i*K_i` por elemento,
+usando o fallback só quando `rayleigh_configured()==false` (JSON antiga, sem os campos novos) --
+**retrocompatível de graça**: uma JSON antiga faz todo elemento cair no fallback, matematicamente
+idêntico à fórmula global de antes (`Σ alpha*M_i = alpha*ΣM_i`); `test_multiline.cpp` (único teste
+que chamava `solve_time_domain_dynamic(...,alpha,beta)` direto) não precisou de nenhuma mudança.
+`model_builder.cpp` popula os 3 campos via `sp.contains("rayleigh_alpha")` (presença da CHAVE, não
+o valor -- é o que distingue "configurado pra zero de propósito" de "nunca configurado").
+
+Python (`risersim_runner.py::build_config_from_interface()`, `xml_h5_reader.py`): cada elemento
+passa a carregar o alpha/beta REAL do seu próprio material (`compute_rayleigh_alpha/beta`, já
+existente, agora chamado por material em vez de uma vez só pro modelo inteiro). O piso de segurança
+virou uma decisão de MODELO INTEIRO, não mais por-material-arbitrário: só se aplica quando NENHUM
+material beam/truss/winch do catálogo configurou Rayleigh de verdade (todos calculam pra
+alpha=beta=0.0) -- preserva a robustez de um projeto em branco sem nunca mais sobrescrever um zero
+real e intencional de um material específico quando outro material do mesmo modelo tem dado real.
+`dynamic.rayleigh_damping` (a chave global) deixou de ser escrita por `risersim_runner.py` --
+o fallback do C++ (`AnalysisOptionsConfig`, default 0.05/0.01) já cobre a ausência da chave.
+`aml_reader.py::to_interface_json()` já propagava os 4 campos reais por material corretamente (sem
+mudança); seu caminho legado de compilação direta (`to_risersim_json()`/`to_risersim_json_multiline()`,
+single-material por construção, sem o bug de colapso já que só existe UM material pra resolver ali)
+só precisou de 2 linhas achatando `mat['rayleigh']['alpha']`→`mat['rayleigh_alpha']` pra bater com o
+schema novo de `build_section_properties()`.
+
+**Verificação**: Catch2 completo + 3 testes novos em `test_static_analysis.cpp` (dois elementos com
+alpha/beta diferentes somam contribuições distintas em `C_global`, incluindo no nó compartilhado;
+elemento sem dado próprio cai no fallback do chamador; Scalar/Buoy nunca amortecem mesmo com
+fallback não-nulo) -- 743 assertions, zero regressão, incluindo o caso estático de 1339 iterações já
+documentado. `ALL_BUILD` limpo (core+tests+test_main+diag+pybind). Regressão real: Exemplo_01a Cross
+(XML+H5, `consider_damping="no"` em todo material) -- estática `T_eff=213,9 kN` byte-idêntico ao
+baseline, dinâmica (5s/100 passos) converge limpa. Caminho legado `--force-aml-path` (Near,
+`.aml`-only) -- `T_eff=217,1 kN`, também idêntico ao baseline. Script Python direto contra
+`build_config_from_interface()` com 2 materiais (um com Rayleigh real configurado, outro
+deliberadamente zero) confirmou os 15 elementos de cada material carregando exatamente o alpha/beta
+do seu próprio material -- o zero do segundo material preservado como zero real, não sobrescrito
+pelo piso (que só dispara quando NENHUM material do modelo tem dado real, confirmado num terceiro
+script com os dois materiais em branco: todos os 30 elementos caem no piso 0,05/0,005 uniforme,
+reproduzindo o comportamento global de antes).
+
 ## Eixo 2 — Pipeline de dados (desbloqueia mais casos de teste reais, baixo risco)
 
 ### 2a. Religar `aml_reader.py` ao schema real do `ModelBuilder` — ✅ RESOLVIDO (refinamentos menores em aberto)
@@ -2017,12 +2087,15 @@ removida -- o tipo fica implícito pela sub-aba onde o material é criado.
   mantém exatamente as 13 colunas de antes desta rodada inteira de mudanças de tipo de elemento
   (zero mudança pra quem só usa viga); Cabos/Guinchos ficam sem Cm/Cd/EI/GJ (truss/winch não têm
   Morison nem rigidez de flexão/torção); Juntas só tem as 3 rigidezes scalar.
-- **Achado ao desenhar a divisão**: o amortecimento de Rayleigh (T1/T2/ξ1/ξ2) NÃO é por tipo de
-  elemento -- `risersim_runner.py:619-629` usa só o material do PRIMEIRO segmento da PRIMEIRA
+- **Achado ao desenhar a divisão**: o amortecimento de Rayleigh (T1/T2/ξ1/ξ2) NÃO era por tipo de
+  elemento -- `risersim_runner.py:619-629` usava só o material do PRIMEIRO segmento da PRIMEIRA
   linha pra esses 4 valores, sejam quais forem os tipos de todos os outros materiais (um único
-  alpha/beta global, limitação de schema pré-existente, não desta rodada). Como qualquer tipo pode
-  ser esse primeiro material, essas 4 colunas continuam em TODAS as sub-abas -- e o hint da aba
-  ganhou uma frase explicando essa regra, que antes não estava documentada em lugar nenhum da UI.
+  alpha/beta global, limitação de schema pré-existente, não desta rodada). Usuário achou isso
+  estranho (a UI deixa configurar em todo material, só um tem efeito) -- **resolvido no mesmo dia**,
+  ver Eixo 1b, "Amortecimento de Rayleigh genuinamente por-material" abaixo: o motor e o compilador
+  passaram a usar o alpha/beta real de CADA material. As 4 colunas continuam em TODAS as sub-abas
+  porque, apesar de não serem mais "só a primeira", ainda são realmente usadas por qualquer tipo
+  (o hint da aba foi atualizado de novo pra refletir o comportamento real).
 - `SpreadsheetTable.js::createSpreadsheetTable()` ganhou um parâmetro `filter: (item) => boolean`
   -- filtragem VISUAL via `table.setFilter()` (Tabulator), não uma cópia do array; as 4 tabelas de
   sub-aba compartilham o array real (`this.model.materials`), então add/delete/geração de `id`

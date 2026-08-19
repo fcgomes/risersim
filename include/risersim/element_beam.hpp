@@ -62,6 +62,20 @@ struct BeamMaterialProps {
      */
     double rho_structural;
 
+    /**
+     * @brief Rayleigh mass-/stiffness-proportional damping coefficients for THIS material
+     * specifically, mirroring real ANFLEX's per-material `%MATERIAL.RAYLEIGH...` fields (see
+     * `Element::rayleigh_alpha()`/`rayleigh_beta()`'s doc comment, `docs/roadmap.md`). Default
+     * 0.0/0.0 with `rayleigh_configured=false` (see below) -- a JSON that never sets either field
+     * falls back to the analysis's model-wide default instead of silently damping at zero.
+     */
+    double rayleigh_alpha = 0.0;
+    double rayleigh_beta = 0.0;
+    /** @brief True only when the JSON actually contained `rayleigh_alpha`/`rayleigh_beta` for
+     * this element -- see `Element::rayleigh_configured()`'s doc comment for why this needs to be
+     * distinct from "both fields happen to be zero". Set by `ModelBuilder::load_from_json()`. */
+    bool rayleigh_configured = false;
+
     BeamMaterialProps()
         : E(2.1e11), G(8.0e10), A(0.015), IY(5.0e-5), IZ(5.0e-5), J(1.0e-4), rho(7850.0), EI(1.05e7),
           D_outer(0.25), D_inner(0.20), rho_fluid(800.0), Ca(1.0), Cd(1.0), rho_structural(7850.0) {}
@@ -216,6 +230,11 @@ public:
 
     /** @brief `Element::characteristic_stiffness()` override: the beam's elastic modulus. */
     double characteristic_stiffness() const override { return props_.E; }
+
+    /** @brief `Element::rayleigh_alpha/beta/configured()` overrides -- see `BeamMaterialProps`'s own fields. */
+    double rayleigh_alpha() const override { return props_.rayleigh_alpha; }
+    double rayleigh_beta() const override { return props_.rayleigh_beta; }
+    bool rayleigh_configured() const override { return props_.rayleigh_configured; }
 
     /** @brief Local (element-frame) material (elastic) stiffness matrix (12x12), standard 3D Euler-Bernoulli beam. */
     Eigen::Matrix<double, 12, 12> local_material_stiffness() const;

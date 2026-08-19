@@ -529,8 +529,10 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
             // current element length just like K does.
             Eigen::SparseMatrix<double> M_global = assemble_mass();
 
-            // Damping Matrix C = alpha*M + beta*K
-            Eigen::SparseMatrix<double> C_global = alpha_rayleigh * M_global + beta_rayleigh * K_global;
+            // Damping Matrix C -- genuinely per-element now (Analysis::assemble_damping(),
+            // docs/roadmap.md), `alpha_rayleigh`/`beta_rayleigh` only used as the fallback for an
+            // element with no per-element Rayleigh data of its own (see that method's doc comment).
+            Eigen::SparseMatrix<double> C_global = assemble_damping(alpha_rayleigh, beta_rayleigh);
 
             // Effective Dynamic Stiffness K_eff = (1+hht_alpha)*K + c1*M + (1+hht_alpha)*(gamma/(beta*dt))*C
             Eigen::SparseMatrix<double> K_eff = (1.0 + hht_alpha) * K_global + c1 * M_global
@@ -679,7 +681,7 @@ bool DynamicAnalysis::solve_time_domain_dynamic(double duration, double dt, doub
                 // the top of the iteration for every trial, silently stale once a trial actually
                 // moves a node.
                 Eigen::SparseMatrix<double> M_trial = assemble_mass();
-                Eigen::SparseMatrix<double> C_trial = alpha_rayleigh * M_trial + beta_rayleigh * trial_state.K_global;
+                Eigen::SparseMatrix<double> C_trial = assemble_damping(alpha_rayleigh, beta_rayleigh);
                 Eigen::VectorXd Residual_trial = trial_state.F_ext - trial_state.F_int - M_trial * A_trial - C_trial * V_trial;
                 double norm_trial = Residual_trial.norm();
 

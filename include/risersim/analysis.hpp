@@ -111,6 +111,25 @@ public:
      */
     Eigen::SparseMatrix<double> assemble_buoyancy_stiffness() const;
 
+    /**
+     * @brief Rayleigh damping matrix `C = Σ_elements alpha_i*M_i + beta_i*K_i`, each element's OWN
+     * per-material coefficients (`Element::rayleigh_alpha()`/`rayleigh_beta()`) -- mirrors real
+     * ANFLEX's `cBar::calc_damping_matrix()`, genuinely per-element rather than one global alpha/
+     * beta for the whole model (see `docs/roadmap.md`). An element with no per-element data of its
+     * own (`Element::rayleigh_configured()==false` -- a JSON predating this field) uses
+     * `fallback_alpha`/`fallback_beta` instead, so an old JSON (or a caller that never populates
+     * per-element damping at all, e.g. a hand-built C++ model) behaves exactly like the old
+     * `alpha*M_global + beta*K_global` formula this replaces. Elements with no notion of Rayleigh
+     * damping at all (ScalarElement/BuoyElement) always contribute zero, matching real ANFLEX's
+     * unconditionally-empty `cScalar`/`cBuoyElement::calc_damping_matrix()`.
+     *
+     * Recomputes each qualifying element's `assemble()`/`mass_matrix()` (the same corotational
+     * state `assemble_system()`/mass assembly already computed this iteration) -- an accepted
+     * cost, same tradeoff already made for mass reassembly per Newton iteration/backtracking
+     * trial (see `DynamicAnalysis::solve_time_domain_dynamic()`'s own comments on that).
+     */
+    Eigen::SparseMatrix<double> assemble_damping(double fallback_alpha, double fallback_beta) const;
+
     /** @brief Runs this analysis to completion. @return true on convergence/success. */
     virtual bool solve() = 0;
 };

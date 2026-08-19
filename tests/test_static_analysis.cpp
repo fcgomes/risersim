@@ -20,6 +20,8 @@
 #include "risersim/node.hpp"
 #include "risersim/element_beam.hpp"
 #include "risersim/element_truss.hpp"
+#include "risersim/element_scalar.hpp"
+#include "risersim/element_buoy.hpp"
 #include "risersim/static_analysis.hpp"
 #include "risersim/static_integrator.hpp"
 #include "risersim/hydrostatics.hpp"
@@ -221,4 +223,114 @@ TEST_CASE("Analysis::assemble_buoyancy_stiffness includes TrussElement's submers
     int eq2_z = n2->eq_numbers[2];
     REQUIRE(K.coeff(eq1_z, eq1_z) > 0.0);
     REQUIRE(K.coeff(eq2_z, eq2_z) > 0.0);
+}
+
+// Analysis::assemble_damping() -- genuinely per-element Rayleigh damping (docs/roadmap.md),
+// replacing a single global alpha/beta for the whole model. Uses StaticAnalysis purely as a
+// convenient concrete Analysis (same as the buoyancy-stiffness test above) -- assemble_damping()
+// itself is Analysis-level, only DynamicAnalysis actually calls it in production.
+TEST_CASE("Analysis::assemble_damping uses each element's OWN rayleigh_alpha/beta, not one global value", "[analysis][damping]") {
+    using namespace risersim;
+
+    RiserModel model;
+    Node3D* n1 = model.add_node(1, 0.0, 0.0, 0.0);
+    Node3D* n2 = model.add_node(2, 2.0, 0.0, 0.0);
+    Node3D* n3 = model.add_node(3, 4.0, 0.0, 0.0);
+    n1->eq_numbers = {0, 0, 0, 0, 0, 0}; // placeholder "free" sentinel -- assign_equation_numbers() below assigns the real indices
+    n2->eq_numbers = {0, 0, 0, 0, 0, 0};
+    n3->eq_numbers = {0, 0, 0, 0, 0, 0};
+
+    TrussProps props_a;
+    props_a.A = 0.001;
+    props_a.rho = 7850.0;
+    props_a.rayleigh_alpha = 0.10;
+    props_a.rayleigh_beta = 0.0;
+    props_a.rayleigh_configured = true;
+    model.add_truss_element(1, n1, n2, props_a);
+
+    TrussProps props_b;
+    props_b.A = 0.001;
+    props_b.rho = 7850.0;
+    props_b.rayleigh_alpha = 0.30; // different from props_a -- proves it's genuinely per-element
+    props_b.rayleigh_beta = 0.0;
+    props_b.rayleigh_configured = true;
+    model.add_truss_element(2, n2, n3, props_b);
+
+    StaticAnalysis analysis;
+    analysis.model = &model;
+    analysis.assign_equation_numbers();
+
+    Eigen::SparseMatrix<double> C = analysis.assemble_damping(/*fallback_alpha=*/0.05, /*fallback_beta=*/0.01);
+
+    // Alpha-only damping (beta=0) -> C is diagonal, C(i,i) = alpha_i * M_local(i,i), lumped mass
+    // rho*A*L/2 per node. Node 2 is shared by both elements, so it accumulates BOTH
+    // contributions -- proof the two elements' distinct alphas both actually landed in C, not
+    // just one of them (which a bug collapsing to a single global value would produce instead).
+    double m_per_node = 0.5 * props_a.rho * props_a.A * 2.0; // same L=2.0/A/rho on both elements
+    int eq1x = n1->eq_numbers[0], eq2x = n2->eq_numbers[0], eq3x = n3->eq_numbers[0];
+    REQUIRE(C.coeff(eq1x, eq1x) == Catch::Approx(0.10 * m_per_node));
+    REQUIRE(C.coeff(eq3x, eq3x) == Catch::Approx(0.30 * m_per_node));
+    REQUIRE(C.coeff(eq2x, eq2x) == Catch::Approx((0.10 + 0.30) * m_per_node));
+}
+
+// An element with no per-element Rayleigh data at all (rayleigh_configured left at its default
+// `false`) falls back to the caller-supplied model-wide default -- the backward-compatibility
+// path for a JSON/model predating per-element damping (docs/roadmap.md).
+TEST_CASE("Analysis::assemble_damping falls back to the caller's default for an unconfigured element", "[analysis][damping]") {
+    using namespace risersim;
+
+    RiserModel model;
+    Node3D* n1 = model.add_node(1, 0.0, 0.0, 0.0);
+    Node3D* n2 = model.add_node(2, 2.0, 0.0, 0.0);
+    n1->eq_numbers = {0, 0, 0, 0, 0, 0};
+    n2->eq_numbers = {0, 0, 0, 0, 0, 0};
+
+    TrussProps props; // rayleigh_configured defaults false -- never touched here
+    props.A = 0.001;
+    props.rho = 7850.0;
+    model.add_truss_element(1, n1, n2, props);
+
+    StaticAnalysis analysis;
+    analysis.model = &model;
+    analysis.assign_equation_numbers();
+
+    // fallback_beta=0.0 -- isolates the alpha*M contribution so the expected value doesn't need
+    // to also reproduce TrussElement's own K_local formula (already exercised elsewhere).
+    Eigen::SparseMatrix<double> C = analysis.assemble_damping(/*fallback_alpha=*/0.05, /*fallback_beta=*/0.0);
+
+    double m_per_node = 0.5 * props.rho * props.A * 2.0;
+    int eq1x = n1->eq_numbers[0];
+    REQUIRE(C.coeff(eq1x, eq1x) == Catch::Approx(0.05 * m_per_node));
+}
+
+// ScalarElement/BuoyElement have no notion of Rayleigh damping at all, matching real ANFLEX's
+// unconditionally-empty cScalar/cBuoyElement::calc_damping_matrix() -- they must contribute ZERO
+// even under a nonzero fallback, proving Element::rayleigh_configured()'s default (true, alpha/
+// beta both 0.0) correctly reads as "configured to zero", not "use the fallback".
+TEST_CASE("Analysis::assemble_damping never damps ScalarElement/BuoyElement, even with a nonzero fallback", "[analysis][damping]") {
+    using namespace risersim;
+
+    RiserModel model;
+    Node3D* n1 = model.add_node(1, 0.0, 0.0, 0.0);
+    Node3D* n2 = model.add_node(2, 2.0, 0.0, 0.0);
+    Node3D* n3 = model.add_node(3, 4.0, 0.0, -10.0);
+    n1->eq_numbers = {0, 0, 0, 0, 0, 0};
+    n2->eq_numbers = {0, 0, 0, 0, 0, 0};
+    n3->eq_numbers = {0, 0, 0, 0, 0, 0};
+
+    ScalarProps sprops;
+    model.add_scalar_element(1, n1, n2, sprops);
+
+    BuoyProps bprops;
+    bprops.volume = 2.0;
+    bprops.z_area = 1.5;
+    model.add_buoy_element(2, n3, bprops, /*water_surface_z=*/0.0, /*water_density=*/1025.0);
+
+    StaticAnalysis analysis;
+    analysis.model = &model;
+    analysis.assign_equation_numbers();
+
+    Eigen::SparseMatrix<double> C = analysis.assemble_damping(/*fallback_alpha=*/0.05, /*fallback_beta=*/0.01);
+
+    REQUIRE(C.nonZeros() == 0);
 }

@@ -80,7 +80,7 @@
             </div>
 
             <div class="bottom-tab-panel editor-tab-panel" id="panel-materials">
-                <div class="editor-tab-hint">Cada segmento de linha referencia um material por ID (aba "Linhas"). Cole direto de uma planilha (Excel/Sheets -- selecione a célula de destino e Ctrl+V) e troque a unidade de cada coluna marcada pelo seletor no cabeçalho. Amortecimento de Rayleigh (T1/T2/ξ1/ξ2) é um valor GLOBAL da simulação -- só os valores do material do primeiro segmento da primeira linha (aba "Linhas") são realmente usados, independente do tipo dele; por isso essas 4 colunas aparecem em toda sub-aba, não só em Vigas.</div>
+                <div class="editor-tab-hint">Cada segmento de linha referencia um material por ID (aba "Linhas"). Cole direto de uma planilha (Excel/Sheets -- selecione a célula de destino e Ctrl+V) e troque a unidade de cada coluna marcada pelo seletor no cabeçalho. Amortecimento de Rayleigh (T1/T2/ξ1/ξ2): cada material usa o SEU PRÓPRIO valor (mesma lógica do ANFLEX real -- cada elemento soma sua própria contribuição à matriz de amortecimento). Um material que nunca configurar isso (todos os 4 campos em branco/zero) cai no valor padrão do modelo inteiro; por isso essas 4 colunas aparecem em toda sub-aba, não só em Vigas.</div>
 
                 <div class="material-subtabs" id="material-subtabs">
                     <button class="btn-tab active" id="tab-beam-btn" data-material-subtab="beam" type="button">Vigas</button>

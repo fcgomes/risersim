@@ -1400,6 +1400,12 @@ class ANFLEXAMLReader:
         flat = self.to_risersim_config(line_index=line_index)
         line = self.model_data['lines'][line_index] if self.model_data['lines'] else {}
         mat = self.model_data['material']
+        # build_section_properties() wants flat rayleigh_alpha/beta keys (matches
+        # risersim_runner.py's _material_props() output) -- this legacy single-material path only
+        # ever has ONE material for the whole model, so there's no per-segment collapsing to fix
+        # here, just this naming mismatch against the nested `mat['rayleigh']` dict above.
+        mat['rayleigh_alpha'] = mat['rayleigh']['alpha']
+        mat['rayleigh_beta'] = mat['rayleigh']['beta']
         glb = self.model_data['global']
         depth = flat['geometry']['water_depth_m']
         span_x = flat['geometry']['span_x_m']
@@ -1604,6 +1610,9 @@ class ANFLEXAMLReader:
         indices = line_indices if line_indices is not None else list(range(len(all_lines)))
 
         mat = self.model_data['material']
+        # See to_risersim_json()'s matching comment.
+        mat['rayleigh_alpha'] = mat['rayleigh']['alpha']
+        mat['rayleigh_beta'] = mat['rayleigh']['beta']
         glb = self.model_data['global']
         load_case = self._resolve_load_case(load_case_id)
 

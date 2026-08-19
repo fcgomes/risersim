@@ -202,6 +202,17 @@ BeamMaterialProps parse_beam_section_properties(const json& sp, std::map<std::st
     if (!sp.contains("J")) note_missing("J");
     elem_props.J = sp.value("J", J_geom);
 
+    // Per-material Rayleigh damping (docs/roadmap.md) -- deliberately NOT counted via
+    // note_missing(): absence is a normal, common case (a JSON predating this field, or a
+    // material that genuinely never configures damping), not a data-quality warning like the
+    // other fields above. `rayleigh_configured` records whether the JSON actually said anything,
+    // so `Element::rayleigh_configured()` can tell a real "considered, computes to zero" material
+    // apart from "never touched this" -- see that method's doc comment for why the distinction
+    // matters (Analysis::assemble_damping()'s fallback).
+    elem_props.rayleigh_alpha = sp.value("rayleigh_alpha", 0.0);
+    elem_props.rayleigh_beta = sp.value("rayleigh_beta", 0.0);
+    elem_props.rayleigh_configured = sp.contains("rayleigh_alpha") || sp.contains("rayleigh_beta");
+
     return elem_props;
 }
 
@@ -223,6 +234,10 @@ TrussProps parse_truss_properties(const json& tp) {
     props.rho = tp.value("rho", props.rho);
     props.initial_tension = tp.value("initial_tension", props.initial_tension);
     props.D_outer = tp.value("D_outer", props.D_outer);
+    // See parse_beam_section_properties()'s matching block for why rayleigh_configured exists.
+    props.rayleigh_alpha = tp.value("rayleigh_alpha", 0.0);
+    props.rayleigh_beta = tp.value("rayleigh_beta", 0.0);
+    props.rayleigh_configured = tp.contains("rayleigh_alpha") || tp.contains("rayleigh_beta");
     return props;
 }
 

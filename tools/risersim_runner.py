@@ -385,6 +385,18 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
             'outer_diameter_m': do, 'inner_diameter_m': di,
             'Cd': m['morison_drag_Cd'], 'Cm': m['morison_inertia_Cm'],
             'initial_tension_kN': m.get('initial_tension_kN', 0.0),
+            # Per-material Rayleigh damping (docs/roadmap.md) -- genuinely THIS material's own
+            # value, not collapsed to a single model-wide material like before. `compute_rayleigh_
+            # alpha/beta(0,0,0,0)` (a material that never touched these fields) returns 0.0
+            # cleanly -- the whole-model floor below handles the "nobody configured anything"
+            # case, so a real per-material zero (deliberately no damping) is never silently
+            # overridden once at least one OTHER material in the model has real data.
+            'rayleigh_alpha': compute_rayleigh_alpha(
+                m.get('rayleigh_period_first_s', 0.0), m.get('rayleigh_period_second_s', 0.0),
+                m.get('rayleigh_damping_first', 0.0), m.get('rayleigh_damping_second', 0.0)),
+            'rayleigh_beta': compute_rayleigh_beta(
+                m.get('rayleigh_period_first_s', 0.0), m.get('rayleigh_period_second_s', 0.0),
+                m.get('rayleigh_damping_first', 0.0), m.get('rayleigh_damping_second', 0.0)),
         }
         if fe_type == 'winch' and m.get('winch_payout_curve_id') is not None:
             curve = curves_by_id.get(m['winch_payout_curve_id'])
@@ -398,6 +410,22 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
         return props
 
     material_props_by_id = {mid: _material_props(m) for mid, m in materials_by_id.items()}
+
+    # Whole-model safety floor: if NOT ONE beam/truss/winch material in the whole catalog
+    # configured real Rayleigh damping (every one computes to alpha=beta=0.0 -- the common case
+    # for a hand-built/blank-project interface JSON that never touches those fields), apply the
+    # historical default (0.05/0.005 -- the same values this function used to force onto a single
+    # arbitrarily-chosen material) to ALL of them, avoiding the genuinely-undamped-model dynamic
+    # instability this floor was originally added for (docs/roadmap.md). Deliberately a WHOLE-
+    # MODEL decision, not per-material: once at least one material has real data, every other
+    # material's own real zero (e.g. `consider_damping="no"`) stays a real, undamped zero instead
+    # of being silently bumped up.
+    _damped_types = ('beam', 'truss', 'winch')
+    _damping_candidates = [p for p in material_props_by_id.values() if p.get('finite_element_type') in _damped_types]
+    if _damping_candidates and all(p['rayleigh_alpha'] == 0.0 and p['rayleigh_beta'] == 0.0 for p in _damping_candidates):
+        for p in _damping_candidates:
+            p['rayleigh_alpha'] = 0.05
+            p['rayleigh_beta'] = 0.005
 
     GLOBAL_REF_ID = 0
     all_nodes, all_elements = [], []
@@ -616,20 +644,14 @@ def build_config_from_interface(interface_json, analysis_id, load_case_id, num_e
         "tolerance": dyn_src.get('tolerance', 1.0e-4),
     }
 
-    # Rayleigh alpha/beta: derived from the first line's first segment's material (same
-    # single-representative-material simplification as the catenary BVP solve above) -- the
-    # simulation JSON schema only has ONE global alpha/beta, not per-material.
-    first_line_first_mat_id = lines[0]['segments'][0].get('material_id')
-    rm = materials_by_id.get(first_line_first_mat_id, {})
-    alpha = compute_rayleigh_alpha(
-        rm.get('rayleigh_period_first_s', 0.0), rm.get('rayleigh_period_second_s', 0.0),
-        rm.get('rayleigh_damping_first', 0.0), rm.get('rayleigh_damping_second', 0.0))
-    beta = compute_rayleigh_beta(
-        rm.get('rayleigh_period_first_s', 0.0), rm.get('rayleigh_period_second_s', 0.0),
-        rm.get('rayleigh_damping_first', 0.0), rm.get('rayleigh_damping_second', 0.0))
-    # Safety-net floor -- same as build_config_from_aml()'s own (avoids divergence in the dynamic
-    # phase when the source has zero/no Rayleigh data, common for hand-built interface JSONs).
-    dynamic_opts['rayleigh_damping'] = {"alpha": max(alpha, 0.05), "beta": max(beta, 0.005)}
+    # Rayleigh damping is now genuinely per-element (each element's own `section_properties`/
+    # `truss_properties`/`winch_properties` carries its own material's real `rayleigh_alpha`/
+    # `rayleigh_beta`, computed above in `_material_props()`, with the whole-model floor already
+    # applied there too when nothing was configured anywhere) -- no single global value to derive
+    # here anymore. `dynamic.rayleigh_damping` is deliberately left UNSET: the C++ engine's own
+    # `AnalysisOptionsConfig` default (0.05/0.01, model.hpp) is only ever consulted as a fallback
+    # for an element with no per-element data at all (a JSON predating this field), which no
+    # longer applies to anything this compiler produces.
 
     if duration is not None:
         dynamic_opts['duration_s'] = duration

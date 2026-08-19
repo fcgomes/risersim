@@ -35,6 +35,17 @@ struct TrussProps {
      * this field existed keeps behaving exactly as before (dry weight only, no buoyancy/current).
      */
     double D_outer = 0.0;
+
+    /**
+     * @brief Rayleigh mass-/stiffness-proportional damping coefficients for THIS material
+     * specifically -- see `BeamMaterialProps::rayleigh_alpha`'s doc comment (same convention,
+     * `WinchElement` reuses this unchanged since it reuses `TrussProps` unchanged).
+     */
+    double rayleigh_alpha = 0.0;
+    double rayleigh_beta = 0.0;
+    /** @brief True only when the JSON actually contained `rayleigh_alpha`/`rayleigh_beta` for
+     * this element -- see `Element::rayleigh_configured()`'s doc comment. */
+    bool rayleigh_configured = false;
 };
 
 /**
@@ -125,6 +136,11 @@ public:
 
     /** @brief `Element::characteristic_stiffness()` override: the truss's elastic modulus (same convention as the beam). */
     double characteristic_stiffness() const override { return props_.E; }
+
+    /** @brief `Element::rayleigh_alpha/beta/configured()` overrides -- see `TrussProps`'s own fields. */
+    double rayleigh_alpha() const override { return props_.rayleigh_alpha; }
+    double rayleigh_beta() const override { return props_.rayleigh_beta; }
+    bool rayleigh_configured() const override { return props_.rayleigh_configured; }
 
     /**
      * @brief Assembles this truss's 3x3-per-node axial stiffness/force into the shared 12x12/12x1

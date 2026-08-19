@@ -343,6 +343,10 @@ def build_section_properties(mat, glb):
         "rho_fluid": glb['water_density_kgm3'],
         "Ca": mat['Cm'] - 1.0,
         "Cd": mat['Cd'],
+        # Per-material Rayleigh damping (docs/roadmap.md) -- genuinely THIS material's own alpha/
+        # beta, read by ModelBuilder::load_from_json() (model_builder.cpp) to mark this element
+        # `rayleigh_configured` instead of falling back to the analysis's model-wide default.
+        "rayleigh_alpha": mat['rayleigh_alpha'], "rayleigh_beta": mat['rayleigh_beta'],
     }
 
 
@@ -361,6 +365,8 @@ def build_truss_properties(mat):
         "E": mat['E_Pa'], "A": mat['A_m2'], "rho": mat['rho_kgm3'],
         "D_outer": mat['outer_diameter_m'],
         "initial_tension": mat.get('initial_tension_kN', 0.0) * 1000.0,
+        # See build_section_properties()'s matching comment.
+        "rayleigh_alpha": mat['rayleigh_alpha'], "rayleigh_beta": mat['rayleigh_beta'],
     }
 
 

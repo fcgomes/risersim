@@ -650,6 +650,14 @@ class ANFLEXXmlH5Reader:
                 "rho_fluid": material.get("internal_fluid_density_kgm3", 1025.0),
                 "Ca": material["Cm"] - 1.0,
                 "Cd": material.get("Cd", 1.0),
+                # Per-element Rayleigh damping (docs/roadmap.md) -- this function is single-
+                # material for the whole model (no per-segment resolution here), so alpha_rayleigh/
+                # beta_rayleigh above already ARE this element's real value; propagating them here
+                # (instead of only into the global `dynamic.rayleigh_damping` below) marks every
+                # element `rayleigh_configured` in the C++ engine, so Analysis::assemble_damping()
+                # uses these real values directly rather than a separate model-wide fallback.
+                "rayleigh_alpha": alpha_rayleigh,
+                "rayleigh_beta": beta_rayleigh,
             }
 
         # 2. Boundary Conditions
